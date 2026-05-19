@@ -1,6 +1,6 @@
 import { useState, type FormEvent, type ReactNode } from "react";
 import { Alert, Box, Button, Card, CardContent, Link, Stack, TextField, Typography } from "@mui/material";
-import tanuhLogo from "@/assets/TANUH.svg";
+import tanuhLogo from "@/assets/logo.png";
 import { useAuth } from "@/auth/authContext";
 
 type View = "SIGN_IN" | "FORGOT_PASSWORD" | "CONFIRM_RESET";

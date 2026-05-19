@@ -1,6 +1,6 @@
 import { AppBar, Avatar, Box, Button, Stack, Toolbar, Typography } from "@mui/material";
 import { Outlet, useNavigate } from "react-router-dom";
-import tanuhLogo from "@/assets/TANUH.svg";
+import tanuhLogo from "@/assets/logo.png";
 import { useAuth } from "@/auth/authContext";
 
 export function AppShell() {
