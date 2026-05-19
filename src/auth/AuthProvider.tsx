@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import axios from "axios";
 import { bindIdp, fetchIdpDetails, http } from "./httpClient";
 import { createIdpClient } from "./IdpFactory";
 import type { IdpDetails } from "./IdpDetails";
@@ -10,6 +11,10 @@ async function loadMe(): Promise<MeResponse> {
   return response.data;
 }
 
+function isUnauthorized(err: unknown): boolean {
+  return axios.isAxiosError(err) && err.response?.status === 401;
+}
+
 export function AuthProvider({ children }: { children: ReactNode }) {
   const [state, setState] = useState<AuthState>({ status: "loading" });
   const [idp, setIdp] = useState<IdpClient | null>(null);
@@ -18,22 +23,54 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     let cancelled = false;
 
     (async () => {
+      let client: IdpClient | null = null;
       try {
         const details = await fetchIdpDetails<IdpDetails>();
-        const client = createIdpClient(details);
+        client = createIdpClient(details);
         bindIdp(client);
-        const restored = await client.tryRestoreSession();
-        if (cancelled) return;
-        setIdp(client);
-        if (restored) {
-          const user = await loadMe();
-          if (!cancelled) setState({ status: "ready", idp: client, user });
-        } else {
-          setState({ status: "needs_login", idp: client });
-        }
       } catch (err) {
+        if (cancelled) return;
         const message = err instanceof Error ? err.message : "Unknown auth error";
-        if (!cancelled) setState({ status: "error", message });
+        setState({ status: "error", message });
+        return;
+      }
+
+      if (cancelled) return;
+      setIdp(client);
+
+      let restored = false;
+      try {
+        restored = await client.tryRestoreSession();
+      } catch {
+        // Treat unexpected restore failures as "needs login" rather than a
+        // fatal error — the user has a working path forward via the login form.
+        restored = false;
+      }
+      if (cancelled) return;
+
+      if (!restored) {
+        setState({ status: "needs_login", idp: client });
+        return;
+      }
+
+      try {
+        const user = await loadMe();
+        if (!cancelled) setState({ status: "ready", idp: client, user });
+      } catch (err) {
+        if (cancelled) return;
+        if (isUnauthorized(err)) {
+          // Session restored but the server rejected the token (expired /
+          // revoked). Clear local state quietly and drop to the login form.
+          try {
+            await client.signOut();
+          } catch {
+            // signOut failures are not actionable here.
+          }
+          if (!cancelled) setState({ status: "needs_login", idp: client });
+        } else {
+          const message = err instanceof Error ? err.message : "Unknown auth error";
+          setState({ status: "error", message });
+        }
       }
     })();
 
