@@ -1,4 +1,4 @@
-import type { AxiosInstance } from "axios";
+import type { InternalAxiosRequestConfig } from "axios";
 
 export interface IdpClient {
   // True for Cognito (in-app form), false for Keycloak (hosted login page).
@@ -12,7 +12,10 @@ export interface IdpClient {
   // For Keycloak the credential args are ignored — it redirects to its login page.
   signIn(username?: string, password?: string): Promise<void>;
 
-  attachAuthHeader(axios: AxiosInstance): Promise<void>;
+  // Writes AUTH-TOKEN onto the per-request config. Mutating axios defaults
+  // here would not affect the in-flight request (defaults are merged before
+  // interceptors run), so each request must be stamped directly.
+  attachAuthHeader(config: InternalAxiosRequestConfig): Promise<void>;
   signOut(): Promise<void>;
   getUsername(): string | null;
 

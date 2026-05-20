@@ -7,7 +7,7 @@ import {
   signIn,
   signOut,
 } from "aws-amplify/auth";
-import type { AxiosInstance } from "axios";
+import type { InternalAxiosRequestConfig } from "axios";
 import type { CognitoDetails } from "./IdpDetails";
 import { AUTH_TOKEN_KEY, AUTH_USERNAME_KEY } from "./IdpDetails";
 import type { IdpClient } from "./IdpClient";
@@ -91,9 +91,9 @@ export class CognitoClient implements IdpClient {
     return token;
   }
 
-  async attachAuthHeader(axios: AxiosInstance): Promise<void> {
+  async attachAuthHeader(config: InternalAxiosRequestConfig): Promise<void> {
     const token = await this.getToken();
-    axios.defaults.headers.common["AUTH-TOKEN"] = token;
+    config.headers.set("AUTH-TOKEN", token);
   }
 
   async signOut(): Promise<void> {

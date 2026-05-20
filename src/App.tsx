@@ -1,4 +1,4 @@
-import { BrowserRouter, Route, Routes, Navigate } from "react-router-dom";
+import { BrowserRouter, Route, Routes, Navigate, useLocation, useNavigate } from "react-router-dom";
 import { CssBaseline, ThemeProvider, Tab, Tabs, Box, CircularProgress } from "@mui/material";
 import { theme } from "@/theme";
 import { AuthProvider } from "@/auth/AuthProvider";
@@ -11,16 +11,15 @@ import { LoginPage } from "@/pages/LoginPage";
 import { isPhysician } from "@/auth/roles";
 
 function ListLayout({ children }: { children: React.ReactNode }) {
-  const path = window.location.pathname;
-  const value = path.startsWith("/completed") ? "completed" : "pending";
+  const { pathname } = useLocation();
+  const navigate = useNavigate();
+  const value = pathname.startsWith("/completed") ? "completed" : "pending";
   return (
     <Box>
       <Tabs
         value={value}
         sx={{ mb: 2 }}
-        onChange={(_, v) => {
-          window.location.assign(v === "pending" ? "/pending" : "/completed");
-        }}
+        onChange={(_, v) => navigate(v === "pending" ? "/pending" : "/completed")}
       >
         <Tab label="Pending Reviews" value="pending" />
         <Tab label="Previously Completed Reviews" value="completed" />

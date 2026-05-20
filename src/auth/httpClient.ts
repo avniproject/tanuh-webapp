@@ -12,10 +12,14 @@ export const http: AxiosInstance = axios.create({
 
 let idpRef: IdpClient | null = null;
 
+let interceptorInstalled = false;
+
 export function bindIdp(idp: IdpClient): void {
   idpRef = idp;
+  if (interceptorInstalled) return;
+  interceptorInstalled = true;
   http.interceptors.request.use(async (config) => {
-    if (idpRef) await idpRef.attachAuthHeader(http);
+    if (idpRef) await idpRef.attachAuthHeader(config);
     return config;
   });
 }
