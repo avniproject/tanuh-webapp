@@ -3,119 +3,181 @@ import {
   Box,
   Button,
   CircularProgress,
-  MenuItem,
   Stack,
   Table,
   TableBody,
   TableCell,
   TableHead,
+  TablePagination,
   TableRow,
   TextField,
+  Tooltip,
   Typography,
 } from "@mui/material";
-import { useNavigate } from "react-router-dom";
+import { useNavigate, useSearchParams } from "react-router-dom";
 import { format, parseISO } from "date-fns";
-import { listEncounters, isScheduled, isCompleted } from "@/api/encounters";
-import type { EncounterApiResponse } from "@/api/types";
+import { getEncountersWithLocation, type EncounterWithLocation } from "@/api/impl";
 import { ENCOUNTER_TYPE } from "@/constants/tanuhConcepts";
 import { useAsync } from "@/hooks/useAsync";
+import { LocationFilter } from "./LocationFilter";
 
 interface Props {
   mode: "pending" | "completed";
 }
 
+const PAGE_SIZE = 50;
+
 export function EncounterList({ mode }: Props) {
-  const { data: page, error } = useAsync(
-    () => listEncounters({ encounterType: ENCOUNTER_TYPE.physicianReviewForm.name, size: 100 }),
-    [],
-  );
-  const [from, setFrom] = useState<string>("");
-  const [to, setTo] = useState<string>("");
-  const [reviewer, setReviewer] = useState<string>("");
+  const [params, setParams] = useSearchParams();
+  const locationUuid = params.get("location");
+  const pageIndex = Math.max(0, parseInt(params.get("page") ?? "0", 10) || 0);
   const navigate = useNavigate();
 
-  const { filtered, reviewerOptions } = useMemo(() => {
-    if (!page) return { filtered: null, reviewerOptions: [] as string[] };
+  const [from, setFrom] = useState<string>("");
+  const [to, setTo] = useState<string>("");
 
-    const completed = page.content.filter(isCompleted);
-    const all = mode === "pending" ? page.content.filter(isScheduled) : completed;
+  const { data: pageData, error } = useAsync(
+    () =>
+      getEncountersWithLocation({
+        encounterType: ENCOUNTER_TYPE.physicianReviewForm.name,
+        status: mode === "pending" ? "scheduled" : "completed",
+        locationUuid,
+        page: pageIndex,
+        size: PAGE_SIZE,
+      }),
+    [mode, locationUuid, pageIndex],
+  );
 
-    if (mode !== "completed") return { filtered: all, reviewerOptions: [] };
-
+  const filtered = useMemo(() => {
+    if (!pageData) return null;
+    if (mode !== "completed") return pageData.content;
     const fromDate = from ? parseISO(from) : null;
     const toDate = to ? parseISO(to) : null;
-    const filteredCompleted = all.filter((e) => {
-      const ed = e["Encounter date time"] ? parseISO(e["Encounter date time"]) : null;
-      if (fromDate && ed && ed < fromDate) return false;
-      if (toDate && ed && ed > toDate) return false;
-      if (reviewer && e.audit?.["Last modified by"] !== reviewer) return false;
+    if (!fromDate && !toDate) return pageData.content;
+    return pageData.content.filter((e) => {
+      if (!e.encounterDateTime) return false;
+      const d = parseISO(e.encounterDateTime);
+      if (fromDate && d < fromDate) return false;
+      if (toDate && d > toDate) return false;
       return true;
     });
-    const reviewers = Array.from(
-      new Set(completed.map((e) => e.audit?.["Last modified by"]).filter((r): r is string => Boolean(r))),
-    ).sort();
-    return { filtered: filteredCompleted, reviewerOptions: reviewers };
-  }, [page, mode, from, to, reviewer]);
+  }, [pageData, mode, from, to]);
 
   if (error) return <Box sx={{ p: 3, color: "error.main" }}>Failed to load: {error}</Box>;
-  if (!filtered)
+  if (!pageData || !filtered)
     return (
       <Box sx={{ p: 4, display: "flex", justifyContent: "center" }}>
         <CircularProgress />
       </Box>
     );
 
+  const handleLocationChange = (uuid: string | null) => {
+    setParams(
+      (sp) => {
+        if (uuid) sp.set("location", uuid);
+        else sp.delete("location");
+        sp.delete("page");
+        return sp;
+      },
+      { replace: false },
+    );
+  };
+
   return (
     <Box>
-      {mode === "completed" && (
-        <Stack direction="row" spacing={2} sx={{ p: 2, borderBottom: "1px solid #e5e7eb" }}>
-          <TextField label="From" type="date" size="small" value={from} onChange={(e) => setFrom(e.target.value)} InputLabelProps={{ shrink: true }} />
-          <TextField label="To" type="date" size="small" value={to} onChange={(e) => setTo(e.target.value)} InputLabelProps={{ shrink: true }} />
-          <TextField select label="Reviewer" size="small" value={reviewer} onChange={(e) => setReviewer(e.target.value)} sx={{ minWidth: 180 }}>
-            <MenuItem value="">All reviewers</MenuItem>
-            {reviewerOptions.map((r) => (
-              <MenuItem key={r} value={r}>
-                {r}
-              </MenuItem>
-            ))}
-          </TextField>
-        </Stack>
-      )}
+      <Stack
+        direction="row"
+        spacing={2}
+        sx={{ p: 2, borderBottom: "1px solid #e5e7eb", flexWrap: "wrap" }}
+        alignItems="center"
+      >
+        <LocationFilter value={locationUuid} onChange={handleLocationChange} />
+        {mode === "completed" && (
+          <Stack direction="row" spacing={1}>
+            <TextField
+              label="From"
+              type="date"
+              size="small"
+              value={from}
+              onChange={(e) => setFrom(e.target.value)}
+              InputLabelProps={{ shrink: true }}
+            />
+            <TextField
+              label="To"
+              type="date"
+              size="small"
+              value={to}
+              onChange={(e) => setTo(e.target.value)}
+              InputLabelProps={{ shrink: true }}
+            />
+          </Stack>
+        )}
+      </Stack>
 
       {filtered.length === 0 ? (
         <Typography color="text.secondary" sx={{ p: 4, textAlign: "center" }}>
-          No {mode === "pending" ? "pending" : "completed"} reviews in your facility.
+          No {mode === "pending" ? "pending" : "completed"} reviews
+          {locationUuid ? " for the selected location." : " in your catchment."}
         </Typography>
       ) : (
-        <Table size="small">
-          <TableHead>
-            <TableRow>
-              <TableCell>Case ID</TableCell>
-              <TableCell>{mode === "pending" ? "Scheduled" : "Reviewed on"}</TableCell>
-              {mode === "completed" && <TableCell>Reviewer</TableCell>}
-              <TableCell />
-            </TableRow>
-          </TableHead>
-          <TableBody>
-            {filtered.map((e: EncounterApiResponse) => {
-              const caseId = e["Subject external ID"] || e["Subject ID"].slice(0, 8);
-              const date = mode === "pending" ? e["Earliest scheduled date"] : e["Encounter date time"];
-              return (
-                <TableRow key={e.ID} hover>
-                  <TableCell>{caseId}</TableCell>
-                  <TableCell>{date ? format(parseISO(date), "dd MMM yyyy") : "—"}</TableCell>
-                  {mode === "completed" && <TableCell>{e.audit?.["Last modified by"] ?? "—"}</TableCell>}
-                  <TableCell align="right">
-                    <Button size="small" onClick={() => navigate(`/review/${e.ID}`)}>
-                      {mode === "pending" ? "Review" : "View"}
-                    </Button>
-                  </TableCell>
-                </TableRow>
-              );
-            })}
-          </TableBody>
-        </Table>
+        <>
+          <Table size="small">
+            <TableHead>
+              <TableRow>
+                <TableCell>Case ID</TableCell>
+                <TableCell>{mode === "pending" ? "Scheduled" : "Reviewed on"}</TableCell>
+                <TableCell>Location</TableCell>
+                <TableCell />
+              </TableRow>
+            </TableHead>
+            <TableBody>
+              {filtered.map((e: EncounterWithLocation) => {
+                const caseId = e.subject.externalId || e.subject.uuid.slice(0, 8);
+                const date = mode === "pending" ? e.earliestScheduledDate : e.encounterDateTime;
+                const village = e.subject.location.Village ?? e.subject.location["Village"] ?? "—";
+                const tooltip = describeLocation(e.subject.location);
+                return (
+                  <TableRow key={e.encounterUuid} hover>
+                    <TableCell>{caseId}</TableCell>
+                    <TableCell>{date ? format(parseISO(date), "dd MMM yyyy") : "—"}</TableCell>
+                    <TableCell>
+                      <Tooltip title={tooltip} arrow>
+                        <span>{village}</span>
+                      </Tooltip>
+                    </TableCell>
+                    <TableCell align="right">
+                      <Button size="small" onClick={() => navigate(`/review/${e.encounterUuid}`)}>
+                        {mode === "pending" ? "Review" : "View"}
+                      </Button>
+                    </TableCell>
+                  </TableRow>
+                );
+              })}
+            </TableBody>
+          </Table>
+          <TablePagination
+            component="div"
+            count={pageData.totalElements}
+            page={pageIndex}
+            rowsPerPage={PAGE_SIZE}
+            rowsPerPageOptions={[PAGE_SIZE]}
+            onPageChange={(_, next) =>
+              setParams((sp) => {
+                sp.set("page", String(next));
+                return sp;
+              })
+            }
+          />
+        </>
       )}
     </Box>
   );
+}
+
+function describeLocation(location: Record<string, string>): string {
+  const parts: string[] = [];
+  for (const key of ["Village", "Block", "District", "State"]) {
+    if (location[key]) parts.push(`${key}: ${location[key]}`);
+  }
+  return parts.join(" · ") || "—";
 }
