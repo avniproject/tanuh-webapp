@@ -16,13 +16,13 @@ start: ## Run dev server (reads .env)
 	npm run dev
 
 start-with-staging: ## Run dev server pointed at staging
-	VITE_AVNI_API_BASE_URL=https://staging.avniproject.org npm run dev
+	VITE_AVNI_PROXY_TARGET=https://staging.avniproject.org npm run dev
 
 start-with-prerelease: ## Run dev server pointed at prerelease
-	VITE_AVNI_API_BASE_URL=https://prerelease.avniproject.org npm run dev
+	VITE_AVNI_PROXY_TARGET=https://prerelease.avniproject.org npm run dev
 
-start-with-prod: ## Run dev server pointed at production
-	VITE_AVNI_API_BASE_URL=https://app.avniproject.org npm run dev
+start-with-prod: ## Run dev server pointed at production (uses Vite proxy to bypass CORS)
+	VITE_AVNI_PROXY_TARGET=https://app.avniproject.org npm run dev
 
 build: build-app ## Build production bundle into dist/
 
