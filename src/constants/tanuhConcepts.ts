@@ -153,3 +153,12 @@ export const REVIEW_CONCEPTS = {
   notes: { name: "Notes for Health Worker / patient", uuid: "f4f82263-c4e8-5e3e-8011-bd5495bccc2d" },
   reviewTimestamp: { name: "Review timestamp", uuid: "cf73c280-7505-5263-958c-81acb3b7a943" },
 } as const;
+
+// "Place of referral" is a Location-typed concept on the Oral Screening encounter.
+// The observation value is an AddressLevel uuid pointing into the facility branch
+// (District Hospital → CHC → PHC → Sub-center). Used by the Pending list to
+// filter by referral facility via the server's linked-observation filter.
+export const PLACE_OF_REFERRAL_CONCEPT = {
+  name: "Place of referral",
+  uuid: "4a43f83e-26db-40c8-83d8-4317dcfda913",
+} as const;

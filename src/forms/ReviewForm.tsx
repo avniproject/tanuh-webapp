@@ -142,7 +142,7 @@ export function ReviewForm({ encounterUuid }: Props) {
       if (effectiveForm.notes.trim()) observations[REVIEW_CONCEPTS.notes.name] = effectiveForm.notes;
       observations[REVIEW_CONCEPTS.reviewTimestamp.name] = new Date().toISOString();
 
-      await submitEncounter({
+      await submitEncounter(loaded.review.ID, {
         "Encounter type": ENCOUNTER_TYPE.physicianReviewForm.name,
         "Subject ID": loaded.review["Subject ID"],
         "Encounter date time": new Date().toISOString(),
@@ -157,12 +157,17 @@ export function ReviewForm({ encounterUuid }: Props) {
     }
   };
 
-  const caseId = loaded.subject["External ID"] || loaded.review["Subject ID"].slice(0, 8);
+  const subjectObs = (loaded.subject.observations ?? {}) as Record<string, unknown>;
+  const firstName = (subjectObs["First name"] as string | undefined) ?? "";
+  const lastName = (subjectObs["Last name"] as string | undefined) ?? "";
+  const fullName = `${firstName} ${lastName}`.trim()
+    || loaded.subject["External ID"]
+    || loaded.review["Subject ID"].slice(0, 8);
 
   return (
     <Stack spacing={3}>
       <Stack direction="row" alignItems="center" spacing={2}>
-        <Typography variant="h5">Case ID: {caseId}</Typography>
+        <Typography variant="h5">{fullName}</Typography>
         <Box sx={{ flexGrow: 1 }} />
         {!readOnly && (
           <Button variant="contained" disabled={submitting} onClick={submit}>

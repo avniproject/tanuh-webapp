@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Box,
   Button,
@@ -11,13 +11,13 @@ import {
   TablePagination,
   TableRow,
   TextField,
-  Tooltip,
   Typography,
 } from "@mui/material";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { format, parseISO } from "date-fns";
 import { getEncountersWithLocation, type EncounterWithLocation } from "@/api/impl";
-import { ENCOUNTER_TYPE } from "@/constants/tanuhConcepts";
+import { listEncounters } from "@/api/encounters";
+import { ENCOUNTER_TYPE, PLACE_OF_REFERRAL_CONCEPT } from "@/constants/tanuhConcepts";
 import { useAsync } from "@/hooks/useAsync";
 import { LocationFilter } from "./LocationFilter";
 
@@ -26,15 +26,19 @@ interface Props {
 }
 
 const PAGE_SIZE = 50;
+const PLACE_OF_REFERRAL_KEY = "Place of referral";
 
 export function EncounterList({ mode }: Props) {
   const [params, setParams] = useSearchParams();
   const locationUuid = params.get("location");
+  const referralUuid = params.get("referral");
   const pageIndex = Math.max(0, parseInt(params.get("page") ?? "0", 10) || 0);
   const navigate = useNavigate();
 
   const [from, setFrom] = useState<string>("");
   const [to, setTo] = useState<string>("");
+  // Map of subjectUuid -> Place of referral pulled from the latest Oral Screening
+  const [referrals, setReferrals] = useState<Record<string, string>>({});
 
   const { data: pageData, error } = useAsync(
     () =>
@@ -42,11 +46,51 @@ export function EncounterList({ mode }: Props) {
         encounterType: ENCOUNTER_TYPE.physicianReviewForm.name,
         status: mode === "pending" ? "scheduled" : "completed",
         locationUuid,
+        // Linked-observation filter: only fires when a referral facility is picked.
+        linkedEncounterType: referralUuid ? ENCOUNTER_TYPE.oralScreening.name : null,
+        linkedObservationConceptUuid: referralUuid ? PLACE_OF_REFERRAL_CONCEPT.uuid : null,
+        linkedLocationUuid: referralUuid,
         page: pageIndex,
         size: PAGE_SIZE,
       }),
-    [mode, locationUuid, pageIndex],
+    [mode, locationUuid, referralUuid, pageIndex],
   );
+
+  useEffect(() => {
+    if (!pageData) return;
+    let cancelled = false;
+    const subjectIds = Array.from(new Set(pageData.content.map((e) => e.subject.uuid)));
+    if (subjectIds.length === 0) {
+      setReferrals({});
+      return;
+    }
+    Promise.all(
+      subjectIds.map(async (sid) => {
+        try {
+          const res = await listEncounters({
+            encounterType: ENCOUNTER_TYPE.oralScreening.name,
+            subjectId: sid,
+            size: 5,
+          });
+          const latest = res.content
+            .filter((enc) => !enc.Voided && enc["Encounter date time"])
+            .sort((a, b) =>
+              (b["Encounter date time"] || "").localeCompare(a["Encounter date time"] || ""),
+            )[0];
+          const raw = latest?.observations?.[PLACE_OF_REFERRAL_KEY];
+          return [sid, extractReferralName(raw)] as const;
+        } catch {
+          return [sid, ""] as const;
+        }
+      }),
+    ).then((entries: ReadonlyArray<readonly [string, string]>) => {
+      if (cancelled) return;
+      setReferrals(Object.fromEntries(entries));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [pageData]);
 
   const filtered = useMemo(() => {
     if (!pageData) return null;
@@ -83,15 +127,37 @@ export function EncounterList({ mode }: Props) {
     );
   };
 
+  const handleReferralChange = (uuid: string | null) => {
+    setParams(
+      (sp) => {
+        if (uuid) sp.set("referral", uuid);
+        else sp.delete("referral");
+        sp.delete("page");
+        return sp;
+      },
+      { replace: false },
+    );
+  };
+
   return (
     <Box>
       <Stack
-        direction="row"
-        spacing={2}
-        sx={{ p: 2, borderBottom: "1px solid #e5e7eb", flexWrap: "wrap" }}
-        alignItems="center"
+        direction="column"
+        spacing={1}
+        sx={{ p: 2, borderBottom: "1px solid #e5e7eb" }}
       >
-        <LocationFilter value={locationUuid} onChange={handleLocationChange} />
+        <Stack direction="row" alignItems="center" spacing={1}>
+          <Typography variant="caption" sx={{ minWidth: 120, color: "text.secondary" }}>
+            Patient location
+          </Typography>
+          <LocationFilter value={locationUuid} onChange={handleLocationChange} />
+        </Stack>
+        <Stack direction="row" alignItems="center" spacing={1}>
+          <Typography variant="caption" sx={{ minWidth: 120, color: "text.secondary" }}>
+            Referral facility
+          </Typography>
+          <LocationFilter value={referralUuid} onChange={handleReferralChange} />
+        </Stack>
         {mode === "completed" && (
           <Stack direction="row" spacing={1}>
             <TextField
@@ -124,27 +190,25 @@ export function EncounterList({ mode }: Props) {
           <Table size="small">
             <TableHead>
               <TableRow>
-                <TableCell>Case ID</TableCell>
+                <TableCell>Name</TableCell>
                 <TableCell>{mode === "pending" ? "Scheduled" : "Reviewed on"}</TableCell>
-                <TableCell>Location</TableCell>
+                <TableCell>Place of referral</TableCell>
                 <TableCell />
               </TableRow>
             </TableHead>
             <TableBody>
               {filtered.map((e: EncounterWithLocation) => {
-                const caseId = e.subject.externalId || e.subject.uuid.slice(0, 8);
+                const displayName =
+                  e.subject.displayName?.trim() ||
+                  e.subject.externalId ||
+                  e.subject.uuid.slice(0, 8);
                 const date = mode === "pending" ? e.earliestScheduledDate : e.encounterDateTime;
-                const village = e.subject.location.Village ?? e.subject.location["Village"] ?? "—";
-                const tooltip = describeLocation(e.subject.location);
+                const referral = referrals[e.subject.uuid];
                 return (
                   <TableRow key={e.encounterUuid} hover>
-                    <TableCell>{caseId}</TableCell>
+                    <TableCell>{displayName}</TableCell>
                     <TableCell>{date ? format(parseISO(date), "dd MMM yyyy") : "—"}</TableCell>
-                    <TableCell>
-                      <Tooltip title={tooltip} arrow>
-                        <span>{village}</span>
-                      </Tooltip>
-                    </TableCell>
+                    <TableCell>{referral || "—"}</TableCell>
                     <TableCell align="right">
                       <Button size="small" onClick={() => navigate(`/review/${e.encounterUuid}`)}>
                         {mode === "pending" ? "Review" : "View"}
@@ -174,10 +238,31 @@ export function EncounterList({ mode }: Props) {
   );
 }
 
-function describeLocation(location: Record<string, string>): string {
-  const parts: string[] = [];
-  for (const key of ["Village", "Block", "District", "State"]) {
-    if (location[key]) parts.push(`${key}: ${location[key]}`);
+// "Place of referral" can be either a plain string OR a location-hierarchy
+// object (keys = AddressLevelType names, values = location titles). For the
+// table column we want the deepest non-empty facility name.
+function extractReferralName(value: unknown): string {
+  if (value == null) return "";
+  if (typeof value === "string") return value;
+  if (typeof value !== "object") return "";
+  const obj = value as Record<string, unknown>;
+  // Most-specific facility level first; fallback to admin hierarchy.
+  const preferred = [
+    "Sub-center (HWC)",
+    "Primary Health Center (PHC)",
+    "Community Health Center (CHC)",
+    "District Hospital",
+    "Village",
+    "Block",
+    "District",
+    "State",
+  ];
+  for (const k of preferred) {
+    const v = obj[k];
+    if (typeof v === "string" && v.trim()) return v;
   }
-  return parts.join(" · ") || "—";
+  for (const v of Object.values(obj)) {
+    if (typeof v === "string" && v.trim()) return v;
+  }
+  return "";
 }

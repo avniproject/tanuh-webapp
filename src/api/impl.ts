@@ -35,6 +35,13 @@ export interface EncounterListParams {
   encounterType: string;
   status: EncounterStatus;
   locationUuid?: string | null;
+  // Optional linked-observation filter — all three must be provided together.
+  // Narrows the list to encounters whose subject has a completed encounter of
+  // `linkedEncounterType` with the observation under `linkedObservationConceptUuid`
+  // pointing at an AddressLevel in the subtree rooted at `linkedLocationUuid`.
+  linkedEncounterType?: string | null;
+  linkedObservationConceptUuid?: string | null;
+  linkedLocationUuid?: string | null;
   page?: number;
   size?: number;
 }
@@ -68,6 +75,9 @@ export async function getEncountersWithLocation(
         encounterType: p.encounterType,
         status: p.status,
         locationUuid: p.locationUuid ?? undefined,
+        linkedEncounterType: p.linkedEncounterType ?? undefined,
+        linkedObservationConceptUuid: p.linkedObservationConceptUuid ?? undefined,
+        linkedLocationUuid: p.linkedLocationUuid ?? undefined,
         page: p.page ?? 0,
         size: p.size ?? 50,
       },

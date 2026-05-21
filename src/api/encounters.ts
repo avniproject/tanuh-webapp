@@ -30,14 +30,28 @@ export async function getEncounter(uuid: string): Promise<EncounterApiResponse> 
   return response.data;
 }
 
-export interface CreateEncounterBody {
+export interface UpsertEncounterBody {
   "Encounter type": string;
   "Subject ID": string;
   "Encounter date time": string;
   observations: Record<string, unknown>;
 }
 
-export async function submitEncounter(body: CreateEncounterBody): Promise<EncounterApiResponse> {
+/**
+ * When `uuid` is provided, transitions an existing encounter (typically a
+ * scheduled one) into a completed state via `PUT /api/encounter/{uuid}`.
+ * When `uuid` is null, POSTs a brand-new encounter. The Tanuh Physician
+ * Review flow always passes the scheduled review's UUID so the same row is
+ * updated rather than a duplicate being created.
+ */
+export async function submitEncounter(
+  uuid: string | null,
+  body: UpsertEncounterBody,
+): Promise<EncounterApiResponse> {
+  if (uuid) {
+    const response = await http.put<EncounterApiResponse>(`/api/encounter/${uuid}`, body);
+    return response.data;
+  }
   const response = await http.post<EncounterApiResponse>("/api/encounter", body);
   return response.data;
 }
