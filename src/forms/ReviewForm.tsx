@@ -269,9 +269,13 @@ function RegDetailsCard({ subject, screening }: { subject: SubjectApiResponse; s
     ? format(parseISO(screening["Encounter date time"] as string), "dd-MM-yyyy")
     : "—";
   const loc = subject.location ?? {};
-  const state = loc["State"] ?? "—";
-  const district = loc["District"] ?? "—";
-  const village = loc["Village"] ?? "—";
+  const getLocationValue = (key: string) => {
+    const value = loc[key];
+    return value ?? (value === null || loc["null"] ? "Unknown" : "—");
+  };
+  const state = getLocationValue("State");
+  const district = getLocationValue("District");
+  const village = getLocationValue("Village");
 
   return (
     <Card variant="outlined" sx={{ height: "100%" }}>
