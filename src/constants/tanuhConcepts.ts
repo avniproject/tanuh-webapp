@@ -150,6 +150,22 @@ export const REVIEW_CONCEPTS = {
   anyImageSuspicious: { name: "Any image suspicious?", uuid: "51bac160-7519-5785-ac8e-d0ca709d9f6e" },
   opmdDiagnoses: { name: "OPMD diagnoses", uuid: "fe8f2ce1-9389-5b9c-871e-87fbc36303d5" },
   recommendedAction: { name: "Recommended action", uuid: "10105f46-0a2c-594e-aeca-651c0b84606c" },
-  notes: { name: "Notes for Health Worker / patient", uuid: "f4f82263-c4e8-5e3e-8011-bd5495bccc2d" },
+  // Staging still has the pre-rename name. Swap once the ASHA→Health Worker
+  // rename lands on this concept too (the Photo verdict concepts already use
+  // the new name; see PHOTO_CONCEPTS legacyNames).
+  notes: {
+    name: "Notes for ASHA / patient",
+    uuid: "f4f82263-c4e8-5e3e-8011-bd5495bccc2d",
+    legacyNames: ["Notes for Health Worker / patient"],
+  },
   reviewTimestamp: { name: "Review timestamp", uuid: "cf73c280-7505-5263-958c-81acb3b7a943" },
+} as const;
+
+// "Place of referral" is a Location-typed concept on the Oral Screening encounter.
+// The observation value is an AddressLevel uuid pointing into the facility branch
+// (District Hospital → CHC → PHC → Sub-center). Used by the Pending list to
+// filter by referral facility via the server's linked-observation filter.
+export const PLACE_OF_REFERRAL_CONCEPT = {
+  name: "Place of referral",
+  uuid: "4a43f83e-26db-40c8-83d8-4317dcfda913",
 } as const;

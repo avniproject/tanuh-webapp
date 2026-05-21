@@ -1,5 +1,5 @@
 import Keycloak from "keycloak-js";
-import type { AxiosInstance } from "axios";
+import type { InternalAxiosRequestConfig } from "axios";
 import type { KeycloakDetails } from "./IdpDetails";
 import { AUTH_TOKEN_KEY } from "./IdpDetails";
 import type { IdpClient } from "./IdpClient";
@@ -32,7 +32,7 @@ export class KeycloakClient implements IdpClient {
     await this.kc.login();
   }
 
-  async attachAuthHeader(axios: AxiosInstance): Promise<void> {
+  async attachAuthHeader(config: InternalAxiosRequestConfig): Promise<void> {
     if (!this.kc.token) throw new Error("NOT_SIGNED_IN");
     try {
       await this.kc.updateToken(30);
@@ -40,7 +40,7 @@ export class KeycloakClient implements IdpClient {
       await this.kc.login();
       return;
     }
-    axios.defaults.headers.common["AUTH-TOKEN"] = this.kc.token;
+    config.headers.set("AUTH-TOKEN", this.kc.token);
     localStorage.setItem(AUTH_TOKEN_KEY, this.kc.token);
   }
 

@@ -5,6 +5,7 @@ import { createIdpClient } from "./IdpFactory";
 import type { IdpDetails } from "./IdpDetails";
 import type { IdpClient } from "./IdpClient";
 import { AuthContext, type AuthState, type MeResponse } from "./authContext";
+import { clearCatchmentCache } from "@/api/impl";
 
 async function loadMe(): Promise<MeResponse> {
   const response = await http.get<MeResponse>("/me");
@@ -88,6 +89,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
   const signOut = async () => {
     if (state.status === "ready") {
+      clearCatchmentCache();
       await state.idp.signOut();
       setState({ status: "loading" });
       window.location.reload();

@@ -30,15 +30,34 @@ export async function getEncounter(uuid: string): Promise<EncounterApiResponse> 
   return response.data;
 }
 
-export interface CreateEncounterBody {
+export interface UpsertEncounterBody {
   "Encounter type": string;
   "Subject ID": string;
   "Encounter date time": string;
   observations: Record<string, unknown>;
 }
 
-export async function submitEncounter(body: CreateEncounterBody): Promise<EncounterApiResponse> {
-  const response = await http.post<EncounterApiResponse>("/api/encounter", body);
+/**
+ * When `uuid` is provided, transitions an existing encounter (typically a
+ * scheduled one) into a completed state via `PUT /api/encounter/{uuid}`.
+ * When `uuid` is null, POSTs a brand-new encounter. The Tanuh Physician
+ * Review flow always passes the scheduled review's UUID so the same row is
+ * updated rather than a duplicate being created.
+ */
+export async function submitEncounter(
+  uuid: string | null,
+  body: UpsertEncounterBody,
+): Promise<EncounterApiResponse> {
+  // The avni-server PUT/POST handler always calls
+  // `createObservations(request.getCancelObservations())` and NPEs if the
+  // field is null. Always send an empty cancelObservations so we never hit
+  // that path — we're never cancelling here, only completing.
+  const payload = { cancelObservations: {}, ...body };
+  if (uuid) {
+    const response = await http.put<EncounterApiResponse>(`/api/encounter/${uuid}`, payload);
+    return response.data;
+  }
+  const response = await http.post<EncounterApiResponse>("/api/encounter", payload);
   return response.data;
 }
 
