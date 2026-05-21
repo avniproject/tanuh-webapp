@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Alert,
   Autocomplete,
@@ -9,6 +9,7 @@ import {
   CircularProgress,
   FormControl,
   FormControlLabel,
+  FormHelperText,
   Grid,
   MenuItem,
   Radio,
@@ -17,6 +18,7 @@ import {
   TextField,
   Typography,
 } from "@mui/material";
+import LockOutlinedIcon from "@mui/icons-material/LockOutlined";
 import { differenceInYears, format, parseISO } from "date-fns";
 import { useNavigate } from "react-router-dom";
 import { getEncounter, isCompleted, listEncounters, submitEncounter } from "@/api/encounters";
@@ -39,6 +41,7 @@ import { useAsync } from "@/hooks/useAsync";
 
 interface Props {
   encounterUuid: string;
+  onBack?: () => void;
 }
 
 interface LoadedState {
@@ -74,6 +77,8 @@ function deriveAnySuspicious(
   return "";
 }
 
+const NO_ACTION = "No action";
+
 async function loadReview(encounterUuid: string): Promise<LoadedState> {
   const review = await getEncounter(encounterUuid);
   const subjectId = review["Subject ID"];
@@ -98,9 +103,29 @@ async function loadReview(encounterUuid: string): Promise<LoadedState> {
   };
 }
 
-export function ReviewForm({ encounterUuid }: Props) {
+export function ReviewForm({ encounterUuid, onBack }: Props) {
   const { data: loaded, error: loadError } = useAsync(() => loadReview(encounterUuid), [encounterUuid]);
-  const [form, setForm] = useState<FormState | null>(null);
+  // In-progress form state is persisted to sessionStorage keyed by the
+  // encounter uuid so it survives HMR, accidental refreshes, and tab
+  // switches mid-review. Cleared on successful submit.
+  const storageKey = `review-form:${encounterUuid}`;
+  const [form, setForm] = useState<FormState | null>(() => {
+    try {
+      const raw = sessionStorage.getItem(storageKey);
+      return raw ? (JSON.parse(raw) as FormState) : null;
+    } catch {
+      return null;
+    }
+  });
+  useEffect(() => {
+    if (form === null) return;
+    try {
+      sessionStorage.setItem(storageKey, JSON.stringify(form));
+    } catch {
+      // sessionStorage may be disabled (incognito quota) or full — degrade silently.
+    }
+  }, [form, storageKey]);
+
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const navigate = useNavigate();
@@ -127,7 +152,16 @@ export function ReviewForm({ encounterUuid }: Props) {
   const anySuspicious = deriveAnySuspicious(presentPhotos, effectiveForm.photoVerdicts);
   const updateForm = (next: FormState) => setForm(next);
 
+  const missingPhotoVerdicts = presentPhotos.filter((slot) => !effectiveForm.photoVerdicts[slot]);
+  const diagnosisRequired = anySuspicious === VERDICT_VALUES.yes;
+  const opmdMissing = diagnosisRequired && effectiveForm.opmdDiagnoses.length === 0;
+  const actionMissing =
+    diagnosisRequired &&
+    (!effectiveForm.recommendedAction || effectiveForm.recommendedAction === NO_ACTION);
+  const canSubmit = missingPhotoVerdicts.length === 0 && !opmdMissing && !actionMissing;
+
   const submit = async () => {
+    if (!canSubmit) return;
     setSubmitting(true);
     setSubmitError(null);
     try {
@@ -148,6 +182,11 @@ export function ReviewForm({ encounterUuid }: Props) {
         "Encounter date time": new Date().toISOString(),
         observations,
       });
+      try {
+        sessionStorage.removeItem(storageKey);
+      } catch {
+        // storage may be disabled — nothing to clean up.
+      }
       navigate("/pending");
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
@@ -166,17 +205,57 @@ export function ReviewForm({ encounterUuid }: Props) {
 
   return (
     <Stack spacing={3}>
-      <Stack direction="row" alignItems="center" spacing={2}>
-        <Typography variant="h5">{fullName}</Typography>
-        <Box sx={{ flexGrow: 1 }} />
-        {!readOnly && (
-          <Button variant="contained" disabled={submitting} onClick={submit}>
-            {submitting ? "Submitting…" : "Complete"}
+      <Stack direction="row" alignItems="center" spacing={1}>
+        {onBack && (
+          <Button
+            onClick={onBack}
+            size="large"
+            sx={{
+              minWidth: 0,
+              px: { xs: 1, sm: 1.5 },
+              fontSize: { xs: 24, sm: 28 },
+              lineHeight: 1,
+              flexShrink: 0,
+            }}
+            aria-label="Back"
+          >
+            ←
           </Button>
         )}
+        <Typography
+          variant="h5"
+          sx={{
+            fontSize: { xs: "1.15rem", sm: "1.5rem" },
+            fontWeight: 700,
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+            whiteSpace: "nowrap",
+          }}
+        >
+          {fullName}
+        </Typography>
+        <Box sx={{ flexGrow: 1 }} />
       </Stack>
 
-      {submitError && <Alert severity="error">{submitError}</Alert>}
+      {readOnly && (
+        <Alert
+          icon={<LockOutlinedIcon fontSize="small" />}
+          severity="info"
+          sx={{
+            bgcolor: "grey.100",
+            color: "text.primary",
+            border: "1px solid",
+            borderColor: "grey.300",
+            "& .MuiAlert-icon": { color: "text.secondary" },
+          }}
+        >
+          Read-only — review completed
+          {loaded.review["Encounter date time"]
+            ? ` on ${format(parseISO(loaded.review["Encounter date time"]!), "dd MMM yyyy")}`
+            : ""}
+          .
+        </Alert>
+      )}
 
       <Grid container spacing={2}>
         <Grid size={{ xs: 12, md: 6 }}>
@@ -200,7 +279,16 @@ export function ReviewForm({ encounterUuid }: Props) {
             verdictAnswers={loaded.physicianVerdictAnswers}
             value={effectiveForm.photoVerdicts[slot] ?? ""}
             readOnly={readOnly}
-            onChange={(v) => updateForm({ ...effectiveForm, photoVerdicts: { ...effectiveForm.photoVerdicts, [slot]: v } })}
+            missing={!readOnly && !effectiveForm.photoVerdicts[slot]}
+            onChange={(v) => {
+              const nextVerdicts = { ...effectiveForm.photoVerdicts, [slot]: v };
+              const nextSuspicious = deriveAnySuspicious(presentPhotos, nextVerdicts);
+              updateForm({
+                ...effectiveForm,
+                photoVerdicts: nextVerdicts,
+                ...(nextSuspicious === VERDICT_VALUES.no ? { opmdDiagnoses: [] } : {}),
+              });
+            }}
           />
         ))}
       </Stack>
@@ -225,11 +313,26 @@ export function ReviewForm({ encounterUuid }: Props) {
             <Autocomplete
               multiple
               disableCloseOnSelect
-              disabled={readOnly}
+              disabled={readOnly || anySuspicious === VERDICT_VALUES.no}
               options={OPMD_OPTIONS as unknown as string[]}
               value={effectiveForm.opmdDiagnoses}
               onChange={(_, v) => updateForm({ ...effectiveForm, opmdDiagnoses: v })}
-              renderInput={(p) => <TextField {...p} label="OPMD diagnoses" placeholder="Select all that apply" />}
+              renderInput={(p) => (
+                <TextField
+                  {...p}
+                  label="OPMD diagnoses"
+                  placeholder="Select all that apply"
+                  required={diagnosisRequired}
+                  error={opmdMissing}
+                  helperText={
+                    opmdMissing
+                      ? "Required when any image is suspicious."
+                      : anySuspicious === VERDICT_VALUES.no
+                        ? "Not applicable — no suspicious images."
+                        : ""
+                  }
+                />
+              )}
             />
 
             <TextField
@@ -237,6 +340,13 @@ export function ReviewForm({ encounterUuid }: Props) {
               label="Recommended action"
               value={effectiveForm.recommendedAction}
               disabled={readOnly}
+              required={diagnosisRequired}
+              error={actionMissing}
+              helperText={
+                actionMissing
+                  ? `Required when any image is suspicious — "${NO_ACTION}" is not allowed.`
+                  : ""
+              }
               onChange={(e) => updateForm({ ...effectiveForm, recommendedAction: e.target.value })}
             >
               <MenuItem value="">—</MenuItem>
@@ -258,6 +368,29 @@ export function ReviewForm({ encounterUuid }: Props) {
           </Stack>
         </CardContent>
       </Card>
+
+      {submitError && <Alert severity="error">{submitError}</Alert>}
+
+      {!readOnly && (
+        <Stack
+          direction="row"
+          justifyContent={{ xs: "stretch", sm: "flex-end" }}
+          sx={{ pt: 1, pb: 4 }}
+        >
+          <Button
+            variant="contained"
+            size="large"
+            disabled={submitting || !canSubmit}
+            onClick={submit}
+            sx={{
+              minWidth: { xs: "100%", sm: 160 },
+              width: { xs: "100%", sm: "auto" },
+            }}
+          >
+            {submitting ? "Submitting…" : "Complete"}
+          </Button>
+        </Stack>
+      )}
     </Stack>
   );
 }
@@ -329,6 +462,7 @@ function PhotoReviewRow({
   verdictAnswers,
   value,
   readOnly,
+  missing,
   onChange,
 }: {
   slot: PhotoSlot;
@@ -336,6 +470,7 @@ function PhotoReviewRow({
   verdictAnswers: ConceptAnswer[];
   value: string;
   readOnly: boolean;
+  missing: boolean;
   onChange: (v: string) => void;
 }) {
   const cfg = PHOTO_CONCEPTS[slot];
@@ -345,7 +480,10 @@ function PhotoReviewRow({
   const aiVerdict = readObs<string>(obs, cfg.aiVerdict);
 
   return (
-    <Card variant="outlined">
+    <Card
+      variant="outlined"
+      sx={missing ? { borderColor: "error.main" } : undefined}
+    >
       <CardContent>
         <Grid container spacing={2} alignItems="flex-start">
           <Grid size={{ xs: 12, md: 4 }}>
@@ -362,15 +500,22 @@ function PhotoReviewRow({
                   AI: {aiVerdict ?? "—"}
                 </Typography>
               </Stack>
-              <FormControl disabled={readOnly}>
-                <Typography variant="body2" sx={{ mb: 1 }}>
-                  Physician verdict
+              <FormControl disabled={readOnly} error={missing}>
+                <Typography
+                  variant="body2"
+                  sx={{ mb: 1 }}
+                  color={missing ? "error.main" : "text.primary"}
+                >
+                  Physician verdict {missing && "*"}
                 </Typography>
                 <RadioGroup row value={value} onChange={(_, v) => onChange(v)}>
                   {verdictAnswers.map((a) => (
                     <FormControlLabel key={a.uuid} value={a.name} control={<Radio />} label={a.name} />
                   ))}
                 </RadioGroup>
+                {missing && (
+                  <FormHelperText>Physician verdict is required.</FormHelperText>
+                )}
               </FormControl>
             </Stack>
           </Grid>

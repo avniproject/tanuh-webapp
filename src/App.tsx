@@ -18,7 +18,25 @@ function ListLayout({ children }: { children: React.ReactNode }) {
     <Box>
       <Tabs
         value={value}
-        sx={{ mb: 2 }}
+        variant="scrollable"
+        scrollButtons="auto"
+        allowScrollButtonsMobile
+        sx={{
+          mb: 2,
+          "& .MuiTab-root": {
+            fontWeight: 600,
+            color: "text.primary",
+            opacity: 0.85,
+            minHeight: 48,
+            fontSize: { xs: "0.85rem", sm: "0.9rem" },
+            textTransform: "none",
+          },
+          "& .MuiTab-root.Mui-selected": {
+            fontWeight: 700,
+            color: "text.primary",
+            opacity: 1,
+          },
+        }}
         onChange={(_, v) => navigate(v === "pending" ? "/pending" : "/completed")}
       >
         <Tab label="Pending Reviews" value="pending" />

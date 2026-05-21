@@ -29,6 +29,9 @@ export interface EncounterWithLocation {
   earliestScheduledDate: string | null;
   voided: boolean;
   subject: SubjectSummary;
+  // Display name (or username fallback) of the user who completed the
+  // encounter. Null until the encounter is completed.
+  reviewedBy: string | null;
 }
 
 export interface EncounterListParams {

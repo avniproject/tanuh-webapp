@@ -48,11 +48,16 @@ export async function submitEncounter(
   uuid: string | null,
   body: UpsertEncounterBody,
 ): Promise<EncounterApiResponse> {
+  // The avni-server PUT/POST handler always calls
+  // `createObservations(request.getCancelObservations())` and NPEs if the
+  // field is null. Always send an empty cancelObservations so we never hit
+  // that path — we're never cancelling here, only completing.
+  const payload = { cancelObservations: {}, ...body };
   if (uuid) {
-    const response = await http.put<EncounterApiResponse>(`/api/encounter/${uuid}`, body);
+    const response = await http.put<EncounterApiResponse>(`/api/encounter/${uuid}`, payload);
     return response.data;
   }
-  const response = await http.post<EncounterApiResponse>("/api/encounter", body);
+  const response = await http.post<EncounterApiResponse>("/api/encounter", payload);
   return response.data;
 }
 

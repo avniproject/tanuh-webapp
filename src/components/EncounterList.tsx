@@ -2,7 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Box,
   Button,
-  CircularProgress,
+  Paper,
+  Skeleton,
   Stack,
   Table,
   TableBody,
@@ -12,7 +13,11 @@ import {
   TableRow,
   TextField,
   Typography,
+  useMediaQuery,
 } from "@mui/material";
+import { useTheme } from "@mui/material/styles";
+import RateReviewIcon from "@mui/icons-material/RateReview";
+import VisibilityIcon from "@mui/icons-material/Visibility";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { format, parseISO } from "date-fns";
 import { getEncountersWithLocation, type EncounterWithLocation } from "@/api/impl";
@@ -30,10 +35,11 @@ const PLACE_OF_REFERRAL_KEY = "Place of referral";
 
 export function EncounterList({ mode }: Props) {
   const [params, setParams] = useSearchParams();
-  const locationUuid = params.get("location");
   const referralUuid = params.get("referral");
   const pageIndex = Math.max(0, parseInt(params.get("page") ?? "0", 10) || 0);
   const navigate = useNavigate();
+  const theme = useTheme();
+  const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
 
   const [from, setFrom] = useState<string>("");
   const [to, setTo] = useState<string>("");
@@ -45,7 +51,6 @@ export function EncounterList({ mode }: Props) {
       getEncountersWithLocation({
         encounterType: ENCOUNTER_TYPE.physicianReviewForm.name,
         status: mode === "pending" ? "scheduled" : "completed",
-        locationUuid,
         // Linked-observation filter: only fires when a referral facility is picked.
         linkedEncounterType: referralUuid ? ENCOUNTER_TYPE.oralScreening.name : null,
         linkedObservationConceptUuid: referralUuid ? PLACE_OF_REFERRAL_CONCEPT.uuid : null,
@@ -53,7 +58,7 @@ export function EncounterList({ mode }: Props) {
         page: pageIndex,
         size: PAGE_SIZE,
       }),
-    [mode, locationUuid, referralUuid, pageIndex],
+    [mode, referralUuid, pageIndex],
   );
 
   useEffect(() => {
@@ -110,22 +115,14 @@ export function EncounterList({ mode }: Props) {
   if (error) return <Box sx={{ p: 3, color: "error.main" }}>Failed to load: {error}</Box>;
   if (!pageData || !filtered)
     return (
-      <Box sx={{ p: 4, display: "flex", justifyContent: "center" }}>
-        <CircularProgress />
+      <Box sx={{ p: { xs: 1.5, sm: 2 } }}>
+        <Stack spacing={1.5}>
+          {[0, 1, 2, 3, 4].map((i) => (
+            <Skeleton key={i} variant="rounded" height={isMobile ? 96 : 48} />
+          ))}
+        </Stack>
       </Box>
     );
-
-  const handleLocationChange = (uuid: string | null) => {
-    setParams(
-      (sp) => {
-        if (uuid) sp.set("location", uuid);
-        else sp.delete("location");
-        sp.delete("page");
-        return sp;
-      },
-      { replace: false },
-    );
-  };
 
   const handleReferralChange = (uuid: string | null) => {
     setParams(
@@ -143,23 +140,28 @@ export function EncounterList({ mode }: Props) {
     <Box>
       <Stack
         direction="column"
-        spacing={1}
-        sx={{ p: 2, borderBottom: "1px solid #e5e7eb" }}
+        spacing={1.5}
+        sx={{ p: { xs: 1.5, sm: 2 }, borderBottom: "1px solid #e5e7eb" }}
       >
-        <Stack direction="row" alignItems="center" spacing={1}>
-          <Typography variant="caption" sx={{ minWidth: 120, color: "text.secondary" }}>
-            Patient location
-          </Typography>
-          <LocationFilter value={locationUuid} onChange={handleLocationChange} />
-        </Stack>
-        <Stack direction="row" alignItems="center" spacing={1}>
-          <Typography variant="caption" sx={{ minWidth: 120, color: "text.secondary" }}>
+        <Stack
+          direction={{ xs: "column", sm: "row" }}
+          alignItems={{ xs: "stretch", sm: "center" }}
+          spacing={{ xs: 1, sm: 2 }}
+        >
+          <Typography
+            variant="body1"
+            sx={{
+              minWidth: { xs: 0, sm: 140 },
+              fontWeight: 600,
+              color: "text.primary",
+            }}
+          >
             Referral facility
           </Typography>
           <LocationFilter value={referralUuid} onChange={handleReferralChange} />
         </Stack>
         {mode === "completed" && (
-          <Stack direction="row" spacing={1}>
+          <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap", rowGap: 1 }}>
             <TextField
               label="From"
               type="date"
@@ -167,6 +169,7 @@ export function EncounterList({ mode }: Props) {
               value={from}
               onChange={(e) => setFrom(e.target.value)}
               InputLabelProps={{ shrink: true }}
+              sx={{ flex: { xs: 1, sm: "0 1 auto" } }}
             />
             <TextField
               label="To"
@@ -175,6 +178,7 @@ export function EncounterList({ mode }: Props) {
               value={to}
               onChange={(e) => setTo(e.target.value)}
               InputLabelProps={{ shrink: true }}
+              sx={{ flex: { xs: 1, sm: "0 1 auto" } }}
             />
           </Stack>
         )}
@@ -183,20 +187,12 @@ export function EncounterList({ mode }: Props) {
       {filtered.length === 0 ? (
         <Typography color="text.secondary" sx={{ p: 4, textAlign: "center" }}>
           No {mode === "pending" ? "pending" : "completed"} reviews
-          {locationUuid ? " for the selected location." : " in your catchment."}
+          {referralUuid ? " for the selected referral facility." : " in your catchment."}
         </Typography>
       ) : (
         <>
-          <Table size="small">
-            <TableHead>
-              <TableRow>
-                <TableCell>Name</TableCell>
-                <TableCell>{mode === "pending" ? "Scheduled" : "Reviewed on"}</TableCell>
-                <TableCell>Place of referral</TableCell>
-                <TableCell />
-              </TableRow>
-            </TableHead>
-            <TableBody>
+          {isMobile ? (
+            <Stack spacing={1.5} sx={{ p: 1.5 }}>
               {filtered.map((e: EncounterWithLocation) => {
                 const displayName =
                   e.subject.displayName?.trim() ||
@@ -205,33 +201,139 @@ export function EncounterList({ mode }: Props) {
                 const date = mode === "pending" ? e.earliestScheduledDate : e.encounterDateTime;
                 const referral = referrals[e.subject.uuid];
                 return (
-                  <TableRow key={e.encounterUuid} hover>
-                    <TableCell>{displayName}</TableCell>
-                    <TableCell>{date ? format(parseISO(date), "dd MMM yyyy") : "—"}</TableCell>
-                    <TableCell>{referral || "—"}</TableCell>
-                    <TableCell align="right">
-                      <Button size="small" onClick={() => navigate(`/review/${e.encounterUuid}`)}>
-                        {mode === "pending" ? "Review" : "View"}
-                      </Button>
-                    </TableCell>
-                  </TableRow>
+                  <Paper
+                    key={e.encounterUuid}
+                    variant="outlined"
+                    onClick={() => navigate(`/review/${e.encounterUuid}`)}
+                    sx={{
+                      p: 1.5,
+                      cursor: "pointer",
+                      "&:active": { backgroundColor: "grey.100" },
+                    }}
+                  >
+                    <Stack spacing={0.5}>
+                      <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1}>
+                        <Typography
+                          variant="body1"
+                          sx={{ fontWeight: 700, color: "text.primary" }}
+                        >
+                          {displayName}
+                        </Typography>
+                        <Button
+                          size="small"
+                          startIcon={mode === "pending" ? <RateReviewIcon /> : <VisibilityIcon />}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            navigate(`/review/${e.encounterUuid}`);
+                          }}
+                          sx={{ flexShrink: 0 }}
+                        >
+                          {mode === "pending" ? "Review" : "View"}
+                        </Button>
+                      </Stack>
+                      <Typography variant="body2" sx={{ color: "text.primary" }}>
+                        <Box component="span" sx={{ color: "text.secondary", fontWeight: 500 }}>
+                          {mode === "pending" ? "Scheduled: " : "Reviewed: "}
+                        </Box>
+                        {date ? format(parseISO(date), "dd MMM yyyy") : "—"}
+                      </Typography>
+                      <Typography variant="body2" sx={{ color: "text.primary" }}>
+                        <Box component="span" sx={{ color: "text.secondary", fontWeight: 500 }}>
+                          Place of referral:{" "}
+                        </Box>
+                        {referral || "—"}
+                      </Typography>
+                      {mode === "completed" && (
+                        <Typography variant="body2" sx={{ color: "text.primary" }}>
+                          <Box component="span" sx={{ color: "text.secondary", fontWeight: 500 }}>
+                            Reviewed by:{" "}
+                          </Box>
+                          {e.reviewedBy || "—"}
+                        </Typography>
+                      )}
+                    </Stack>
+                  </Paper>
                 );
               })}
-            </TableBody>
-          </Table>
-          <TablePagination
-            component="div"
-            count={pageData.totalElements}
-            page={pageIndex}
-            rowsPerPage={PAGE_SIZE}
-            rowsPerPageOptions={[PAGE_SIZE]}
-            onPageChange={(_, next) =>
-              setParams((sp) => {
-                sp.set("page", String(next));
-                return sp;
-              })
-            }
-          />
+            </Stack>
+          ) : (
+            <Table size="small" sx={{ tableLayout: "fixed" }}>
+              <TableHead>
+                <TableRow sx={{ "& th": { fontWeight: 700, color: "text.primary", fontSize: "0.95rem", backgroundColor: "grey.100" } }}>
+                  <TableCell sx={{ width: mode === "pending" ? "30%" : "22%" }}>Name</TableCell>
+                  <TableCell sx={{ width: mode === "pending" ? "20%" : "16%" }}>
+                    {mode === "pending" ? "Scheduled" : "Reviewed on"}
+                  </TableCell>
+                  <TableCell sx={{ width: mode === "pending" ? "35%" : "26%" }}>Place of referral</TableCell>
+                  {mode === "completed" && <TableCell sx={{ width: "22%" }}>Reviewed by</TableCell>}
+                  <TableCell sx={{ width: "15%" }} aria-hidden />
+                </TableRow>
+              </TableHead>
+              <TableBody>
+                {filtered.map((e: EncounterWithLocation) => {
+                  const displayName =
+                    e.subject.displayName?.trim() ||
+                    e.subject.externalId ||
+                    e.subject.uuid.slice(0, 8);
+                  const date = mode === "pending" ? e.earliestScheduledDate : e.encounterDateTime;
+                  const referral = referrals[e.subject.uuid];
+                  return (
+                    <TableRow
+                      key={e.encounterUuid}
+                      hover
+                      onClick={() => navigate(`/review/${e.encounterUuid}`)}
+                      sx={{ cursor: "pointer" }}
+                    >
+                      <TableCell sx={{ fontWeight: 600, color: "text.primary", fontSize: "0.95rem" }}>
+                        {displayName}
+                      </TableCell>
+                      <TableCell sx={{ color: "text.primary" }}>
+                        {date ? format(parseISO(date), "dd MMM yyyy") : "—"}
+                      </TableCell>
+                      <TableCell sx={{ color: "text.primary" }}>{referral || "—"}</TableCell>
+                      {mode === "completed" && (
+                        <TableCell sx={{ color: "text.primary" }}>{e.reviewedBy || "—"}</TableCell>
+                      )}
+                      <TableCell>
+                        <Button
+                          size="small"
+                          startIcon={mode === "pending" ? <RateReviewIcon /> : <VisibilityIcon />}
+                          onClick={(event) => {
+                            event.stopPropagation();
+                            navigate(`/review/${e.encounterUuid}`);
+                          }}
+                        >
+                          {mode === "pending" ? "Review" : "View"}
+                        </Button>
+                      </TableCell>
+                    </TableRow>
+                  );
+                })}
+              </TableBody>
+            </Table>
+          )}
+          {pageData.totalElements > PAGE_SIZE && (
+            <TablePagination
+              component="div"
+              count={pageData.totalElements}
+              page={pageIndex}
+              rowsPerPage={PAGE_SIZE}
+              rowsPerPageOptions={[PAGE_SIZE]}
+              onPageChange={(_, next) =>
+                setParams((sp) => {
+                  sp.set("page", String(next));
+                  return sp;
+                })
+              }
+              sx={{
+                "& .MuiTablePagination-toolbar": {
+                  flexWrap: "wrap",
+                  gap: 0.5,
+                  px: { xs: 1, sm: 2 },
+                },
+              }}
+            />
+          )}
         </>
       )}
     </Box>

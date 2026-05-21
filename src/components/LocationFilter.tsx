@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Alert, Button, MenuItem, Skeleton, Stack, TextField } from "@mui/material";
+import { Alert, Box, Button, MenuItem, Skeleton, Stack, TextField } from "@mui/material";
 import {
   getCatchmentLocations,
   type CatchmentLocationNode,
@@ -108,7 +108,18 @@ export function LocationFilter({ value, onChange }: Props) {
   const levels = buildLevelSequence(indexed.byParent, indexed.byUuid, selectionChain);
 
   return (
-    <Stack direction="row" spacing={1} sx={{ flex: 1, flexWrap: "wrap" }}>
+    // Box + CSS gap, not Stack, so the gap applies on the cross-axis too —
+    // otherwise the floating MUI labels of wrapped dropdowns overlap the row above.
+    <Box
+      sx={{
+        flex: 1,
+        display: "flex",
+        flexWrap: "wrap",
+        alignItems: "center",
+        columnGap: 1.5,
+        rowGap: 1.5,
+      }}
+    >
       {levels.map((level, index) => {
         const selectedAtLevel = selectionChain[index] ?? "";
         const typeLabel = level.type;
@@ -127,7 +138,11 @@ export function LocationFilter({ value, onChange }: Props) {
                 onChange(next);
               }
             }}
-            sx={{ minWidth: 180 }}
+            sx={{
+              minWidth: { xs: "100%", sm: 200 },
+              maxWidth: { xs: "100%", sm: 260 },
+              flex: { xs: "1 1 100%", sm: "0 1 auto" },
+            }}
           >
             <MenuItem value="">All {typeLabel}</MenuItem>
             {level.options.map((opt) => (
@@ -143,7 +158,7 @@ export function LocationFilter({ value, onChange }: Props) {
           Clear
         </Button>
       )}
-    </Stack>
+    </Box>
   );
 }
 
