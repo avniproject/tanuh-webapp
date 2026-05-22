@@ -248,7 +248,7 @@ export function EncounterList({ mode }: Props) {
                           <Box component="span" sx={{ color: "text.secondary", fontWeight: 500 }}>
                             Reviewed by:{" "}
                           </Box>
-                          {e.reviewedBy || "—"}
+                          {e.lastModifiedBy || "—"}
                         </Typography>
                       )}
                     </Stack>
@@ -292,7 +292,7 @@ export function EncounterList({ mode }: Props) {
                       </TableCell>
                       <TableCell sx={{ color: "text.primary" }}>{referral || "—"}</TableCell>
                       {mode === "completed" && (
-                        <TableCell sx={{ color: "text.primary" }}>{e.reviewedBy || "—"}</TableCell>
+                        <TableCell sx={{ color: "text.primary" }}>{e.lastModifiedBy || "—"}</TableCell>
                       )}
                       <TableCell>
                         <Button

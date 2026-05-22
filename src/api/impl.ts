@@ -31,7 +31,7 @@ export interface EncounterWithLocation {
   subject: SubjectSummary;
   // Display name (or username fallback) of the user who completed the
   // encounter. Null until the encounter is completed.
-  reviewedBy: string | null;
+  lastModifiedBy: string | null;
 }
 
 export interface EncounterListParams {
