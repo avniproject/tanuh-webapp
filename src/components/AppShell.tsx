@@ -33,7 +33,7 @@ export function AppShell() {
               component="img"
               src={tanuhLogo}
               alt="Tanuh"
-              sx={{ height: { xs: 32, sm: 40 }, width: "auto", flexShrink: 0 }}
+              sx={{ height: { xs: 44, sm: 56 }, width: "auto", flexShrink: 0 }}
             />
             <Typography
               variant="h5"
