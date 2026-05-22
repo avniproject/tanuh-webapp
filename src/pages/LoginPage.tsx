@@ -1,6 +1,6 @@
 import { useState, type FormEvent, type ReactNode } from "react";
 import { Alert, Box, Button, Card, CardContent, Link, Stack, TextField, Typography } from "@mui/material";
-import tanuhLogo from "@/assets/logo.avif";
+import tanuhLogo from "@/assets/logo.png";
 import { useAuth } from "@/auth/authContext";
 
 type View = "SIGN_IN" | "FORGOT_PASSWORD" | "CONFIRM_RESET";
@@ -23,9 +23,10 @@ export function LoginPage() {
 
   return (
     <CenteredCard>
-      <Typography variant="h6" align="center" sx={{ mb: 3 }}>
-        Physician Review
-      </Typography>
+      <Stack spacing={2} alignItems="center" sx={{ mb: 3 }}>
+        <Box component="img" src={tanuhLogo} alt="Tanuh" sx={{ height: 58 }} />
+        <Typography variant="h6">Physician Review</Typography>
+      </Stack>
 
       {view === "SIGN_IN" && (
         <SignInView
@@ -263,15 +264,11 @@ function CenteredCard({ children }: { children: ReactNode }) {
       sx={{
         minHeight: "100vh",
         display: "flex",
-        flexDirection: "column",
         alignItems: "center",
         justifyContent: "center",
-        gap: 3,
-        p: 2,
-        bgcolor: "#0A3D3F",
+        bgcolor: "background.default",
       }}
     >
-      <Box component="img" src={tanuhLogo} alt="Tanuh" sx={{ height: 56, width: "auto" }} />
       <Card variant="outlined" sx={{ width: 400, maxWidth: "92vw" }}>
         <CardContent sx={{ p: 4 }}>{children}</CardContent>
       </Card>
