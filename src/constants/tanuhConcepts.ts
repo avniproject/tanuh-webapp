@@ -161,6 +161,27 @@ export const REVIEW_CONCEPTS = {
   reviewTimestamp: { name: "Review timestamp", uuid: "cf73c280-7505-5263-958c-81acb3b7a943" },
 } as const;
 
+// The Oral Screening encounter now captures images via a *repeatable* QuestionGroup:
+// each repeat is one photo serialized (by the avni-server external API) as an object
+// keyed by child-concept name — `{ "Oral Image": <media-url>, "AI verdict": <answer> }`.
+// The whole group is an array under ORAL_IMAGE_GROUP.name. This replaces the legacy
+// flat `Photo N (image)` keys (still read as a fallback for older encounters).
+export const ORAL_IMAGE_GROUP = {
+  name: "Take photos of all lesions and 1 photo without lesion",
+  uuid: "f35da603-8499-4478-bc1e-be37d45fe5d1",
+} as const;
+
+export const ORAL_IMAGE_GROUP_CHILD = {
+  image: { name: "Oral Image", uuid: "f18c5264-3459-4233-87b4-4f9cb3c3ef49" },
+  aiVerdict: { name: "AI verdict", uuid: "057419d6-18f0-434e-993b-53e2ca76945d" },
+} as const;
+
+// Group-level (not per-image) question on the new Oral Screening capture flow.
+export const ANY_SUSPICIOUS_LESION_CONCEPT = {
+  name: "Any Suspicious Lesion?",
+  uuid: "51192767-e702-4122-84e6-768c1cfbc001",
+} as const;
+
 // "Place of referral" is a Location-typed concept on the Oral Screening encounter.
 // The observation value is an AddressLevel uuid pointing into the facility branch
 // (District Hospital → CHC → PHC → Sub-center). Used by the Pending list to

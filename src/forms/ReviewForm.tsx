@@ -26,8 +26,11 @@ import { getSubject } from "@/api/subjects";
 import { getConcept, type ConceptAnswer } from "@/api/concepts";
 import type { EncounterApiResponse, SubjectApiResponse } from "@/api/types";
 import {
+  ANY_SUSPICIOUS_LESION_CONCEPT,
   ENCOUNTER_TYPE,
   HABIT_CONCEPTS,
+  ORAL_IMAGE_GROUP,
+  ORAL_IMAGE_GROUP_CHILD,
   PHOTO_CONCEPTS,
   PHOTO_SLOTS,
   REVIEW_CONCEPTS,
@@ -66,6 +69,50 @@ const emptyForm: FormState = {
   recommendedAction: "",
   notes: "",
 };
+
+// A single reviewable photo, normalised across the two Oral Screening capture
+// models. `slot` is the 1..8 position used to store the physician verdict as the
+// existing `Photo N — Physician verdict` concept.
+interface ReviewPhoto {
+  slot: PhotoSlot;
+  imageUrl: string;
+  aiVerdict?: string;
+}
+
+// New encounters store images in a repeatable QuestionGroup (an array of
+// `{ "Oral Image", "AI verdict" }`); older ones use flat `Photo N (image)` keys.
+// Read the group first and map its entries to slots 1..N in order; fall back to
+// the legacy flat layout. Capped at PHOTO_SLOTS.length since verdict storage has
+// only Photo 1..8 concepts.
+function collectPhotos(obs: Record<string, unknown>): ReviewPhoto[] {
+  const photos: ReviewPhoto[] = [];
+  const group = obs[ORAL_IMAGE_GROUP.name];
+  if (Array.isArray(group)) {
+    for (const entry of group) {
+      if (photos.length >= PHOTO_SLOTS.length) break;
+      if (!entry || typeof entry !== "object") continue;
+      const record = entry as Record<string, unknown>;
+      const imageUrl = readObs<string>(record, ORAL_IMAGE_GROUP_CHILD.image);
+      if (!imageUrl) continue;
+      photos.push({
+        slot: PHOTO_SLOTS[photos.length],
+        imageUrl,
+        aiVerdict: readObs<string>(record, ORAL_IMAGE_GROUP_CHILD.aiVerdict),
+      });
+    }
+    return photos;
+  }
+  for (const slot of PHOTO_SLOTS) {
+    const imageUrl = readObs<string>(obs, PHOTO_CONCEPTS[slot].image);
+    if (!imageUrl) continue;
+    photos.push({
+      slot,
+      imageUrl,
+      aiVerdict: readObs<string>(obs, PHOTO_CONCEPTS[slot].aiVerdict),
+    });
+  }
+  return photos;
+}
 
 function deriveAnySuspicious(
   presentPhotos: PhotoSlot[],
@@ -132,13 +179,11 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
 
   const effectiveForm = form ?? (loaded && isCompleted(loaded.review) ? prefillFromCompleted(loaded.review) : emptyForm);
 
-  const presentPhotos = useMemo<PhotoSlot[]>(() => {
-    if (!loaded) return [];
-    return PHOTO_SLOTS.filter((slot) => {
-      const obs = loaded.screening.observations as Record<string, unknown>;
-      return Boolean(readObs<string>(obs, PHOTO_CONCEPTS[slot].image));
-    });
-  }, [loaded]);
+  const photos = useMemo<ReviewPhoto[]>(
+    () => (loaded ? collectPhotos(loaded.screening.observations as Record<string, unknown>) : []),
+    [loaded],
+  );
+  const presentPhotos = useMemo<PhotoSlot[]>(() => photos.map((p) => p.slot), [photos]);
 
   if (loadError) return <Alert severity="error">{loadError}</Alert>;
   if (!loaded)
@@ -271,17 +316,16 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
         {presentPhotos.length === 0 && (
           <Alert severity="info">No images recorded on the linked Oral Screening encounter.</Alert>
         )}
-        {presentPhotos.map((slot) => (
+        {photos.map((photo) => (
           <PhotoReviewRow
-            key={slot}
-            slot={slot}
-            screening={loaded.screening}
+            key={photo.slot}
+            photo={photo}
             verdictAnswers={loaded.physicianVerdictAnswers}
-            value={effectiveForm.photoVerdicts[slot] ?? ""}
+            value={effectiveForm.photoVerdicts[photo.slot] ?? ""}
             readOnly={readOnly}
-            missing={!readOnly && !effectiveForm.photoVerdicts[slot]}
+            missing={!readOnly && !effectiveForm.photoVerdicts[photo.slot]}
             onChange={(v) => {
-              const nextVerdicts = { ...effectiveForm.photoVerdicts, [slot]: v };
+              const nextVerdicts = { ...effectiveForm.photoVerdicts, [photo.slot]: v };
               const nextSuspicious = deriveAnySuspicious(presentPhotos, nextVerdicts);
               updateForm({
                 ...effectiveForm,
@@ -446,6 +490,7 @@ function HabitHistoryCard({ screening }: { screening: EncounterApiResponse }) {
         <DetailRow label="Areca nut" value={obs[HABIT_CONCEPTS.arecaNut.name] ?? "—"} />
         <DetailRow label="Alcohol" value={obs[HABIT_CONCEPTS.alcohol.name] ?? "—"} />
         <DetailRow label="Frequency of alcohol" value={obs[HABIT_CONCEPTS.alcoholFrequency.name] ?? "—"} />
+        <DetailRow label="Health Worker verdict (Any suspicious lesion?)" value={obs[ANY_SUSPICIOUS_LESION_CONCEPT.name] ?? "—"} />
       </CardContent>
     </Card>
   );
@@ -461,27 +506,21 @@ function DetailRow({ label, value }: { label: string; value: string }) {
 }
 
 function PhotoReviewRow({
-  slot,
-  screening,
+  photo,
   verdictAnswers,
   value,
   readOnly,
   missing,
   onChange,
 }: {
-  slot: PhotoSlot;
-  screening: EncounterApiResponse;
+  photo: ReviewPhoto;
   verdictAnswers: ConceptAnswer[];
   value: string;
   readOnly: boolean;
   missing: boolean;
   onChange: (v: string) => void;
 }) {
-  const cfg = PHOTO_CONCEPTS[slot];
-  const obs = screening.observations as Record<string, unknown>;
-  const url = readObs<string>(obs, cfg.image);
-  const healthWorkerVerdict = readObs<string>(obs, cfg.healthWorkerVerdict);
-  const aiVerdict = readObs<string>(obs, cfg.aiVerdict);
+  const { slot, imageUrl: url, aiVerdict } = photo;
 
   return (
     <Card
@@ -496,14 +535,9 @@ function PhotoReviewRow({
           <Grid size={{ xs: 12, md: 8 }}>
             <Stack spacing={1}>
               <Typography variant="subtitle1">Photo {slot}</Typography>
-              <Stack direction="row" spacing={3}>
-                <Typography variant="caption" color="text.secondary">
-                  Health Worker: {healthWorkerVerdict ?? "—"}
-                </Typography>
-                <Typography variant="caption" color="text.secondary">
-                  AI: {aiVerdict ?? "—"}
-                </Typography>
-              </Stack>
+              <Typography variant="caption" color="text.secondary">
+                AI: {aiVerdict ?? "—"}
+              </Typography>
               <FormControl disabled={readOnly} error={missing}>
                 <Typography
                   variant="body2"
