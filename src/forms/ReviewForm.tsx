@@ -31,6 +31,7 @@ import {
   ANY_SUSPICIOUS_LESION_CONCEPT,
   ENCOUNTER_TYPE,
   HABIT_CONCEPTS,
+  isLegacyOralScreening,
   ORAL_IMAGE_GROUP,
   ORAL_IMAGE_GROUP_CHILD,
   PHOTO_CONCEPTS,
@@ -207,7 +208,11 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
       </Box>
     );
 
-  const readOnly = isCompleted(loaded.review);
+  // Legacy flat-layout screenings are not supported for review: render their data
+  // but disable all inputs and the Complete button (same plumbing as completed).
+  const isLegacy = isLegacyOralScreening(loaded.screening.observations as Record<string, unknown>);
+  const completed = isCompleted(loaded.review);
+  const readOnly = completed || isLegacy;
   const anySuspicious = deriveAnySuspicious(presentPhotos, effectiveForm.photoVerdicts);
   const updateForm = (next: FormState) => setForm(next);
 
@@ -220,7 +225,7 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
   const canSubmit = missingPhotoVerdicts.length === 0 && !opmdMissing && !actionMissing;
 
   const submit = async () => {
-    if (!canSubmit) return;
+    if (readOnly || !canSubmit) return;
     setSubmitting(true);
     setSubmitError(null);
     try {
@@ -296,7 +301,14 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
         <Box sx={{ flexGrow: 1 }} />
       </Stack>
 
-      {readOnly && (
+      {isLegacy && (
+        <Alert severity="warning">
+          This screening was captured on an older form version and is not supported for review.
+          Showing the recorded data in read-only mode.
+        </Alert>
+      )}
+
+      {completed && (
         <Alert
           icon={<LockOutlinedIcon fontSize="small" />}
           severity="info"

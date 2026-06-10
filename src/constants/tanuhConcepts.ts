@@ -192,17 +192,25 @@ export const AI_VERDICT_GROUP = {
 } as const;
 
 export const AI_VERDICT_GROUP_CHILD = {
-  // Primary child concept, populated by on-device edge-model inference with
-  // "Suspicious" / "Non-Suspicious". Live UAT data entered manually (no
-  // inference) has instead been seen under a "yes/no" child with "Yes" / "No"
-  // values, so read that as a fallback. NOTE: the meaning of Yes/No vs
-  // Suspicious is unconfirmed — values are shown verbatim, not remapped.
-  verdict: {
-    name: "AI Verdict",
-    uuid: "d2d5ea23-3031-4bae-9f4a-bb04d5be3286",
-    legacyNames: ["yes/no"],
-  },
+  // Canonical verdict child, populated by on-device edge-model inference with
+  // "Suspicious" / "Non-Suspicious". Encounters where inference never ran and a
+  // stray "yes/no" child was filled instead are junk test data being voided in
+  // the org, so they are deliberately not read here.
+  verdict: { name: "AI Verdict", uuid: "d2d5ea23-3031-4bae-9f4a-bb04d5be3286" },
 } as const;
+
+// True when an Oral Screening uses the legacy flat photo layout (`Photo N (image)`
+// keys) instead of the current repeatable QuestionGroup. Such encounters are not
+// supported for review and are shown read-only with a warning. New repeatable
+// encounters return false. Encounters with neither layout (no photos) also return
+// false — no warning, the empty-state path handles them.
+export function isLegacyOralScreening(obs: Record<string, unknown>): boolean {
+  if (Array.isArray(obs[ORAL_IMAGE_GROUP.name])) return false; // current repeatable config
+  return PHOTO_SLOTS.some((slot) => {
+    const v = obs[PHOTO_CONCEPTS[slot].image.name];
+    return typeof v === "string" && v !== "";
+  });
+}
 
 // Group-level (not per-image) question on the new Oral Screening capture flow.
 export const ANY_SUSPICIOUS_LESION_CONCEPT = {
