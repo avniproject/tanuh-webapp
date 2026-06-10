@@ -26,6 +26,8 @@ import { getSubject } from "@/api/subjects";
 import { getConcept, type ConceptAnswer } from "@/api/concepts";
 import type { EncounterApiResponse, SubjectApiResponse } from "@/api/types";
 import {
+  AI_VERDICT_GROUP,
+  AI_VERDICT_GROUP_CHILD,
   ANY_SUSPICIOUS_LESION_CONCEPT,
   ENCOUNTER_TYPE,
   HABIT_CONCEPTS,
@@ -80,24 +82,36 @@ interface ReviewPhoto {
 }
 
 // New encounters store images in a repeatable QuestionGroup (an array of
-// `{ "Oral Image", "AI verdict" }`); older ones use flat `Photo N (image)` keys.
-// Read the group first and map its entries to slots 1..N in order; fall back to
-// the legacy flat layout. Capped at PHOTO_SLOTS.length since verdict storage has
-// only Photo 1..8 concepts.
+// `{ "Oral Image" }`) and the AI verdicts in a *parallel* repeatable group
+// (`AI_VERDICT_GROUP`, an array of `{ "AI Verdict" }`) aligned by row index.
+// Older encounters kept the verdict inside the image row, or used flat
+// `Photo N (image)` keys. Read the image group first and map its entries to
+// slots 1..N in order, pulling each verdict from the parallel array by its
+// original group index (so alignment survives skipped rows); fall back to the
+// in-row verdict, then to the legacy flat layout. Capped at PHOTO_SLOTS.length
+// since verdict storage has only Photo 1..8 concepts.
 function collectPhotos(obs: Record<string, unknown>): ReviewPhoto[] {
   const photos: ReviewPhoto[] = [];
   const group = obs[ORAL_IMAGE_GROUP.name];
   if (Array.isArray(group)) {
-    for (const entry of group) {
+    const aiGroup = obs[AI_VERDICT_GROUP.name];
+    const aiRows = Array.isArray(aiGroup) ? aiGroup : [];
+    for (let i = 0; i < group.length; i++) {
       if (photos.length >= PHOTO_SLOTS.length) break;
+      const entry = group[i];
       if (!entry || typeof entry !== "object") continue;
       const record = entry as Record<string, unknown>;
       const imageUrl = readObs<string>(record, ORAL_IMAGE_GROUP_CHILD.image);
       if (!imageUrl) continue;
+      const aiRow = aiRows[i];
+      const aiVerdict =
+        (aiRow && typeof aiRow === "object"
+          ? readObs<string>(aiRow as Record<string, unknown>, AI_VERDICT_GROUP_CHILD.verdict)
+          : undefined) ?? readObs<string>(record, ORAL_IMAGE_GROUP_CHILD.aiVerdict);
       photos.push({
         slot: PHOTO_SLOTS[photos.length],
         imageUrl,
-        aiVerdict: readObs<string>(record, ORAL_IMAGE_GROUP_CHILD.aiVerdict),
+        aiVerdict,
       });
     }
     return photos;

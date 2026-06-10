@@ -34,7 +34,7 @@ export const HABIT_CONCEPTS = {
 export const PHOTO_SLOTS = [1, 2, 3, 4, 5, 6, 7, 8] as const;
 export type PhotoSlot = (typeof PHOTO_SLOTS)[number];
 
-export type ConceptRef = { name: string; uuid: string; legacyNames?: string[] };
+export type ConceptRef = { name: string; uuid: string; legacyNames?: readonly string[] };
 
 type PhotoConceptTriple = {
   image: ConceptRef;
@@ -173,7 +173,35 @@ export const ORAL_IMAGE_GROUP = {
 
 export const ORAL_IMAGE_GROUP_CHILD = {
   image: { name: "Oral Image", uuid: "f18c5264-3459-4233-87b4-4f9cb3c3ef49" },
+  // Legacy: the AI verdict used to live inside each image row. That child
+  // concept is now voided on the Oral Screening form — verdicts moved to the
+  // parallel AI_VERDICT_GROUP below. Retained only as a fallback for encounters
+  // captured before the split.
   aiVerdict: { name: "AI verdict", uuid: "057419d6-18f0-434e-993b-53e2ca76945d" },
+} as const;
+
+// AI verdicts are now written into their OWN repeatable QuestionGroup by the
+// on-device edge-model inference (scheduleImageInferenceIntoGroup), serialized
+// under the group concept name as an array of `{ "AI Verdict": <answer> }`,
+// one row per image, aligned by index to ORAL_IMAGE_GROUP. Note the group
+// concept name is upper-case ("AI VERDICT") while the child verdict concept is
+// title-case ("AI Verdict"); answers are "Suspicious" / "Non-Suspicious".
+export const AI_VERDICT_GROUP = {
+  name: "AI VERDICT",
+  uuid: "c98378f6-e167-4baf-8804-e04aa2cb6b8e",
+} as const;
+
+export const AI_VERDICT_GROUP_CHILD = {
+  // Primary child concept, populated by on-device edge-model inference with
+  // "Suspicious" / "Non-Suspicious". Live UAT data entered manually (no
+  // inference) has instead been seen under a "yes/no" child with "Yes" / "No"
+  // values, so read that as a fallback. NOTE: the meaning of Yes/No vs
+  // Suspicious is unconfirmed — values are shown verbatim, not remapped.
+  verdict: {
+    name: "AI Verdict",
+    uuid: "d2d5ea23-3031-4bae-9f4a-bb04d5be3286",
+    legacyNames: ["yes/no"],
+  },
 } as const;
 
 // Group-level (not per-image) question on the new Oral Screening capture flow.
