@@ -40,7 +40,7 @@ function ListLayout({ children }: { children: React.ReactNode }) {
         onChange={(_, v) => navigate(v === "pending" ? "/pending" : "/completed")}
       >
         <Tab label="Pending Reviews" value="pending" />
-        <Tab label="Previously Completed Reviews" value="completed" />
+        <Tab label="Completed Reviews" value="completed" />
       </Tabs>
       {children}
     </Box>
