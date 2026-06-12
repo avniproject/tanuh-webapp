@@ -15,6 +15,14 @@ export const ENCOUNTER_TYPE = {
     name: "Physician Review Form",
     uuid: "714c98f6-3899-4cdc-8036-b683842b8991",
   },
+  // Requirements 2.0 Case Updates: when a review resolves to High Risk, the
+  // webapp schedules this visit for the screening worker (it appears on
+  // mobile in a visit list named after this encounter type). Deployed by
+  // ~/Desktop/Avni/tools/build_high_risk_followup_bundle.py.
+  highRiskFollowUp: {
+    name: "High Risk Follow-up",
+    uuid: "805a9993-627e-5c65-bd18-6913a0936a65",
+  },
 } as const;
 
 export const FORM = {
@@ -138,21 +146,33 @@ export function readObs<T = unknown>(observations: Record<string, unknown>, ref:
   return undefined;
 }
 
-// Answer-concept names used to compute the "Any image suspicious?" field.
-// Must match the answer names in the Tanuh_UAT bundle.
+// Answer-concept names for the photo Physician verdict and the computed
+// "Suspicious / Non-suspicious" classification. Both use these exact answers in
+// the Tanuh UAT bundle (note the hyphen + capital S in "Non-Suspicious").
 export const VERDICT_VALUES = {
   suspicious: "Suspicious",
-  yes: "Yes",
-  no: "No",
+  nonSuspicious: "Non-Suspicious",
 } as const;
 
 export const REVIEW_CONCEPTS = {
-  anyImageSuspicious: { name: "Any image suspicious?", uuid: "51bac160-7519-5785-ac8e-d0ca709d9f6e" },
+  // Requirements 2.0: this concept was renamed in the bundle from
+  // "Any image suspicious?" (UUID unchanged); answers are now
+  // Suspicious / Non-Suspicious (was Yes/No). legacyNames lets prefill read
+  // pre-2.0 completed reviews that stored the old name.
+  classification: {
+    name: "Suspicious / Non-suspicious",
+    uuid: "51bac160-7519-5785-ac8e-d0ca709d9f6e",
+    legacyNames: ["Any image suspicious?"],
+  },
+  // 2.0 tele-specialist diagnosis (single-select) + dependent sub-type + the
+  // auto-derived risk band. Recommended action is also auto-derived (mapping).
+  provisionalDiagnosis: { name: "Provisional diagnosis", uuid: "ba5490a4-dd03-430d-9ed6-b6435941fbcf" },
+  provisionalSubType: { name: "Provisional diagnosis sub-type", uuid: "a2dd1cb8-7786-4975-a746-3b8c09ec5f64" },
+  highLowRisk: { name: "High-risk / Low-risk", uuid: "4db6e2a7-2ca8-542f-859e-16458c02efca" },
+  // Deprecated: the OPMD multi-select was voided on the form in 2.0 and replaced
+  // by Provisional diagnosis. Retained only so pre-2.0 completed reviews parse.
   opmdDiagnoses: { name: "OPMD diagnoses", uuid: "fe8f2ce1-9389-5b9c-871e-87fbc36303d5" },
   recommendedAction: { name: "Recommended action", uuid: "10105f46-0a2c-594e-aeca-651c0b84606c" },
-  // Staging still has the pre-rename name. Swap once the ASHA→Health Worker
-  // rename lands on this concept too (the Photo verdict concepts already use
-  // the new name; see PHOTO_CONCEPTS legacyNames).
   notes: {
     name: "Notes for ASHA / patient",
     uuid: "f4f82263-c4e8-5e3e-8011-bd5495bccc2d",
@@ -197,6 +217,21 @@ export const AI_VERDICT_GROUP_CHILD = {
   // stray "yes/no" child was filled instead are junk test data being voided in
   // the org, so they are deliberately not read here.
   verdict: { name: "AI Verdict", uuid: "d2d5ea23-3031-4bae-9f4a-bb04d5be3286" },
+} as const;
+
+// Requirements 2.0: the Physician Review Form stores per-photo verdicts in its
+// OWN repeatable QuestionGroup ("Images"), replacing the flat per-slot
+// `Photo N — Physician verdict` concepts (their form elements are now voided).
+// Written as an array of `{ "Physician verdict": "Suspicious" | "Non-Suspicious" }`,
+// one row per reviewed photo, index-aligned to the screening photos shown.
+export const REVIEW_IMAGE_GROUP = {
+  name: "Images",
+  uuid: "483cc24f-7781-4f4a-a257-f7fa842a5371",
+} as const;
+
+export const REVIEW_IMAGE_GROUP_CHILD = {
+  image: { name: "Oral Image", uuid: "f18c5264-3459-4233-87b4-4f9cb3c3ef49" },
+  physicianVerdict: { name: "Physician verdict", uuid: "115099a3-af32-41b2-86f8-a707a648a0ec" },
 } as const;
 
 // True when an Oral Screening uses the legacy flat photo layout (`Photo N (image)`

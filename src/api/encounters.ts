@@ -61,6 +61,26 @@ export async function submitEncounter(
   return response.data;
 }
 
+export interface ScheduleEncounterBody {
+  "Encounter type": string;
+  "Subject ID": string;
+  "Earliest scheduled date": string;
+  "Max scheduled date": string;
+}
+
+/**
+ * Creates a *scheduled* (not yet performed) visit: POST /api/encounter with
+ * scheduled dates and no "Encounter date time". Workers in the subject's
+ * catchment see it on mobile as a due visit under the encounter type's list
+ * and complete it there.
+ */
+export async function scheduleEncounter(body: ScheduleEncounterBody): Promise<EncounterApiResponse> {
+  // observations/cancelObservations must be present (server NPEs on null).
+  const payload = { observations: {}, cancelObservations: {}, ...body };
+  const response = await http.post<EncounterApiResponse>("/api/encounter", payload);
+  return response.data;
+}
+
 /**
  * A scheduled visit in Avni: has an earliest visit time, but encounter has
  * not been completed and was not cancelled.

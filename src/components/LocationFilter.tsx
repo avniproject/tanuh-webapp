@@ -9,6 +9,13 @@ import {
 interface Props {
   value: string | null;
   onChange: (uuid: string | null) => void;
+  // When set, only nodes of these location TYPES are offered. The org has ONE
+  // tree rooted at State with two branches under it (District→Taluka→Village
+  // and District Hospital→CHC→PHC→Sub-center), so each filter passes its
+  // branch's type list; kept nodes whose parent is filtered out (e.g. District
+  // Hospital under State) are re-parented to the nearest kept ancestor and
+  // become roots. Omit to show the full tree.
+  types?: readonly string[];
 }
 
 interface LoadState {
@@ -16,7 +23,7 @@ interface LoadState {
   error: string | null;
 }
 
-export function LocationFilter({ value, onChange }: Props) {
+export function LocationFilter({ value, onChange, types }: Props) {
   const [state, setState] = useState<LoadState>({ tree: null, error: null });
   const [reloadKey, setReloadKey] = useState(0);
 
@@ -39,9 +46,26 @@ export function LocationFilter({ value, onChange }: Props) {
 
   const indexed = useMemo(() => {
     if (!state.tree) return null;
+    let nodes = state.tree.nodes;
+    if (types && types.length > 0) {
+      const allowed = new Set(types);
+      const byUuidAll = new Map(state.tree.nodes.map((n) => [n.uuid, n]));
+      nodes = state.tree.nodes
+        .filter((n) => allowed.has(n.type))
+        .map((n) => {
+          // Re-parent to the nearest kept ancestor; with none, the node
+          // becomes a root of this filter's tree.
+          let p = n.parentUuid ? byUuidAll.get(n.parentUuid) : undefined;
+          while (p && !allowed.has(p.type)) {
+            p = p.parentUuid ? byUuidAll.get(p.parentUuid) : undefined;
+          }
+          const newParent = p?.uuid ?? null;
+          return newParent === (n.parentUuid ?? null) ? n : { ...n, parentUuid: newParent };
+        });
+    }
     const byUuid = new Map<string, CatchmentLocationNode>();
     const byParent = new Map<string | null, CatchmentLocationNode[]>();
-    for (const n of state.tree.nodes) {
+    for (const n of nodes) {
       byUuid.set(n.uuid, n);
       const key = n.parentUuid ?? null;
       const list = byParent.get(key) ?? [];
@@ -53,7 +77,7 @@ export function LocationFilter({ value, onChange }: Props) {
       list.sort((a, b) => a.name.localeCompare(b.name));
     }
     return { byUuid, byParent };
-  }, [state.tree]);
+  }, [state.tree, types]);
 
   // Build the chain from root → deepest-selected by walking parents from `value`.
   // If value is null, the chain is empty.

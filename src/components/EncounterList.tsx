@@ -33,9 +33,21 @@ interface Props {
 const PAGE_SIZE = 50;
 const PLACE_OF_REFERRAL_KEY = "Place of referral";
 
+// The two location hierarchies in the Tanuh org (addressLevelTypes.json).
+// Used to split the catchment tree into the patient-location filter (admin
+// chain) and the referral-facility filter.
+const ADMIN_LOCATION_TYPES = ["State", "District", "Taluka", "Village"] as const;
+const FACILITY_LOCATION_TYPES = [
+  "District Hospital",
+  "Community Health Center (CHC)",
+  "Primary Health Center (PHC)",
+  "Sub-center (HWC)",
+] as const;
+
 export function EncounterList({ mode }: Props) {
   const [params, setParams] = useSearchParams();
   const referralUuid = params.get("referral");
+  const patientLocationUuid = params.get("loc");
   const pageIndex = Math.max(0, parseInt(params.get("page") ?? "0", 10) || 0);
   const navigate = useNavigate();
   const theme = useTheme();
@@ -43,6 +55,9 @@ export function EncounterList({ mode }: Props) {
 
   const [from, setFrom] = useState<string>("");
   const [to, setTo] = useState<string>("");
+  // Requirements 2.0: search a patient by name (or external id). Applied
+  // client-side to the loaded page.
+  const [nameQuery, setNameQuery] = useState<string>("");
   // Map of subjectUuid -> Place of referral pulled from the latest Oral Screening
   const [referrals, setReferrals] = useState<Record<string, string>>({});
 
@@ -51,6 +66,9 @@ export function EncounterList({ mode }: Props) {
       getEncountersWithLocation({
         encounterType: ENCOUNTER_TYPE.physicianReviewForm.name,
         status: mode === "pending" ? "scheduled" : "completed",
+        // Requirements 2.0: filter by the patient's location subtree
+        // (State → District → Taluka → Village).
+        locationUuid: patientLocationUuid,
         // Linked-observation filter: only fires when a referral facility is picked.
         linkedEncounterType: referralUuid ? ENCOUNTER_TYPE.oralScreening.name : null,
         linkedObservationConceptUuid: referralUuid ? PLACE_OF_REFERRAL_CONCEPT.uuid : null,
@@ -58,7 +76,7 @@ export function EncounterList({ mode }: Props) {
         page: pageIndex,
         size: PAGE_SIZE,
       }),
-    [mode, referralUuid, pageIndex],
+    [mode, referralUuid, patientLocationUuid, pageIndex],
   );
 
   useEffect(() => {
@@ -99,18 +117,27 @@ export function EncounterList({ mode }: Props) {
 
   const filtered = useMemo(() => {
     if (!pageData) return null;
-    if (mode !== "completed") return pageData.content;
+    let rows = pageData.content;
+    const q = nameQuery.trim().toLowerCase();
+    if (q) {
+      rows = rows.filter((e) => {
+        const name = e.subject.displayName?.toLowerCase() ?? "";
+        const extId = e.subject.externalId?.toLowerCase() ?? "";
+        return name.includes(q) || extId.includes(q);
+      });
+    }
+    if (mode !== "completed") return rows;
     const fromDate = from ? parseISO(from) : null;
     const toDate = to ? parseISO(to) : null;
-    if (!fromDate && !toDate) return pageData.content;
-    return pageData.content.filter((e) => {
+    if (!fromDate && !toDate) return rows;
+    return rows.filter((e) => {
       if (!e.encounterDateTime) return false;
       const d = parseISO(e.encounterDateTime);
       if (fromDate && d < fromDate) return false;
       if (toDate && d > toDate) return false;
       return true;
     });
-  }, [pageData, mode, from, to]);
+  }, [pageData, mode, from, to, nameQuery]);
 
   if (error) return <Box sx={{ p: 3, color: "error.main" }}>Failed to load: {error}</Box>;
   if (!pageData || !filtered)
@@ -136,6 +163,18 @@ export function EncounterList({ mode }: Props) {
     );
   };
 
+  const handlePatientLocationChange = (uuid: string | null) => {
+    setParams(
+      (sp) => {
+        if (uuid) sp.set("loc", uuid);
+        else sp.delete("loc");
+        sp.delete("page");
+        return sp;
+      },
+      { replace: false },
+    );
+  };
+
   return (
     <Box>
       <Stack
@@ -143,6 +182,34 @@ export function EncounterList({ mode }: Props) {
         spacing={1.5}
         sx={{ p: { xs: 1.5, sm: 2 }, borderBottom: "1px solid #e5e7eb" }}
       >
+        <TextField
+          label="Search patient by name"
+          size="small"
+          value={nameQuery}
+          onChange={(e) => setNameQuery(e.target.value)}
+          sx={{ maxWidth: { sm: 360 } }}
+        />
+        <Stack
+          direction={{ xs: "column", sm: "row" }}
+          alignItems={{ xs: "stretch", sm: "center" }}
+          spacing={{ xs: 1, sm: 2 }}
+        >
+          <Typography
+            variant="body1"
+            sx={{
+              minWidth: { xs: 0, sm: 140 },
+              fontWeight: 600,
+              color: "text.primary",
+            }}
+          >
+            Patient location
+          </Typography>
+          <LocationFilter
+            value={patientLocationUuid}
+            onChange={handlePatientLocationChange}
+            types={ADMIN_LOCATION_TYPES}
+          />
+        </Stack>
         <Stack
           direction={{ xs: "column", sm: "row" }}
           alignItems={{ xs: "stretch", sm: "center" }}
@@ -158,7 +225,11 @@ export function EncounterList({ mode }: Props) {
           >
             Referral facility
           </Typography>
-          <LocationFilter value={referralUuid} onChange={handleReferralChange} />
+          <LocationFilter
+            value={referralUuid}
+            onChange={handleReferralChange}
+            types={FACILITY_LOCATION_TYPES}
+          />
         </Stack>
         {mode === "completed" && (
           <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap", rowGap: 1 }}>

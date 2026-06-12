@@ -1,7 +1,6 @@
 import { useEffect, useMemo, useState } from "react";
 import {
   Alert,
-  Autocomplete,
   Box,
   Button,
   Card,
@@ -19,16 +18,20 @@ import {
   Typography,
 } from "@mui/material";
 import LockOutlinedIcon from "@mui/icons-material/LockOutlined";
-import { differenceInYears, format, parseISO } from "date-fns";
+import { addDays, differenceInYears, format, parseISO } from "date-fns";
 import { useNavigate } from "react-router-dom";
-import { getEncounter, isCompleted, listEncounters, submitEncounter } from "@/api/encounters";
+import {
+  getEncounter,
+  isCompleted,
+  isScheduled,
+  listEncounters,
+  scheduleEncounter,
+  submitEncounter,
+} from "@/api/encounters";
 import { getSubject } from "@/api/subjects";
 import { getConcept, type ConceptAnswer } from "@/api/concepts";
 import type { EncounterApiResponse, SubjectApiResponse } from "@/api/types";
 import {
-  AI_VERDICT_GROUP,
-  AI_VERDICT_GROUP_CHILD,
-  ANY_SUSPICIOUS_LESION_CONCEPT,
   ENCOUNTER_TYPE,
   HABIT_CONCEPTS,
   isLegacyOralScreening,
@@ -37,11 +40,18 @@ import {
   PHOTO_CONCEPTS,
   PHOTO_SLOTS,
   REVIEW_CONCEPTS,
+  REVIEW_IMAGE_GROUP,
+  REVIEW_IMAGE_GROUP_CHILD,
   VERDICT_VALUES,
   readObs,
   type PhotoSlot,
 } from "@/constants/tanuhConcepts";
-import { OPMD_OPTIONS } from "./opmdOptions";
+import {
+  classificationOf,
+  lookupDiagnosis,
+  NON_HOMOGENEOUS_LEUKOPLAKIA,
+  RISK,
+} from "./diagnosisMapping";
 import { MediaImg } from "@/components/MediaImg";
 import { useAsync } from "@/hooks/useAsync";
 
@@ -55,101 +65,101 @@ interface LoadedState {
   screening: EncounterApiResponse;
   subject: SubjectApiResponse;
   physicianVerdictAnswers: ConceptAnswer[];
-  suspiciousAnswers: ConceptAnswer[];
-  recommendedActionAnswers: ConceptAnswer[];
+  provisionalDiagnosisAnswers: ConceptAnswer[];
+  subTypeAnswers: ConceptAnswer[];
 }
 
 type FormState = {
   photoVerdicts: Partial<Record<PhotoSlot, string>>;
-  opmdDiagnoses: string[];
-  recommendedAction: string;
+  provisionalDiagnosis: string;
+  provisionalSubType: string;
   notes: string;
 };
 
 const emptyForm: FormState = {
   photoVerdicts: {},
-  opmdDiagnoses: [],
-  recommendedAction: "",
+  provisionalDiagnosis: "",
+  provisionalSubType: "",
   notes: "",
 };
 
 // A single reviewable photo, normalised across the two Oral Screening capture
-// models. `slot` is the 1..8 position used to store the physician verdict as the
-// existing `Photo N — Physician verdict` concept.
+// models. `slot` is the 1..8 position; the physician verdict is stored
+// index-aligned in the review form's repeatable `Images` QuestionGroup.
 interface ReviewPhoto {
   slot: PhotoSlot;
   imageUrl: string;
-  aiVerdict?: string;
 }
 
 // New encounters store images in a repeatable QuestionGroup (an array of
-// `{ "Oral Image" }`) and the AI verdicts in a *parallel* repeatable group
-// (`AI_VERDICT_GROUP`, an array of `{ "AI Verdict" }`) aligned by row index.
-// Older encounters kept the verdict inside the image row, or used flat
-// `Photo N (image)` keys. Read the image group first and map its entries to
-// slots 1..N in order, pulling each verdict from the parallel array by its
-// original group index (so alignment survives skipped rows); fall back to the
-// in-row verdict, then to the legacy flat layout. Capped at PHOTO_SLOTS.length
-// since verdict storage has only Photo 1..8 concepts.
+// `{ "Oral Image" }`). Older encounters used flat `Photo N (image)` keys. Read
+// the image group first and map its entries to slots 1..N in order; fall back to
+// the legacy flat layout. Capped at PHOTO_SLOTS.length. The AI verdict is no
+// longer surfaced in the physician review (Requirements 2.0), so it is not read.
 function collectPhotos(obs: Record<string, unknown>): ReviewPhoto[] {
   const photos: ReviewPhoto[] = [];
   const group = obs[ORAL_IMAGE_GROUP.name];
   if (Array.isArray(group)) {
-    const aiGroup = obs[AI_VERDICT_GROUP.name];
-    const aiRows = Array.isArray(aiGroup) ? aiGroup : [];
     for (let i = 0; i < group.length; i++) {
       if (photos.length >= PHOTO_SLOTS.length) break;
       const entry = group[i];
       if (!entry || typeof entry !== "object") continue;
-      const record = entry as Record<string, unknown>;
-      const imageUrl = readObs<string>(record, ORAL_IMAGE_GROUP_CHILD.image);
+      const imageUrl = readObs<string>(entry as Record<string, unknown>, ORAL_IMAGE_GROUP_CHILD.image);
       if (!imageUrl) continue;
-      const aiRow = aiRows[i];
-      const aiVerdict =
-        (aiRow && typeof aiRow === "object"
-          ? readObs<string>(aiRow as Record<string, unknown>, AI_VERDICT_GROUP_CHILD.verdict)
-          : undefined) ?? readObs<string>(record, ORAL_IMAGE_GROUP_CHILD.aiVerdict);
-      photos.push({
-        slot: PHOTO_SLOTS[photos.length],
-        imageUrl,
-        aiVerdict,
-      });
+      photos.push({ slot: PHOTO_SLOTS[photos.length], imageUrl });
     }
     return photos;
   }
   for (const slot of PHOTO_SLOTS) {
     const imageUrl = readObs<string>(obs, PHOTO_CONCEPTS[slot].image);
     if (!imageUrl) continue;
-    photos.push({
-      slot,
-      imageUrl,
-      aiVerdict: readObs<string>(obs, PHOTO_CONCEPTS[slot].aiVerdict),
-    });
+    photos.push({ slot, imageUrl });
   }
   return photos;
 }
 
-function deriveAnySuspicious(
+// Requirements 2.0: classification is computed from the per-photo physician
+// verdicts — Suspicious if any photo is Suspicious, else Non-Suspicious once all
+// photos are verdicted. Empty string while still incomplete.
+function deriveClassification(
   presentPhotos: PhotoSlot[],
   photoVerdicts: Partial<Record<PhotoSlot, string>>,
 ): string {
   if (presentPhotos.length === 0) return "";
-  if (presentPhotos.some((slot) => photoVerdicts[slot] === VERDICT_VALUES.suspicious)) return VERDICT_VALUES.yes;
-  if (presentPhotos.every((slot) => Boolean(photoVerdicts[slot]))) return VERDICT_VALUES.no;
+  if (presentPhotos.some((slot) => photoVerdicts[slot] === VERDICT_VALUES.suspicious)) return VERDICT_VALUES.suspicious;
+  if (presentPhotos.every((slot) => Boolean(photoVerdicts[slot]))) return VERDICT_VALUES.nonSuspicious;
   return "";
 }
 
-const NO_ACTION = "No action";
+// Schedules the High Risk Follow-up visit unless the subject already has one
+// open — re-reviews and double-submits must not pile up duplicate visits.
+// Window: due immediately, overdue after 7 days (the scoping doc's follow-up
+// convention; the sheet itself doesn't specify dates).
+async function ensureHighRiskFollowUp(subjectId: string): Promise<void> {
+  const existing = await listEncounters({
+    encounterType: ENCOUNTER_TYPE.highRiskFollowUp.name,
+    subjectId,
+    size: 50,
+  });
+  if (existing.content.some(isScheduled)) return;
+  const now = new Date();
+  await scheduleEncounter({
+    "Encounter type": ENCOUNTER_TYPE.highRiskFollowUp.name,
+    "Subject ID": subjectId,
+    "Earliest scheduled date": now.toISOString(),
+    "Max scheduled date": addDays(now, 7).toISOString(),
+  });
+}
 
 async function loadReview(encounterUuid: string): Promise<LoadedState> {
   const review = await getEncounter(encounterUuid);
   const subjectId = review["Subject ID"];
-  const [subject, screeningPage, verdictConcept, suspiciousConcept, actionConcept] = await Promise.all([
+  const [subject, screeningPage, verdictConcept, diagnosisConcept, subTypeConcept] = await Promise.all([
     getSubject(subjectId),
     listEncounters({ encounterType: ENCOUNTER_TYPE.oralScreening.name, subjectId, size: 5 }),
-    getConcept(PHOTO_CONCEPTS[1].physicianVerdict.uuid),
-    getConcept(REVIEW_CONCEPTS.anyImageSuspicious.uuid),
-    getConcept(REVIEW_CONCEPTS.recommendedAction.uuid),
+    getConcept(REVIEW_IMAGE_GROUP_CHILD.physicianVerdict.uuid),
+    getConcept(REVIEW_CONCEPTS.provisionalDiagnosis.uuid),
+    getConcept(REVIEW_CONCEPTS.provisionalSubType.uuid),
   ]);
   const screening = screeningPage.content
     .filter((e) => !e.Voided && e["Encounter date time"] != null)
@@ -160,8 +170,8 @@ async function loadReview(encounterUuid: string): Promise<LoadedState> {
     screening,
     subject,
     physicianVerdictAnswers: verdictConcept.answers,
-    suspiciousAnswers: suspiciousConcept.answers,
-    recommendedActionAnswers: actionConcept.answers,
+    provisionalDiagnosisAnswers: diagnosisConcept.answers,
+    subTypeAnswers: subTypeConcept.answers,
   };
 }
 
@@ -213,16 +223,33 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
   const isLegacy = isLegacyOralScreening(loaded.screening.observations as Record<string, unknown>);
   const completed = isCompleted(loaded.review);
   const readOnly = completed || isLegacy;
-  const anySuspicious = deriveAnySuspicious(presentPhotos, effectiveForm.photoVerdicts);
+  const classification = deriveClassification(presentPhotos, effectiveForm.photoVerdicts);
+  const mapping = lookupDiagnosis(effectiveForm.provisionalDiagnosis, effectiveForm.provisionalSubType);
+  const needsSubType = effectiveForm.provisionalDiagnosis === NON_HOMOGENEOUS_LEUKOPLAKIA;
   const updateForm = (next: FormState) => setForm(next);
 
+  // Risk/action display: "—" while nothing is resolvable yet (no diagnosis, or
+  // sub-type still pending); "Not applicable" for diagnoses the mapping table
+  // deliberately maps to nothing (Oral submucosal fibrosis) — a bare dash there
+  // reads like a bug to physicians.
+  const derivationPending =
+    !effectiveForm.provisionalDiagnosis || (needsSubType && !effectiveForm.provisionalSubType);
+  const riskDisplay = derivationPending ? "—" : (mapping?.risk ?? "Not applicable");
+  const actionDisplay = derivationPending ? "—" : (mapping?.action ?? "Not applicable");
+
+  // Diagnosis list filtered by the photo-derived classification; "Not
+  // applicable" diagnoses (OSMF, classificationOf === null) are always shown.
+  // Before classification is known (photos not all verdicted) show everything.
+  const diagnosisOptions = loaded.provisionalDiagnosisAnswers.filter((a) => {
+    if (!classification) return true;
+    const c = classificationOf(a.name);
+    return c === null || c === classification;
+  });
+
   const missingPhotoVerdicts = presentPhotos.filter((slot) => !effectiveForm.photoVerdicts[slot]);
-  const diagnosisRequired = anySuspicious === VERDICT_VALUES.yes;
-  const opmdMissing = diagnosisRequired && effectiveForm.opmdDiagnoses.length === 0;
-  const actionMissing =
-    diagnosisRequired &&
-    (!effectiveForm.recommendedAction || effectiveForm.recommendedAction === NO_ACTION);
-  const canSubmit = missingPhotoVerdicts.length === 0 && !opmdMissing && !actionMissing;
+  const diagnosisMissing = !effectiveForm.provisionalDiagnosis;
+  const subTypeMissing = needsSubType && !effectiveForm.provisionalSubType;
+  const canSubmit = missingPhotoVerdicts.length === 0 && !diagnosisMissing && !subTypeMissing;
 
   const submit = async () => {
     if (readOnly || !canSubmit) return;
@@ -230,13 +257,19 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
     setSubmitError(null);
     try {
       const observations: Record<string, unknown> = {};
-      presentPhotos.forEach((slot) => {
-        const v = effectiveForm.photoVerdicts[slot];
-        if (v) observations[PHOTO_CONCEPTS[slot].physicianVerdict.name] = v;
-      });
-      if (anySuspicious) observations[REVIEW_CONCEPTS.anyImageSuspicious.name] = anySuspicious;
-      if (effectiveForm.opmdDiagnoses.length > 0) observations[REVIEW_CONCEPTS.opmdDiagnoses.name] = effectiveForm.opmdDiagnoses;
-      if (effectiveForm.recommendedAction) observations[REVIEW_CONCEPTS.recommendedAction.name] = effectiveForm.recommendedAction;
+      // Physician verdicts → review form's repeatable Images QuestionGroup,
+      // one row per shown photo, index-aligned to `presentPhotos`.
+      observations[REVIEW_IMAGE_GROUP.name] = presentPhotos.map((slot) => ({
+        [REVIEW_IMAGE_GROUP_CHILD.physicianVerdict.name]: effectiveForm.photoVerdicts[slot],
+      }));
+      if (classification) observations[REVIEW_CONCEPTS.classification.name] = classification;
+      observations[REVIEW_CONCEPTS.provisionalDiagnosis.name] = effectiveForm.provisionalDiagnosis;
+      if (needsSubType && effectiveForm.provisionalSubType) {
+        observations[REVIEW_CONCEPTS.provisionalSubType.name] = effectiveForm.provisionalSubType;
+      }
+      // Risk band + recommended action are auto-derived (read-only in the UI).
+      if (mapping?.risk) observations[REVIEW_CONCEPTS.highLowRisk.name] = mapping.risk;
+      if (mapping?.action) observations[REVIEW_CONCEPTS.recommendedAction.name] = mapping.action;
       if (effectiveForm.notes.trim()) observations[REVIEW_CONCEPTS.notes.name] = effectiveForm.notes;
       observations[REVIEW_CONCEPTS.reviewTimestamp.name] = new Date().toISOString();
 
@@ -246,6 +279,22 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
         "Encounter date time": new Date().toISOString(),
         observations,
       });
+      // Requirements 2.0 Case Updates: a High Risk diagnosis schedules a
+      // "High Risk Follow-up" visit for the screening worker (inform patient,
+      // pick biopsy hospital). The review itself is already saved at this
+      // point, so a failure here is reported without retrying the review.
+      if (mapping?.risk === RISK.high) {
+        try {
+          await ensureHighRiskFollowUp(loaded.review["Subject ID"]);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          setSubmitError(
+            `Review saved, but scheduling the High Risk Follow-up visit failed: ${message}. ` +
+              "Please raise it with the field team so the worker is informed.",
+          );
+          return;
+        }
+      }
       try {
         sessionStorage.removeItem(storageKey);
       } catch {
@@ -352,11 +401,16 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
             missing={!readOnly && !effectiveForm.photoVerdicts[photo.slot]}
             onChange={(v) => {
               const nextVerdicts = { ...effectiveForm.photoVerdicts, [photo.slot]: v };
-              const nextSuspicious = deriveAnySuspicious(presentPhotos, nextVerdicts);
+              const nextClass = deriveClassification(presentPhotos, nextVerdicts);
+              // Clear the diagnosis if the new classification no longer matches it
+              // (Not-applicable diagnoses such as OSMF stay valid for either).
+              const dx = effectiveForm.provisionalDiagnosis;
+              const dxStillValid =
+                !dx || !nextClass || classificationOf(dx) === null || classificationOf(dx) === nextClass;
               updateForm({
                 ...effectiveForm,
                 photoVerdicts: nextVerdicts,
-                ...(nextSuspicious === VERDICT_VALUES.no ? { opmdDiagnoses: [] } : {}),
+                ...(dxStillValid ? {} : { provisionalDiagnosis: "", provisionalSubType: "" }),
               });
             }}
           />
@@ -368,64 +422,92 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
           <Stack spacing={2}>
             <Typography variant="h6">Diagnosis</Typography>
 
+            {/* Classification — auto-computed from the photo verdicts above. */}
             <Box>
               <Typography variant="body2" sx={{ mb: 0.5 }}>
-                Any image suspicious?
+                Suspicious / Non-suspicious
               </Typography>
-              <Typography variant="h6" color={anySuspicious === VERDICT_VALUES.yes ? "error.main" : "text.primary"}>
-                {anySuspicious || "—"}
+              <Typography
+                variant="h6"
+                color={classification === VERDICT_VALUES.suspicious ? "error.main" : "text.primary"}
+              >
+                {classification || "—"}
               </Typography>
               <Typography variant="caption" color="text.secondary">
-                Auto-computed from photo verdicts above. Marked &quot;Yes&quot; when any photo is Suspicious.
+                Auto-computed from photo verdicts above.
               </Typography>
             </Box>
 
-            <Autocomplete
-              multiple
-              disableCloseOnSelect
-              disabled={readOnly || anySuspicious === VERDICT_VALUES.no}
-              options={OPMD_OPTIONS as unknown as string[]}
-              value={effectiveForm.opmdDiagnoses}
-              onChange={(_, v) => updateForm({ ...effectiveForm, opmdDiagnoses: v })}
-              renderInput={(p) => (
-                <TextField
-                  {...p}
-                  label="OPMD diagnoses"
-                  placeholder="Select all that apply"
-                  required={diagnosisRequired}
-                  error={opmdMissing}
-                  helperText={
-                    opmdMissing
-                      ? "Required when any image is suspicious."
-                      : anySuspicious === VERDICT_VALUES.no
-                        ? "Not applicable — no suspicious images."
-                        : ""
-                  }
-                />
-              )}
-            />
-
+            {/* Provisional diagnosis — single-select, filtered by classification. */}
             <TextField
               select
-              label="Recommended action"
-              value={effectiveForm.recommendedAction}
+              label="Provisional diagnosis"
+              value={effectiveForm.provisionalDiagnosis}
               disabled={readOnly}
-              required={diagnosisRequired}
-              error={actionMissing}
-              helperText={
-                actionMissing
-                  ? `Required when any image is suspicious — "${NO_ACTION}" is not allowed.`
-                  : ""
-              }
-              onChange={(e) => updateForm({ ...effectiveForm, recommendedAction: e.target.value })}
+              required
+              error={diagnosisMissing}
+              helperText={diagnosisMissing ? "Select a provisional diagnosis." : ""}
+              onChange={(e) => {
+                const dx = e.target.value;
+                updateForm({
+                  ...effectiveForm,
+                  provisionalDiagnosis: dx,
+                  ...(dx === NON_HOMOGENEOUS_LEUKOPLAKIA ? {} : { provisionalSubType: "" }),
+                });
+              }}
             >
               <MenuItem value="">—</MenuItem>
-              {loaded.recommendedActionAnswers.map((a) => (
+              {diagnosisOptions.map((a) => (
                 <MenuItem key={a.uuid} value={a.name}>
                   {a.name}
                 </MenuItem>
               ))}
             </TextField>
+
+            {/* Dependent sub-type — only for Non-homogeneous leukoplakia. */}
+            {needsSubType && (
+              <TextField
+                select
+                label="Provisional diagnosis sub-type"
+                value={effectiveForm.provisionalSubType}
+                disabled={readOnly}
+                required
+                error={subTypeMissing}
+                helperText={subTypeMissing ? "Select a sub-type." : ""}
+                onChange={(e) => updateForm({ ...effectiveForm, provisionalSubType: e.target.value })}
+              >
+                <MenuItem value="">—</MenuItem>
+                {loaded.subTypeAnswers.map((a) => (
+                  <MenuItem key={a.uuid} value={a.name}>
+                    {a.name}
+                  </MenuItem>
+                ))}
+              </TextField>
+            )}
+
+            {/* Risk band — auto-derived from the diagnosis (read-only). */}
+            <Box>
+              <Typography variant="body2" sx={{ mb: 0.5 }}>
+                High-risk / Low-risk
+              </Typography>
+              <Typography variant="h6" color={mapping?.risk === RISK.high ? "error.main" : "text.primary"}>
+                {riskDisplay}
+              </Typography>
+              <Typography variant="caption" color="text.secondary">
+                Auto-derived from the diagnosis.
+              </Typography>
+            </Box>
+
+            {/* Recommended action — auto-derived from the diagnosis (read-only). */}
+            <Box>
+              <Typography variant="body2" sx={{ mb: 0.5 }}>
+                Recommended action
+              </Typography>
+              <Typography variant="h6">{actionDisplay}</Typography>
+              <Typography variant="caption" color="text.secondary">
+                Auto-derived from the diagnosis.
+              </Typography>
+            </Box>
 
             <TextField
               label="Notes for Health Worker / patient"
@@ -483,6 +565,7 @@ function RegDetailsCard({ subject, screening }: { subject: SubjectApiResponse; s
   };
   const state = getLocationValue("State");
   const district = getLocationValue("District");
+  const taluka = getLocationValue("Taluka");
   const village = getLocationValue("Village");
 
   return (
@@ -496,6 +579,7 @@ function RegDetailsCard({ subject, screening }: { subject: SubjectApiResponse; s
         <DetailRow label="Gender" value={gender} />
         <DetailRow label="Captured on" value={capturedOn} />
         <DetailRow label="Village" value={village} />
+        <DetailRow label="Taluka" value={taluka} />
         <DetailRow label="District" value={district} />
         <DetailRow label="State" value={state} />
       </CardContent>
@@ -516,7 +600,6 @@ function HabitHistoryCard({ screening }: { screening: EncounterApiResponse }) {
         <DetailRow label="Areca nut" value={obs[HABIT_CONCEPTS.arecaNut.name] ?? "—"} />
         <DetailRow label="Alcohol" value={obs[HABIT_CONCEPTS.alcohol.name] ?? "—"} />
         <DetailRow label="Frequency of alcohol" value={obs[HABIT_CONCEPTS.alcoholFrequency.name] ?? "—"} />
-        <DetailRow label="Health Worker verdict (Any suspicious lesion?)" value={obs[ANY_SUSPICIOUS_LESION_CONCEPT.name] ?? "—"} />
       </CardContent>
     </Card>
   );
@@ -546,13 +629,10 @@ function PhotoReviewRow({
   missing: boolean;
   onChange: (v: string) => void;
 }) {
-  const { slot, imageUrl: url, aiVerdict } = photo;
+  const { slot, imageUrl: url } = photo;
 
   return (
-    <Card
-      variant="outlined"
-      sx={missing ? { borderColor: "error.main" } : undefined}
-    >
+    <Card variant="outlined" sx={missing ? { borderColor: "error.main" } : undefined}>
       <CardContent>
         <Grid container spacing={2} alignItems="flex-start">
           <Grid size={{ xs: 12, md: 4 }}>
@@ -561,16 +641,9 @@ function PhotoReviewRow({
           <Grid size={{ xs: 12, md: 8 }}>
             <Stack spacing={1}>
               <Typography variant="subtitle1">Photo {slot}</Typography>
-              <Typography variant="caption" color="text.secondary">
-                AI: {aiVerdict ?? "—"}
-              </Typography>
               <FormControl disabled={readOnly} error={missing}>
-                <Typography
-                  variant="body2"
-                  sx={{ mb: 1 }}
-                  color={missing ? "error.main" : "text.primary"}
-                >
-                  Physician verdict {missing && "*"}
+                <Typography variant="body2" sx={{ mb: 1, fontWeight: 600 }} color="text.primary">
+                  Physician verdict *
                 </Typography>
                 <RadioGroup row value={value} onChange={(_, v) => onChange(v)}>
                   {verdictAnswers.map((a) => (
@@ -592,16 +665,27 @@ function PhotoReviewRow({
 function prefillFromCompleted(review: EncounterApiResponse): FormState {
   const obs = review.observations as Record<string, unknown>;
   const photoVerdicts: Partial<Record<PhotoSlot, string>> = {};
-  PHOTO_SLOTS.forEach((slot) => {
-    const v = obs[PHOTO_CONCEPTS[slot].physicianVerdict.name];
-    if (typeof v === "string") photoVerdicts[slot] = v;
-  });
+  // 2.0 reviews store verdicts in the repeatable Images group (index-aligned).
+  const imagesGroup = obs[REVIEW_IMAGE_GROUP.name];
+  if (Array.isArray(imagesGroup)) {
+    imagesGroup.forEach((row, i) => {
+      const slot = PHOTO_SLOTS[i];
+      const v = row && typeof row === "object"
+        ? (row as Record<string, unknown>)[REVIEW_IMAGE_GROUP_CHILD.physicianVerdict.name]
+        : undefined;
+      if (slot && typeof v === "string") photoVerdicts[slot] = v;
+    });
+  } else {
+    // Pre-2.0 completed reviews: flat per-slot Photo N — Physician verdict.
+    PHOTO_SLOTS.forEach((slot) => {
+      const v = obs[PHOTO_CONCEPTS[slot].physicianVerdict.name];
+      if (typeof v === "string") photoVerdicts[slot] = v;
+    });
+  }
   return {
     photoVerdicts,
-    opmdDiagnoses: Array.isArray(obs[REVIEW_CONCEPTS.opmdDiagnoses.name])
-      ? (obs[REVIEW_CONCEPTS.opmdDiagnoses.name] as string[])
-      : [],
-    recommendedAction: (obs[REVIEW_CONCEPTS.recommendedAction.name] as string) ?? "",
-    notes: (obs[REVIEW_CONCEPTS.notes.name] as string) ?? "",
+    provisionalDiagnosis: (obs[REVIEW_CONCEPTS.provisionalDiagnosis.name] as string) ?? "",
+    provisionalSubType: (obs[REVIEW_CONCEPTS.provisionalSubType.name] as string) ?? "",
+    notes: (readObs<string>(obs, REVIEW_CONCEPTS.notes) as string) ?? "",
   };
 }
