@@ -200,14 +200,26 @@ export const ORAL_IMAGE_GROUP_CHILD = {
   aiVerdict: { name: "AI verdict", uuid: "057419d6-18f0-434e-993b-53e2ca76945d" },
 } as const;
 
-// AI verdicts are now written into their OWN repeatable QuestionGroup by the
+// A SECOND active repeatable capture group on the Oral Screening form. The
+// capture flow branches on "Do you see any lesions?": one branch records images
+// under ORAL_IMAGE_GROUP, the other under this group — so a given encounter has
+// its photos in exactly one of the two. Its children share the same concept
+// names as ORAL_IMAGE_GROUP (notably "Oral Image"), so the same per-entry
+// extraction works; images land under `obs["ORAL SCREENING"]`.
+export const ORAL_SCREENING_GROUP = {
+  name: "ORAL SCREENING",
+  uuid: "11941068-57a3-4df1-975b-1beb12d7656d",
+} as const;
+
+// AI verdicts are written into their OWN repeatable QuestionGroup by the
 // on-device edge-model inference (scheduleImageInferenceIntoGroup), serialized
 // under the group concept name as an array of `{ "AI Verdict": <answer> }`,
-// one row per image, aligned by index to ORAL_IMAGE_GROUP. Note the group
-// concept name is upper-case ("AI VERDICT") while the child verdict concept is
-// title-case ("AI Verdict"); answers are "Suspicious" / "Non-Suspicious".
+// one row per image, aligned by index to ORAL_IMAGE_GROUP. The group concept is
+// "Image-wise AI Assessment"; the child verdict concept is "AI Verdict";
+// answers are "Suspicious" / "Non-Suspicious". Defined for completeness — the AI
+// verdict is intentionally not surfaced in the physician review (2.0).
 export const AI_VERDICT_GROUP = {
-  name: "AI VERDICT",
+  name: "Image-wise AI Assessment",
   uuid: "c98378f6-e167-4baf-8804-e04aa2cb6b8e",
 } as const;
 
@@ -240,23 +252,26 @@ export const REVIEW_IMAGE_GROUP_CHILD = {
 // encounters return false. Encounters with neither layout (no photos) also return
 // false — no warning, the empty-state path handles them.
 export function isLegacyOralScreening(obs: Record<string, unknown>): boolean {
-  if (Array.isArray(obs[ORAL_IMAGE_GROUP.name])) return false; // current repeatable config
+  // current repeatable config — images live in either capture group
+  if (Array.isArray(obs[ORAL_IMAGE_GROUP.name]) || Array.isArray(obs[ORAL_SCREENING_GROUP.name]))
+    return false;
   return PHOTO_SLOTS.some((slot) => {
     const v = obs[PHOTO_CONCEPTS[slot].image.name];
     return typeof v === "string" && v !== "";
   });
 }
 
-// Group-level (not per-image) question on the new Oral Screening capture flow.
+// Per-image "Suspicious Lesion?" question, a child of the capture QuestionGroups.
 export const ANY_SUSPICIOUS_LESION_CONCEPT = {
-  name: "Any Suspicious Lesion?",
+  name: "Suspicious Lesion?",
   uuid: "51192767-e702-4122-84e6-768c1cfbc001",
 } as const;
 
 // "Place of referral" is a Location-typed concept on the Oral Screening encounter.
-// The observation value is an AddressLevel uuid pointing into the facility branch
-// (District Hospital → CHC → PHC → Sub-center). Used by the Pending list to
-// filter by referral facility via the server's linked-observation filter.
+// The observation value is an AddressLevel uuid pointing at a referral facility —
+// one of the parallel (non-nested) facility types District Hospital / Taluka
+// Hospital / Public Health Center. Used by the Pending list to filter by referral
+// facility via the server's linked-observation filter.
 export const PLACE_OF_REFERRAL_CONCEPT = {
   name: "Place of referral",
   uuid: "4a43f83e-26db-40c8-83d8-4317dcfda913",

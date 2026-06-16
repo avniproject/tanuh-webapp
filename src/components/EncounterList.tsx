@@ -25,6 +25,7 @@ import { listEncounters } from "@/api/encounters";
 import { ENCOUNTER_TYPE, PLACE_OF_REFERRAL_CONCEPT } from "@/constants/tanuhConcepts";
 import { useAsync } from "@/hooks/useAsync";
 import { LocationFilter } from "./LocationFilter";
+import { FacilityFilter } from "./FacilityFilter";
 
 interface Props {
   mode: "pending" | "completed";
@@ -33,15 +34,14 @@ interface Props {
 const PAGE_SIZE = 50;
 const PLACE_OF_REFERRAL_KEY = "Place of referral";
 
-// The two location hierarchies in the Tanuh org (addressLevelTypes.json).
-// Used to split the catchment tree into the patient-location filter (admin
-// chain) and the referral-facility filter.
+// Location types in the Tanuh org (addressLevelTypes.json). The admin chain is a
+// nested hierarchy (patient-location filter); the referral facilities are
+// parallel, non-nested types (flat single-select facility filter).
 const ADMIN_LOCATION_TYPES = ["State", "District", "Taluka", "Village"] as const;
 const FACILITY_LOCATION_TYPES = [
   "District Hospital",
-  "Community Health Center (CHC)",
-  "Primary Health Center (PHC)",
-  "Sub-center (HWC)",
+  "Taluka Hospital",
+  "Public Health Center",
 ] as const;
 
 export function EncounterList({ mode }: Props) {
@@ -225,7 +225,7 @@ export function EncounterList({ mode }: Props) {
           >
             Referral facility
           </Typography>
-          <LocationFilter
+          <FacilityFilter
             value={referralUuid}
             onChange={handleReferralChange}
             types={FACILITY_LOCATION_TYPES}
@@ -419,14 +419,13 @@ function extractReferralName(value: unknown): string {
   if (typeof value === "string") return value;
   if (typeof value !== "object") return "";
   const obj = value as Record<string, unknown>;
-  // Most-specific facility level first; fallback to admin hierarchy.
+  // Referral facility first (parallel types), then fall back to the admin chain.
   const preferred = [
-    "Sub-center (HWC)",
-    "Primary Health Center (PHC)",
-    "Community Health Center (CHC)",
     "District Hospital",
+    "Taluka Hospital",
+    "Public Health Center",
     "Village",
-    "Block",
+    "Taluka",
     "District",
     "State",
   ];

@@ -9,12 +9,12 @@ import {
 interface Props {
   value: string | null;
   onChange: (uuid: string | null) => void;
-  // When set, only nodes of these location TYPES are offered. The org has ONE
-  // tree rooted at State with two branches under it (District→Taluka→Village
-  // and District Hospital→CHC→PHC→Sub-center), so each filter passes its
-  // branch's type list; kept nodes whose parent is filtered out (e.g. District
-  // Hospital under State) are re-parented to the nearest kept ancestor and
-  // become roots. Omit to show the full tree.
+  // When set, only nodes of these location TYPES are offered, as a nested
+  // cascade. Used for the admin patient-location chain
+  // (State→District→Taluka→Village). Kept nodes whose parent is filtered out are
+  // re-parented to the nearest kept ancestor and become roots. Omit to show the
+  // full tree. (Referral facilities are parallel, non-nested types — see
+  // FacilityFilter, a flat single-select instead.)
   types?: readonly string[];
 }
 

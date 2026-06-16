@@ -1,0 +1,108 @@
+import { useEffect, useMemo, useState } from "react";
+import { Alert, Autocomplete, Box, Button, Skeleton, TextField } from "@mui/material";
+import {
+  getCatchmentLocations,
+  type CatchmentLocationNode,
+  type CatchmentLocationsResponse,
+} from "@/api/impl";
+
+interface Props {
+  value: string | null;
+  onChange: (uuid: string | null) => void;
+  // Facility location TYPES to include. Unlike the admin chain these are
+  // parallel (not nested under one another), so they are shown as ONE flat,
+  // searchable single-select list, grouped by type. The selected facility's
+  // uuid feeds the existing single linked-observation server filter.
+  types: readonly string[];
+}
+
+interface LoadState {
+  tree: CatchmentLocationsResponse | null;
+  error: string | null;
+}
+
+export function FacilityFilter({ value, onChange, types }: Props) {
+  const [state, setState] = useState<LoadState>({ tree: null, error: null });
+  const [reloadKey, setReloadKey] = useState(0);
+
+  useEffect(() => {
+    let cancelled = false;
+    setState({ tree: null, error: null });
+    getCatchmentLocations()
+      .then((tree) => {
+        if (!cancelled) setState({ tree, error: null });
+      })
+      .catch((err: unknown) => {
+        if (cancelled) return;
+        const message = err instanceof Error ? err.message : String(err);
+        setState({ tree: null, error: message });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [reloadKey]);
+
+  // Flat list of facility nodes, ordered by type (in the given order) then name.
+  const options = useMemo<CatchmentLocationNode[]>(() => {
+    if (!state.tree) return [];
+    const allowed = new Set(types);
+    return state.tree.nodes
+      .filter((n) => allowed.has(n.type))
+      .sort((a, b) => {
+        const ta = types.indexOf(a.type);
+        const tb = types.indexOf(b.type);
+        if (ta !== tb) return ta - tb;
+        return a.name.localeCompare(b.name);
+      });
+  }, [state.tree, types]);
+
+  if (state.error) {
+    return (
+      <Alert
+        severity="error"
+        sx={{ flex: 1 }}
+        action={
+          <Button color="inherit" size="small" onClick={() => setReloadKey((k) => k + 1)}>
+            Retry
+          </Button>
+        }
+      >
+        Failed to load facilities: {state.error}
+      </Alert>
+    );
+  }
+
+  if (!state.tree) {
+    return <Skeleton variant="rounded" height={40} sx={{ flex: 1, maxWidth: { sm: 360 } }} />;
+  }
+
+  if (options.length === 0) {
+    return (
+      <Alert severity="info" sx={{ flex: 1 }}>
+        No referral facilities available in your catchment.
+      </Alert>
+    );
+  }
+
+  const selected = options.find((o) => o.uuid === value) ?? null;
+
+  return (
+    <Box sx={{ flex: 1, display: "flex", alignItems: "center" }}>
+      <Autocomplete
+        size="small"
+        options={options}
+        value={selected}
+        getOptionLabel={(o) => o.name}
+        groupBy={(o) => o.type}
+        isOptionEqualToValue={(o, v) => o.uuid === v.uuid}
+        onChange={(_, next) => onChange(next?.uuid ?? null)}
+        sx={{
+          minWidth: { xs: "100%", sm: 280 },
+          maxWidth: { xs: "100%", sm: 360 },
+          flex: { xs: "1 1 100%", sm: "0 1 auto" },
+        }}
+        renderInput={(p) => <TextField {...p} label="Facility" placeholder="Search facility…" />}
+      />
+    </Box>
+  );
+}

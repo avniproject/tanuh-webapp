@@ -37,6 +37,7 @@ import {
   isLegacyOralScreening,
   ORAL_IMAGE_GROUP,
   ORAL_IMAGE_GROUP_CHILD,
+  ORAL_SCREENING_GROUP,
   PHOTO_CONCEPTS,
   PHOTO_SLOTS,
   REVIEW_CONCEPTS,
@@ -92,24 +93,27 @@ interface ReviewPhoto {
 }
 
 // New encounters store images in a repeatable QuestionGroup (an array of
-// `{ "Oral Image" }`). Older encounters used flat `Photo N (image)` keys. Read
-// the image group first and map its entries to slots 1..N in order; fall back to
-// the legacy flat layout. Capped at PHOTO_SLOTS.length. The AI verdict is no
-// longer surfaced in the physician review (Requirements 2.0), so it is not read.
+// `{ "Oral Image" }`). There are two such groups — the "Do you see any lesions?"
+// branch decides which one an encounter uses (ORAL_IMAGE_GROUP for the
+// lesion-photo flow, ORAL_SCREENING_GROUP for the other) — so read both and map
+// their entries to slots 1..N in order. Older encounters used flat
+// `Photo N (image)` keys; fall back to that only when neither group has images.
+// Capped at PHOTO_SLOTS.length. The AI verdict is no longer surfaced in the
+// physician review (Requirements 2.0), so it is not read.
 function collectPhotos(obs: Record<string, unknown>): ReviewPhoto[] {
   const photos: ReviewPhoto[] = [];
-  const group = obs[ORAL_IMAGE_GROUP.name];
-  if (Array.isArray(group)) {
-    for (let i = 0; i < group.length; i++) {
+  for (const groupName of [ORAL_IMAGE_GROUP.name, ORAL_SCREENING_GROUP.name]) {
+    const group = obs[groupName];
+    if (!Array.isArray(group)) continue;
+    for (const entry of group) {
       if (photos.length >= PHOTO_SLOTS.length) break;
-      const entry = group[i];
       if (!entry || typeof entry !== "object") continue;
       const imageUrl = readObs<string>(entry as Record<string, unknown>, ORAL_IMAGE_GROUP_CHILD.image);
       if (!imageUrl) continue;
       photos.push({ slot: PHOTO_SLOTS[photos.length], imageUrl });
     }
-    return photos;
   }
+  if (photos.length > 0) return photos;
   for (const slot of PHOTO_SLOTS) {
     const imageUrl = readObs<string>(obs, PHOTO_CONCEPTS[slot].image);
     if (!imageUrl) continue;
