@@ -35,14 +35,15 @@ const PAGE_SIZE = 50;
 const PLACE_OF_REFERRAL_KEY = "Place of referral";
 
 // Location types in the Tanuh org (addressLevelTypes.json). The admin chain is a
-// nested hierarchy (patient-location filter); the referral facilities are
-// parallel, non-nested types (flat single-select facility filter).
+// nested hierarchy used for the cascading patient-location filter.
 const ADMIN_LOCATION_TYPES = ["State", "District", "Taluka", "Village"] as const;
-const FACILITY_LOCATION_TYPES = [
-  "District Hospital",
-  "Taluka Hospital",
-  "Public Health Center",
-] as const;
+// The full patient/admin branch (the cascade above plus its Health Center leaf).
+// Referral facilities are NOT a hardcoded set: they are whatever is in the user's
+// catchment that is not part of this patient branch (the parallel facility types
+// District Hospital / Taluka Hospital / Public Health Center, and any others the
+// org adds). Deriving them this way keeps the filter working when facility types
+// are renamed or added — no code change needed.
+const PATIENT_LOCATION_TYPES = [...ADMIN_LOCATION_TYPES, "Health Center"] as const;
 
 export function EncounterList({ mode }: Props) {
   const [params, setParams] = useSearchParams();
@@ -228,7 +229,7 @@ export function EncounterList({ mode }: Props) {
           <FacilityFilter
             value={referralUuid}
             onChange={handleReferralChange}
-            types={FACILITY_LOCATION_TYPES}
+            excludeTypes={PATIENT_LOCATION_TYPES}
           />
         </Stack>
         {mode === "completed" && (
@@ -419,17 +420,15 @@ function extractReferralName(value: unknown): string {
   if (typeof value === "string") return value;
   if (typeof value !== "object") return "";
   const obj = value as Record<string, unknown>;
-  // Referral facility first (parallel types), then fall back to the admin chain.
-  const preferred = [
-    "District Hospital",
-    "Taluka Hospital",
-    "Public Health Center",
-    "Village",
-    "Taluka",
-    "District",
-    "State",
-  ];
-  for (const k of preferred) {
+  const patientTypes = new Set<string>(PATIENT_LOCATION_TYPES);
+  // Prefer a facility-branch value: any key whose type is NOT part of the patient
+  // hierarchy (mirrors how the facility filter is derived). These are the actual
+  // referral facilities, regardless of the specific facility type name.
+  for (const [k, v] of Object.entries(obj)) {
+    if (!patientTypes.has(k) && typeof v === "string" && v.trim()) return v;
+  }
+  // Otherwise fall back to the deepest patient-hierarchy location.
+  for (const k of [...PATIENT_LOCATION_TYPES].reverse()) {
     const v = obj[k];
     if (typeof v === "string" && v.trim()) return v;
   }
