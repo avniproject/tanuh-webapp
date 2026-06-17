@@ -34,16 +34,14 @@ interface Props {
 const PAGE_SIZE = 50;
 const PLACE_OF_REFERRAL_KEY = "Place of referral";
 
-// Location types in the Tanuh org (addressLevelTypes.json). The admin chain is a
-// nested hierarchy used for the cascading patient-location filter.
-const ADMIN_LOCATION_TYPES = ["State", "District", "Taluka", "Village"] as const;
-// The full patient/admin branch (the cascade above plus its Health Center leaf).
-// Referral facilities are NOT a hardcoded set: they are whatever is in the user's
-// catchment that is not part of this patient branch (the parallel facility types
-// District Hospital / Taluka Hospital / Public Health Center, and any others the
-// org adds). Deriving them this way keeps the filter working when facility types
-// are renamed or added — no code change needed.
-const PATIENT_LOCATION_TYPES = [...ADMIN_LOCATION_TYPES, "Health Center"] as const;
+// The org's single location hierarchy, top → leaf (addressLevelTypes.json):
+// State → District → Taluka Hospital. Both filters derive from this one list, so
+// there is no separate, drift-prone facility-type list to keep in sync.
+const LOCATION_HIERARCHY = ["State", "District", "Taluka Hospital"] as const;
+// "Place of referral" is a Location concept whose allowed (lowest) address-level
+// type is the leaf of the hierarchy — a Taluka Hospital — so the referral filter
+// lists locations of just this type.
+const REFERRAL_FACILITY_TYPE = LOCATION_HIERARCHY[LOCATION_HIERARCHY.length - 1];
 
 export function EncounterList({ mode }: Props) {
   const [params, setParams] = useSearchParams();
@@ -208,7 +206,7 @@ export function EncounterList({ mode }: Props) {
           <LocationFilter
             value={patientLocationUuid}
             onChange={handlePatientLocationChange}
-            types={ADMIN_LOCATION_TYPES}
+            types={LOCATION_HIERARCHY}
           />
         </Stack>
         <Stack
@@ -229,7 +227,7 @@ export function EncounterList({ mode }: Props) {
           <FacilityFilter
             value={referralUuid}
             onChange={handleReferralChange}
-            excludeTypes={PATIENT_LOCATION_TYPES}
+            types={[REFERRAL_FACILITY_TYPE]}
           />
         </Stack>
         {mode === "completed" && (
@@ -420,15 +418,9 @@ function extractReferralName(value: unknown): string {
   if (typeof value === "string") return value;
   if (typeof value !== "object") return "";
   const obj = value as Record<string, unknown>;
-  const patientTypes = new Set<string>(PATIENT_LOCATION_TYPES);
-  // Prefer a facility-branch value: any key whose type is NOT part of the patient
-  // hierarchy (mirrors how the facility filter is derived). These are the actual
-  // referral facilities, regardless of the specific facility type name.
-  for (const [k, v] of Object.entries(obj)) {
-    if (!patientTypes.has(k) && typeof v === "string" && v.trim()) return v;
-  }
-  // Otherwise fall back to the deepest patient-hierarchy location.
-  for (const k of [...PATIENT_LOCATION_TYPES].reverse()) {
+  // The referral facility is the leaf level (a Taluka Hospital); prefer it, then
+  // fall back to the deepest hierarchy level that has a value.
+  for (const k of [REFERRAL_FACILITY_TYPE, ...[...LOCATION_HIERARCHY].reverse()]) {
     const v = obj[k];
     if (typeof v === "string" && v.trim()) return v;
   }

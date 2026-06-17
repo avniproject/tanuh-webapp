@@ -9,15 +9,13 @@ import {
 interface Props {
   value: string | null;
   onChange: (uuid: string | null) => void;
-  // Patient/admin location TYPES to EXCLUDE. Referral facilities are not a fixed,
-  // hardcoded set — they are whatever is in the user's catchment that is NOT part
-  // of the patient hierarchy (the parallel facility branch). So instead of an
-  // allow-list of facility type names (which drift when the org is reconfigured),
-  // we show every catchment node whose type is not in this deny-list. They are
-  // parallel (not nested under one another), so they render as ONE flat,
-  // searchable single-select list, grouped by type. The selected facility's uuid
-  // feeds the existing single linked-observation server filter.
-  excludeTypes: readonly string[];
+  // Facility location TYPES to include — for this org, just the leaf of the single
+  // location hierarchy (a Taluka Hospital), which is the only address-level type
+  // "Place of referral" can point at. Rendered as ONE flat, searchable
+  // single-select list, grouped by type, scoped to the user's catchment. The
+  // selected facility's uuid feeds the existing single linked-observation server
+  // filter.
+  types: readonly string[];
 }
 
 interface LoadState {
@@ -25,7 +23,7 @@ interface LoadState {
   error: string | null;
 }
 
-export function FacilityFilter({ value, onChange, excludeTypes }: Props) {
+export function FacilityFilter({ value, onChange, types }: Props) {
   const [state, setState] = useState<LoadState>({ tree: null, error: null });
   const [reloadKey, setReloadKey] = useState(0);
 
@@ -46,20 +44,20 @@ export function FacilityFilter({ value, onChange, excludeTypes }: Props) {
     };
   }, [reloadKey]);
 
-  // Flat list of facility nodes = every catchment node that is NOT part of the
-  // patient hierarchy. Ordered by type name then location name (so MUI's groupBy
-  // gets contiguous groups).
+  // Flat list of facility nodes, ordered by type (in the given order) then name
+  // (so MUI's groupBy gets contiguous groups).
   const options = useMemo<CatchmentLocationNode[]>(() => {
     if (!state.tree) return [];
-    const excluded = new Set(excludeTypes);
+    const allowed = new Set(types);
     return state.tree.nodes
-      .filter((n) => !excluded.has(n.type))
+      .filter((n) => allowed.has(n.type))
       .sort((a, b) => {
-        const ta = a.type.localeCompare(b.type);
-        if (ta !== 0) return ta;
+        const ta = types.indexOf(a.type);
+        const tb = types.indexOf(b.type);
+        if (ta !== tb) return ta - tb;
         return a.name.localeCompare(b.name);
       });
-  }, [state.tree, excludeTypes]);
+  }, [state.tree, types]);
 
   if (state.error) {
     return (
