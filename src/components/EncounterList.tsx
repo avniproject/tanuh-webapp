@@ -34,14 +34,16 @@ interface Props {
 const PAGE_SIZE = 50;
 const PLACE_OF_REFERRAL_KEY = "Place of referral";
 
-// The org's single location hierarchy, top → leaf (addressLevelTypes.json):
-// State → District → Taluka Hospital. Both filters derive from this one list, so
-// there is no separate, drift-prone facility-type list to keep in sync.
-const LOCATION_HIERARCHY = ["State", "District", "Taluka Hospital"] as const;
+// Two parallel branches share State → District (addressLevelTypes.json):
+//  - patient/admin chain where subjects are registered: State → District →
+//    Taluka → Village (e.g. Karnataka → Bengaluru Rural → Hosakote Taluk → Begur);
+//  - facility branch for referrals: a Taluka Hospital (e.g. "Dental hospital").
+// They must stay separate — the patient cascade is the admin chain only.
+const PATIENT_LOCATION_TYPES = ["State", "District", "Taluka", "Village"] as const;
 // "Place of referral" is a Location concept whose allowed (lowest) address-level
-// type is the leaf of the hierarchy — a Taluka Hospital — so the referral filter
-// lists locations of just this type.
-const REFERRAL_FACILITY_TYPE = LOCATION_HIERARCHY[LOCATION_HIERARCHY.length - 1];
+// type is "Taluka Hospital", so the referral filter lists locations of just this
+// type (parallel to the patient chain, not a level within it).
+const REFERRAL_FACILITY_TYPE = "Taluka Hospital";
 
 export function EncounterList({ mode }: Props) {
   const [params, setParams] = useSearchParams();
@@ -206,7 +208,7 @@ export function EncounterList({ mode }: Props) {
           <LocationFilter
             value={patientLocationUuid}
             onChange={handlePatientLocationChange}
-            types={LOCATION_HIERARCHY}
+            types={PATIENT_LOCATION_TYPES}
           />
         </Stack>
         <Stack
@@ -418,9 +420,9 @@ function extractReferralName(value: unknown): string {
   if (typeof value === "string") return value;
   if (typeof value !== "object") return "";
   const obj = value as Record<string, unknown>;
-  // The referral facility is the leaf level (a Taluka Hospital); prefer it, then
-  // fall back to the deepest hierarchy level that has a value.
-  for (const k of [REFERRAL_FACILITY_TYPE, ...[...LOCATION_HIERARCHY].reverse()]) {
+  // Prefer the referral facility (Taluka Hospital), then the patient/admin chain
+  // deepest-first as a fallback.
+  for (const k of [REFERRAL_FACILITY_TYPE, ...[...PATIENT_LOCATION_TYPES].reverse()]) {
     const v = obj[k];
     if (typeof v === "string" && v.trim()) return v;
   }
