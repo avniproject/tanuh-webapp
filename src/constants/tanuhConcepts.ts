@@ -243,8 +243,18 @@ export const REVIEW_IMAGE_GROUP = {
 
 export const REVIEW_IMAGE_GROUP_CHILD = {
   image: { name: "Oral Image", uuid: "f18c5264-3459-4233-87b4-4f9cb3c3ef49" },
+  // Per-photo image-quality gate. "No" means the photo is not assessable, so the
+  // Clinician diagnosis verdict is disabled/skipped for that photo. Reuses the
+  // org's canonical Yes/No answer concepts.
+  acceptableQuality: { name: "Acceptable Quality of the photo?", uuid: "f6744e13-a39f-515b-8712-4b1ddc32e7b8" },
   physicianVerdict: { name: "Physician verdict", uuid: "115099a3-af32-41b2-86f8-a707a648a0ec" },
+  // Single photo flagged as highest-risk across the set; stored as "Yes" on that
+  // one row only. Reuses the org's canonical Yes/No answer concepts.
+  highestRiskPhoto: { name: "Highest Risk Photo?", uuid: "6d83bbd4-feb6-5647-a917-b6ba19b98914" },
 } as const;
+
+// Per-photo "Acceptable Quality?" answer values (canonical Yes/No).
+export const QUALITY_VALUES = { yes: "Yes", no: "No" } as const;
 
 // True when an Oral Screening uses the legacy flat photo layout (`Photo N (image)`
 // keys) instead of the current repeatable QuestionGroup. Such encounters are not

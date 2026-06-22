@@ -43,7 +43,7 @@ export function AppShell() {
                 display: { xs: "none", sm: "block" },
               }}
             >
-              Physician Review
+              Clinician Review
             </Typography>
           </Stack>
           <Box sx={{ flexGrow: 1 }} />

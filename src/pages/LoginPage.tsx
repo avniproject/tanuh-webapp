@@ -25,7 +25,7 @@ export function LoginPage() {
     <CenteredCard>
       <Stack spacing={2} alignItems="center" sx={{ mb: 3 }}>
         <Box component="img" src={tanuhLogo} alt="Tanuh" sx={{ height: 58 }} />
-        <Typography variant="h6">Physician Review</Typography>
+        <Typography variant="h6">Clinician Review</Typography>
       </Stack>
 
       {view === "SIGN_IN" && (

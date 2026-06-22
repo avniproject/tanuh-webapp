@@ -5,6 +5,7 @@ import {
   Button,
   Card,
   CardContent,
+  Checkbox,
   CircularProgress,
   FormControl,
   FormControlLabel,
@@ -40,6 +41,7 @@ import {
   ORAL_SCREENING_GROUP,
   PHOTO_CONCEPTS,
   PHOTO_SLOTS,
+  QUALITY_VALUES,
   REVIEW_CONCEPTS,
   REVIEW_IMAGE_GROUP,
   REVIEW_IMAGE_GROUP_CHILD,
@@ -72,6 +74,9 @@ interface LoadedState {
 
 type FormState = {
   photoVerdicts: Partial<Record<PhotoSlot, string>>;
+  photoQuality: Partial<Record<PhotoSlot, string>>;
+  // The single photo flagged as highest-risk (null = none). Only one at a time.
+  highestRiskSlot: PhotoSlot | null;
   provisionalDiagnosis: string;
   provisionalSubType: string;
   notes: string;
@@ -79,6 +84,8 @@ type FormState = {
 
 const emptyForm: FormState = {
   photoVerdicts: {},
+  photoQuality: {},
+  highestRiskSlot: null,
   provisionalDiagnosis: "",
   provisionalSubType: "",
   notes: "",
@@ -128,10 +135,16 @@ function collectPhotos(obs: Record<string, unknown>): ReviewPhoto[] {
 function deriveClassification(
   presentPhotos: PhotoSlot[],
   photoVerdicts: Partial<Record<PhotoSlot, string>>,
+  photoQuality: Partial<Record<PhotoSlot, string>>,
 ): string {
-  if (presentPhotos.length === 0) return "";
-  if (presentPhotos.some((slot) => photoVerdicts[slot] === VERDICT_VALUES.suspicious)) return VERDICT_VALUES.suspicious;
-  if (presentPhotos.every((slot) => Boolean(photoVerdicts[slot]))) return VERDICT_VALUES.nonSuspicious;
+  // Only acceptable-quality photos are assessable; "No" photos carry no verdict
+  // and are excluded from the suspicious/non-suspicious roll-up.
+  const assessable = presentPhotos.filter(
+    (slot) => (photoQuality[slot] ?? QUALITY_VALUES.yes) !== QUALITY_VALUES.no,
+  );
+  if (assessable.length === 0) return "";
+  if (assessable.some((slot) => photoVerdicts[slot] === VERDICT_VALUES.suspicious)) return VERDICT_VALUES.suspicious;
+  if (assessable.every((slot) => Boolean(photoVerdicts[slot]))) return VERDICT_VALUES.nonSuspicious;
   return "";
 }
 
@@ -227,7 +240,7 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
   const isLegacy = isLegacyOralScreening(loaded.screening.observations as Record<string, unknown>);
   const completed = isCompleted(loaded.review);
   const readOnly = completed || isLegacy;
-  const classification = deriveClassification(presentPhotos, effectiveForm.photoVerdicts);
+  const classification = deriveClassification(presentPhotos, effectiveForm.photoVerdicts, effectiveForm.photoQuality);
   const mapping = lookupDiagnosis(effectiveForm.provisionalDiagnosis, effectiveForm.provisionalSubType);
   const needsSubType = effectiveForm.provisionalDiagnosis === NON_HOMOGENEOUS_LEUKOPLAKIA;
   const updateForm = (next: FormState) => setForm(next);
@@ -250,7 +263,11 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
     return c === null || c === classification;
   });
 
-  const missingPhotoVerdicts = presentPhotos.filter((slot) => !effectiveForm.photoVerdicts[slot]);
+  const missingPhotoVerdicts = presentPhotos.filter(
+    (slot) =>
+      (effectiveForm.photoQuality[slot] ?? QUALITY_VALUES.yes) !== QUALITY_VALUES.no &&
+      !effectiveForm.photoVerdicts[slot],
+  );
   const diagnosisMissing = !effectiveForm.provisionalDiagnosis;
   const subTypeMissing = needsSubType && !effectiveForm.provisionalSubType;
   const canSubmit = missingPhotoVerdicts.length === 0 && !diagnosisMissing && !subTypeMissing;
@@ -263,9 +280,21 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
       const observations: Record<string, unknown> = {};
       // Physician verdicts → review form's repeatable Images QuestionGroup,
       // one row per shown photo, index-aligned to `presentPhotos`.
-      observations[REVIEW_IMAGE_GROUP.name] = presentPhotos.map((slot) => ({
-        [REVIEW_IMAGE_GROUP_CHILD.physicianVerdict.name]: effectiveForm.photoVerdicts[slot],
-      }));
+      observations[REVIEW_IMAGE_GROUP.name] = presentPhotos.map((slot) => {
+        const quality = effectiveForm.photoQuality[slot] ?? QUALITY_VALUES.yes;
+        const row: Record<string, unknown> = {
+          [REVIEW_IMAGE_GROUP_CHILD.acceptableQuality.name]: quality,
+        };
+        // Not-acceptable photos are not assessable, so they carry no verdict.
+        if (quality !== QUALITY_VALUES.no && effectiveForm.photoVerdicts[slot]) {
+          row[REVIEW_IMAGE_GROUP_CHILD.physicianVerdict.name] = effectiveForm.photoVerdicts[slot];
+        }
+        // The single highest-risk flag lands on its row only.
+        if (effectiveForm.highestRiskSlot === slot) {
+          row[REVIEW_IMAGE_GROUP_CHILD.highestRiskPhoto.name] = QUALITY_VALUES.yes;
+        }
+        return row;
+      });
       if (classification) observations[REVIEW_CONCEPTS.classification.name] = classification;
       observations[REVIEW_CONCEPTS.provisionalDiagnosis.name] = effectiveForm.provisionalDiagnosis;
       if (needsSubType && effectiveForm.provisionalSubType) {
@@ -395,30 +424,59 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
         {presentPhotos.length === 0 && (
           <Alert severity="info">No images recorded on the linked Oral Screening encounter.</Alert>
         )}
-        {photos.map((photo) => (
-          <PhotoReviewRow
-            key={photo.slot}
-            photo={photo}
-            verdictAnswers={loaded.physicianVerdictAnswers}
-            value={effectiveForm.photoVerdicts[photo.slot] ?? ""}
-            readOnly={readOnly}
-            missing={!readOnly && !effectiveForm.photoVerdicts[photo.slot]}
-            onChange={(v) => {
-              const nextVerdicts = { ...effectiveForm.photoVerdicts, [photo.slot]: v };
-              const nextClass = deriveClassification(presentPhotos, nextVerdicts);
-              // Clear the diagnosis if the new classification no longer matches it
-              // (Not-applicable diagnoses such as OSMF stay valid for either).
-              const dx = effectiveForm.provisionalDiagnosis;
-              const dxStillValid =
-                !dx || !nextClass || classificationOf(dx) === null || classificationOf(dx) === nextClass;
-              updateForm({
-                ...effectiveForm,
-                photoVerdicts: nextVerdicts,
-                ...(dxStillValid ? {} : { provisionalDiagnosis: "", provisionalSubType: "" }),
-              });
-            }}
-          />
-        ))}
+        {photos.map((photo) => {
+          const quality = effectiveForm.photoQuality[photo.slot] ?? QUALITY_VALUES.yes;
+          const assessable = quality !== QUALITY_VALUES.no;
+          const isHighestRisk = effectiveForm.highestRiskSlot === photo.slot;
+          // Once one photo is flagged, the checkbox is disabled on every other.
+          const highestRiskDisabled = effectiveForm.highestRiskSlot != null && !isHighestRisk;
+          return (
+            <PhotoReviewRow
+              key={photo.slot}
+              photo={photo}
+              verdictAnswers={loaded.physicianVerdictAnswers}
+              value={effectiveForm.photoVerdicts[photo.slot] ?? ""}
+              quality={quality}
+              isHighestRisk={isHighestRisk}
+              highestRiskDisabled={highestRiskDisabled}
+              readOnly={readOnly}
+              missing={!readOnly && assessable && !effectiveForm.photoVerdicts[photo.slot]}
+              onHighestRiskChange={(checked) =>
+                updateForm({ ...effectiveForm, highestRiskSlot: checked ? photo.slot : null })
+              }
+              onQualityChange={(q) => {
+                const nextQuality = { ...effectiveForm.photoQuality, [photo.slot]: q };
+                // Marking a photo not-acceptable clears any verdict it had.
+                const nextVerdicts = { ...effectiveForm.photoVerdicts };
+                if (q === QUALITY_VALUES.no) delete nextVerdicts[photo.slot];
+                const nextClass = deriveClassification(presentPhotos, nextVerdicts, nextQuality);
+                const dx = effectiveForm.provisionalDiagnosis;
+                const dxStillValid =
+                  !dx || !nextClass || classificationOf(dx) === null || classificationOf(dx) === nextClass;
+                updateForm({
+                  ...effectiveForm,
+                  photoQuality: nextQuality,
+                  photoVerdicts: nextVerdicts,
+                  ...(dxStillValid ? {} : { provisionalDiagnosis: "", provisionalSubType: "" }),
+                });
+              }}
+              onChange={(v) => {
+                const nextVerdicts = { ...effectiveForm.photoVerdicts, [photo.slot]: v };
+                const nextClass = deriveClassification(presentPhotos, nextVerdicts, effectiveForm.photoQuality);
+                // Clear the diagnosis if the new classification no longer matches it
+                // (Not-applicable diagnoses such as OSMF stay valid for either).
+                const dx = effectiveForm.provisionalDiagnosis;
+                const dxStillValid =
+                  !dx || !nextClass || classificationOf(dx) === null || classificationOf(dx) === nextClass;
+                updateForm({
+                  ...effectiveForm,
+                  photoVerdicts: nextVerdicts,
+                  ...(dxStillValid ? {} : { provisionalDiagnosis: "", provisionalSubType: "" }),
+                });
+              }}
+            />
+          );
+        })}
       </Stack>
 
       <Card variant="outlined">
@@ -622,18 +680,29 @@ function PhotoReviewRow({
   photo,
   verdictAnswers,
   value,
+  quality,
+  isHighestRisk,
+  highestRiskDisabled,
   readOnly,
   missing,
+  onHighestRiskChange,
+  onQualityChange,
   onChange,
 }: {
   photo: ReviewPhoto;
   verdictAnswers: ConceptAnswer[];
   value: string;
+  quality: string;
+  isHighestRisk: boolean;
+  highestRiskDisabled: boolean;
   readOnly: boolean;
   missing: boolean;
+  onHighestRiskChange: (checked: boolean) => void;
+  onQualityChange: (q: string) => void;
   onChange: (v: string) => void;
 }) {
   const { slot, imageUrl: url } = photo;
+  const notAcceptable = quality === QUALITY_VALUES.no;
 
   return (
     <Card variant="outlined" sx={missing ? { borderColor: "error.main" } : undefined}>
@@ -645,19 +714,44 @@ function PhotoReviewRow({
           <Grid size={{ xs: 12, md: 8 }}>
             <Stack spacing={1}>
               <Typography variant="subtitle1">Photo {slot}</Typography>
-              <FormControl disabled={readOnly} error={missing}>
+
+              {/* Acceptable Quality? — gates the diagnosis below. Defaults to Yes. */}
+              <FormControl disabled={readOnly}>
                 <Typography variant="body2" sx={{ mb: 1, fontWeight: 600 }} color="text.primary">
-                  Physician verdict *
+                  Acceptable Quality of the photo?
+                </Typography>
+                <RadioGroup row value={quality} onChange={(_, q) => onQualityChange(q)}>
+                  <FormControlLabel value={QUALITY_VALUES.yes} control={<Radio />} label="Yes" />
+                  <FormControlLabel value={QUALITY_VALUES.no} control={<Radio />} label="No" />
+                </RadioGroup>
+              </FormControl>
+
+              <FormControl disabled={readOnly || notAcceptable} error={missing}>
+                <Typography variant="body2" sx={{ mb: 1, fontWeight: 600 }} color="text.primary">
+                  Clinician diagnosis *
                 </Typography>
                 <RadioGroup row value={value} onChange={(_, v) => onChange(v)}>
                   {verdictAnswers.map((a) => (
                     <FormControlLabel key={a.uuid} value={a.name} control={<Radio />} label={a.name} />
                   ))}
                 </RadioGroup>
-                {missing && (
-                  <FormHelperText>Physician verdict is required.</FormHelperText>
+                {!notAcceptable && missing && (
+                  <FormHelperText>Clinician diagnosis is required.</FormHelperText>
                 )}
               </FormControl>
+
+              {/* Highest Risk Photo? — at most one across the set; checking one
+                  disables the checkbox on all others. */}
+              <FormControlLabel
+                control={
+                  <Checkbox
+                    checked={isHighestRisk}
+                    disabled={readOnly || highestRiskDisabled}
+                    onChange={(_, checked) => onHighestRiskChange(checked)}
+                  />
+                }
+                label="Highest Risk Photo?"
+              />
             </Stack>
           </Grid>
         </Grid>
@@ -669,15 +763,21 @@ function PhotoReviewRow({
 function prefillFromCompleted(review: EncounterApiResponse): FormState {
   const obs = review.observations as Record<string, unknown>;
   const photoVerdicts: Partial<Record<PhotoSlot, string>> = {};
+  const photoQuality: Partial<Record<PhotoSlot, string>> = {};
+  let highestRiskSlot: PhotoSlot | null = null;
   // 2.0 reviews store verdicts in the repeatable Images group (index-aligned).
   const imagesGroup = obs[REVIEW_IMAGE_GROUP.name];
   if (Array.isArray(imagesGroup)) {
     imagesGroup.forEach((row, i) => {
       const slot = PHOTO_SLOTS[i];
-      const v = row && typeof row === "object"
-        ? (row as Record<string, unknown>)[REVIEW_IMAGE_GROUP_CHILD.physicianVerdict.name]
-        : undefined;
-      if (slot && typeof v === "string") photoVerdicts[slot] = v;
+      if (!slot || !row || typeof row !== "object") return;
+      const r = row as Record<string, unknown>;
+      const v = r[REVIEW_IMAGE_GROUP_CHILD.physicianVerdict.name];
+      if (typeof v === "string") photoVerdicts[slot] = v;
+      // Older completed reviews predate this field → treat as acceptable (Yes).
+      const q = r[REVIEW_IMAGE_GROUP_CHILD.acceptableQuality.name];
+      photoQuality[slot] = typeof q === "string" ? q : QUALITY_VALUES.yes;
+      if (r[REVIEW_IMAGE_GROUP_CHILD.highestRiskPhoto.name] === QUALITY_VALUES.yes) highestRiskSlot = slot;
     });
   } else {
     // Pre-2.0 completed reviews: flat per-slot Photo N — Physician verdict.
@@ -688,6 +788,8 @@ function prefillFromCompleted(review: EncounterApiResponse): FormState {
   }
   return {
     photoVerdicts,
+    photoQuality,
+    highestRiskSlot,
     provisionalDiagnosis: (obs[REVIEW_CONCEPTS.provisionalDiagnosis.name] as string) ?? "",
     provisionalSubType: (obs[REVIEW_CONCEPTS.provisionalSubType.name] as string) ?? "",
     notes: (readObs<string>(obs, REVIEW_CONCEPTS.notes) as string) ?? "",

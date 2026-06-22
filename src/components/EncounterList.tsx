@@ -59,8 +59,12 @@ export function EncounterList({ mode }: Props) {
   // Requirements 2.0: search a patient by name (or external id). Applied
   // client-side to the loaded page.
   const [nameQuery, setNameQuery] = useState<string>("");
-  // Map of subjectUuid -> Place of referral pulled from the latest Oral Screening
-  const [referrals, setReferrals] = useState<Record<string, string>>({});
+  // Map of subjectUuid -> info pulled from the latest Oral Screening:
+  // the Place of referral (shown in the completed tab) and the screening
+  // (encounter) date (shown in the pending tab).
+  const [screeningInfo, setScreeningInfo] = useState<
+    Record<string, { referral: string; screeningDate: string }>
+  >({});
 
   const { data: pageData, error } = useAsync(
     () =>
@@ -85,7 +89,7 @@ export function EncounterList({ mode }: Props) {
     let cancelled = false;
     const subjectIds = Array.from(new Set(pageData.content.map((e) => e.subject.uuid)));
     if (subjectIds.length === 0) {
-      setReferrals({});
+      setScreeningInfo({});
       return;
     }
     Promise.all(
@@ -102,15 +106,27 @@ export function EncounterList({ mode }: Props) {
               (b["Encounter date time"] || "").localeCompare(a["Encounter date time"] || ""),
             )[0];
           const raw = latest?.observations?.[PLACE_OF_REFERRAL_KEY];
-          return [sid, extractReferralName(raw)] as const;
+          return [
+            sid,
+            {
+              referral: extractReferralName(raw),
+              screeningDate: latest?.["Encounter date time"] ?? "",
+            },
+          ] as const;
         } catch {
-          return [sid, ""] as const;
+          return [sid, { referral: "", screeningDate: "" }] as const;
         }
       }),
-    ).then((entries: ReadonlyArray<readonly [string, string]>) => {
-      if (cancelled) return;
-      setReferrals(Object.fromEntries(entries));
-    });
+    ).then(
+      (
+        entries: ReadonlyArray<
+          readonly [string, { referral: string; screeningDate: string }]
+        >,
+      ) => {
+        if (cancelled) return;
+        setScreeningInfo(Object.fromEntries(entries));
+      },
+    );
     return () => {
       cancelled = true;
     };
@@ -270,8 +286,9 @@ export function EncounterList({ mode }: Props) {
                   e.subject.displayName?.trim() ||
                   e.subject.externalId ||
                   e.subject.uuid.slice(0, 8);
-                const date = mode === "pending" ? e.earliestScheduledDate : e.encounterDateTime;
-                const referral = referrals[e.subject.uuid];
+                const info = screeningInfo[e.subject.uuid];
+                const date = mode === "pending" ? info?.screeningDate : e.encounterDateTime;
+                const village = e.subject.location?.["Village"];
                 return (
                   <Paper
                     key={e.encounterUuid}
@@ -305,15 +322,15 @@ export function EncounterList({ mode }: Props) {
                       </Stack>
                       <Typography variant="body2" sx={{ color: "text.primary" }}>
                         <Box component="span" sx={{ color: "text.secondary", fontWeight: 500 }}>
-                          {mode === "pending" ? "Scheduled: " : "Reviewed: "}
+                          {mode === "pending" ? "Screening date: " : "Reviewed: "}
                         </Box>
                         {date ? format(parseISO(date), "dd MMM yyyy") : "—"}
                       </Typography>
                       <Typography variant="body2" sx={{ color: "text.primary" }}>
                         <Box component="span" sx={{ color: "text.secondary", fontWeight: 500 }}>
-                          Place of referral:{" "}
+                          {mode === "pending" ? "Village: " : "Place of referral: "}
                         </Box>
-                        {referral || "—"}
+                        {(mode === "pending" ? village : info?.referral) || "—"}
                       </Typography>
                       {mode === "completed" && (
                         <Typography variant="body2" sx={{ color: "text.primary" }}>
@@ -334,9 +351,11 @@ export function EncounterList({ mode }: Props) {
                 <TableRow sx={{ "& th": { fontWeight: 700, color: "text.primary", fontSize: "0.95rem", backgroundColor: "grey.100" } }}>
                   <TableCell sx={{ width: mode === "pending" ? "30%" : "22%" }}>Name</TableCell>
                   <TableCell sx={{ width: mode === "pending" ? "20%" : "16%" }}>
-                    {mode === "pending" ? "Scheduled" : "Reviewed on"}
+                    {mode === "pending" ? "Screening date" : "Reviewed on"}
                   </TableCell>
-                  <TableCell sx={{ width: mode === "pending" ? "35%" : "26%" }}>Place of referral</TableCell>
+                  <TableCell sx={{ width: mode === "pending" ? "35%" : "26%" }}>
+                    {mode === "pending" ? "Village" : "Place of referral"}
+                  </TableCell>
                   {mode === "completed" && <TableCell sx={{ width: "22%" }}>Reviewed by</TableCell>}
                   <TableCell sx={{ width: "15%" }} aria-hidden />
                 </TableRow>
@@ -347,8 +366,9 @@ export function EncounterList({ mode }: Props) {
                     e.subject.displayName?.trim() ||
                     e.subject.externalId ||
                     e.subject.uuid.slice(0, 8);
-                  const date = mode === "pending" ? e.earliestScheduledDate : e.encounterDateTime;
-                  const referral = referrals[e.subject.uuid];
+                  const info = screeningInfo[e.subject.uuid];
+                  const date = mode === "pending" ? info?.screeningDate : e.encounterDateTime;
+                  const village = e.subject.location?.["Village"];
                   return (
                     <TableRow
                       key={e.encounterUuid}
@@ -362,7 +382,9 @@ export function EncounterList({ mode }: Props) {
                       <TableCell sx={{ color: "text.primary" }}>
                         {date ? format(parseISO(date), "dd MMM yyyy") : "—"}
                       </TableCell>
-                      <TableCell sx={{ color: "text.primary" }}>{referral || "—"}</TableCell>
+                      <TableCell sx={{ color: "text.primary" }}>
+                        {(mode === "pending" ? village : info?.referral) || "—"}
+                      </TableCell>
                       {mode === "completed" && (
                         <TableCell sx={{ color: "text.primary" }}>{e.lastModifiedBy || "—"}</TableCell>
                       )}
