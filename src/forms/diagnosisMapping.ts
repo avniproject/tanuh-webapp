@@ -1,18 +1,22 @@
-// Requirements 2.0 — Physician Review Form auto-derivation.
+// Clinician Review — diagnosis auto-derivation (per the Clinician Review user
+// stories).
 //
 // A provisional diagnosis (and, for "Non-homogeneous leukoplakia", its sub-type)
-// determines three downstream values that the physician does NOT pick manually:
+// determines three downstream values that the clinician does NOT pick manually:
 //   - Classification: Suspicious / Non-Suspicious
 //   - Risk band:      High Risk / Low-risk
-//   - Recommended action: No action / Lifestyle counselling only / Biopsy at hospital
+//   - Recommended action:
+//       * Non-suspicious           -> "Follow-up for Dentist Visit"
+//       * Suspicious + Low-risk     -> "Visit Dentist for Routine Check-up"
+//       * Suspicious + High Risk    -> "Urgent Visit to Dental Hospital"
 //
 // Values below are the EXACT answer-concept names from the Tanuh UAT bundle —
-// observations are written by name, so any casing drift ("No action" vs
-// "No Action", "High Risk" vs "High-risk") would silently fail to map. Do not
-// "tidy" these strings.
+// observations are written by name, so any casing drift ("High Risk" vs
+// "High-risk") would silently fail to map. Do not "tidy" these strings. The 3
+// action strings were added as answers of the "Recommended action" concept in
+// the Tanuh_UAT_recommended_actions bundle.
 //
-// Edge cases:
-//   - "Oral submucosal fibrosis" maps to "Not applicable" for all three (null here).
+// Edge case:
 //   - "Non-homogeneous leukoplakia" has no row of its own: classification is
 //     known (Suspicious) but risk/action resolve only once a sub-type is chosen.
 
@@ -27,9 +31,9 @@ export const RISK = {
 } as const;
 
 export const ACTION = {
-  none: "No action",
-  lifestyle: "Lifestyle counselling only",
-  biopsy: "Biopsy at hospital",
+  dentistFollowUp: "Follow-up for Dentist Visit", // non-suspicious
+  routineCheckup: "Visit Dentist for Routine Check-up", // suspicious + low-risk
+  urgentHospital: "Urgent Visit to Dental Hospital", // high-risk
 } as const;
 
 // The one diagnosis that opens the dependent sub-type dropdown.
@@ -44,29 +48,30 @@ export interface DiagnosisMapping {
 // Leaf diagnoses (everything except Non-homogeneous leukoplakia, which is
 // resolved via its sub-type).
 const DIAGNOSIS_MAP: Record<string, DiagnosisMapping> = {
-  "Oral cavity normal": { classification: CLASSIFICATION.nonSuspicious, risk: RISK.low, action: ACTION.none },
-  Benign: { classification: CLASSIFICATION.nonSuspicious, risk: RISK.low, action: ACTION.lifestyle },
-  Other: { classification: CLASSIFICATION.nonSuspicious, risk: RISK.low, action: ACTION.none },
-  "Smokeless tobacco keratosis": { classification: CLASSIFICATION.suspicious, risk: RISK.low, action: ACTION.lifestyle },
-  "Homogenous oral leukoplakia": { classification: CLASSIFICATION.suspicious, risk: RISK.low, action: ACTION.lifestyle },
-  "Oral submucosal fibrosis": { classification: null, risk: null, action: null }, // Not applicable
-  "Oral Lichen Planus (OLP)": { classification: CLASSIFICATION.suspicious, risk: RISK.low, action: ACTION.lifestyle },
+  "Oral cavity normal": { classification: CLASSIFICATION.nonSuspicious, risk: RISK.low, action: ACTION.dentistFollowUp },
+  Benign: { classification: CLASSIFICATION.nonSuspicious, risk: RISK.low, action: ACTION.dentistFollowUp },
+  Other: { classification: CLASSIFICATION.nonSuspicious, risk: RISK.low, action: ACTION.dentistFollowUp },
+  "Smokeless tobacco keratosis": { classification: CLASSIFICATION.suspicious, risk: RISK.low, action: ACTION.routineCheckup },
+  "Homogenous oral leukoplakia": { classification: CLASSIFICATION.suspicious, risk: RISK.low, action: ACTION.routineCheckup },
+  "Oral submucosal fibrosis": { classification: CLASSIFICATION.suspicious, risk: RISK.low, action: ACTION.routineCheckup },
+  "Oral Lichen Planus (OLP)": { classification: CLASSIFICATION.suspicious, risk: RISK.low, action: ACTION.routineCheckup },
   "Squamous cell carcinoma of oral mucous membrane": {
     classification: CLASSIFICATION.suspicious,
     risk: RISK.high,
-    action: ACTION.biopsy,
+    action: ACTION.urgentHospital,
   },
 };
 
-// All Non-homogeneous leukoplakia sub-types resolve identically.
+// All Non-homogeneous leukoplakia sub-types resolve identically (Suspicious,
+// High Risk).
 const SUBTYPE_MAP: Record<string, DiagnosisMapping> = {
-  "Speckled oral leukoplakia": { classification: CLASSIFICATION.suspicious, risk: RISK.high, action: ACTION.biopsy },
-  Erythroplakia: { classification: CLASSIFICATION.suspicious, risk: RISK.high, action: ACTION.biopsy },
-  "Verrucous oral leukoplakia": { classification: CLASSIFICATION.suspicious, risk: RISK.high, action: ACTION.biopsy },
+  "Speckled oral leukoplakia": { classification: CLASSIFICATION.suspicious, risk: RISK.high, action: ACTION.urgentHospital },
+  Erythroplakia: { classification: CLASSIFICATION.suspicious, risk: RISK.high, action: ACTION.urgentHospital },
+  "Verrucous oral leukoplakia": { classification: CLASSIFICATION.suspicious, risk: RISK.high, action: ACTION.urgentHospital },
   "Proliferative Verrucous Leukoplakia (PVL)": {
     classification: CLASSIFICATION.suspicious,
     risk: RISK.high,
-    action: ACTION.biopsy,
+    action: ACTION.urgentHospital,
   },
 };
 

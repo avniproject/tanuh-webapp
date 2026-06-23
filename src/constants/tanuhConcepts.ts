@@ -39,6 +39,13 @@ export const HABIT_CONCEPTS = {
   alcoholFrequency: { name: "Frequency of Alcohol Consumption", uuid: "0a433bb3-92da-4bbf-a248-c8dadd437220" },
 } as const;
 
+// Single Yes/No symptom flag captured on the Oral Screening (Habit
+// Questionnaire group). Shown in the review's Symptoms section.
+export const SYMPTOMS_CONCEPT = {
+  name: "Any Symptoms",
+  uuid: "4113f78c-756b-4ea7-b2cd-c92cfa9ed369",
+} as const;
+
 export const PHOTO_SLOTS = [1, 2, 3, 4, 5, 6, 7, 8] as const;
 export type PhotoSlot = (typeof PHOTO_SLOTS)[number];
 

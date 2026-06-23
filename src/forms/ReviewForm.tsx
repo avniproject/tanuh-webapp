@@ -35,6 +35,7 @@ import type { EncounterApiResponse, SubjectApiResponse } from "@/api/types";
 import {
   ENCOUNTER_TYPE,
   HABIT_CONCEPTS,
+  SYMPTOMS_CONCEPT,
   isLegacyOralScreening,
   ORAL_IMAGE_GROUP,
   ORAL_IMAGE_GROUP_CHILD,
@@ -347,12 +348,10 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
     }
   };
 
-  const subjectObs = (loaded.subject.observations ?? {}) as Record<string, unknown>;
-  const firstName = (subjectObs["First name"] as string | undefined) ?? "";
-  const lastName = (subjectObs["Last name"] as string | undefined) ?? "";
-  const fullName = `${firstName} ${lastName}`.trim()
-    || loaded.subject["External ID"]
-    || loaded.review["Subject ID"].slice(0, 8);
+  // Clinician review is name-blind: the patient name is intentionally not shown.
+  // Title the page with the registration/external ID, falling back to a short
+  // subject id.
+  const caseLabel = loaded.subject["External ID"] || loaded.review["Subject ID"].slice(0, 8);
 
   return (
     <Stack spacing={3}>
@@ -383,7 +382,7 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
             whiteSpace: "nowrap",
           }}
         >
-          {fullName}
+          {caseLabel}
         </Typography>
         <Box sx={{ flexGrow: 1 }} />
       </Stack>
@@ -421,6 +420,9 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
         </Grid>
         <Grid size={{ xs: 12, md: 6 }}>
           <HabitHistoryCard screening={loaded.screening} />
+        </Grid>
+        <Grid size={{ xs: 12, md: 6 }}>
+          <SymptomsCard screening={loaded.screening} />
         </Grid>
       </Grid>
 
@@ -626,9 +628,6 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
 
 function RegDetailsCard({ subject, screening }: { subject: SubjectApiResponse; screening: EncounterApiResponse }) {
   const obs = subject.observations ?? {};
-  const firstName = obs["First name"] as string | undefined;
-  const lastName = obs["Last name"] as string | undefined;
-  const fullName = [firstName, lastName].filter(Boolean).join(" ") || "—";
   const dob = obs["Date of birth"] as string | undefined;
   const age = dob ? differenceInYears(new Date(), parseISO(dob)) : undefined;
   const gender = (obs["Gender"] as string | undefined) ?? "—";
@@ -651,7 +650,6 @@ function RegDetailsCard({ subject, screening }: { subject: SubjectApiResponse; s
         <Typography variant="overline" color="text.secondary">
           Reg Details
         </Typography>
-        <DetailRow label="Name" value={fullName} />
         <DetailRow label="Age" value={age != null ? String(age) : "—"} />
         <DetailRow label="Gender" value={gender} />
         <DetailRow label="Captured on" value={capturedOn} />
@@ -677,6 +675,20 @@ function HabitHistoryCard({ screening }: { screening: EncounterApiResponse }) {
         <DetailRow label="Areca nut" value={obs[HABIT_CONCEPTS.arecaNut.name] ?? "—"} />
         <DetailRow label="Alcohol" value={obs[HABIT_CONCEPTS.alcohol.name] ?? "—"} />
         <DetailRow label="Frequency of alcohol" value={obs[HABIT_CONCEPTS.alcoholFrequency.name] ?? "—"} />
+      </CardContent>
+    </Card>
+  );
+}
+
+function SymptomsCard({ screening }: { screening: EncounterApiResponse }) {
+  const obs = screening.observations as Record<string, string | undefined>;
+  return (
+    <Card variant="outlined" sx={{ height: "100%" }}>
+      <CardContent>
+        <Typography variant="overline" color="text.secondary">
+          Symptoms
+        </Typography>
+        <DetailRow label="Any symptoms" value={obs[SYMPTOMS_CONCEPT.name] ?? "—"} />
       </CardContent>
     </Card>
   );

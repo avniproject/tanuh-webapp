@@ -59,10 +59,11 @@ export function EncounterList({ mode }: Props) {
   // client-side to the loaded page.
   const [nameQuery, setNameQuery] = useState<string>("");
   // Map of subjectUuid -> info pulled from the latest Oral Screening: the
-  // screening (encounter) date (shown as "Screening date" on the pending tab)
-  // and the subject's external ID (the "Case ID", shown on both tabs).
+  // screening (encounter) date (shown as "Screening date" on the pending tab),
+  // the subject's external ID (the "Case ID"), and the health worker who filled
+  // the screening (its creator) — all shown on both tabs.
   const [screeningInfo, setScreeningInfo] = useState<
-    Record<string, { screeningDate: string; caseId: string }>
+    Record<string, { screeningDate: string; caseId: string; healthWorker: string }>
   >({});
 
   const { data: pageData, error } = useAsync(
@@ -113,14 +114,19 @@ export function EncounterList({ mode }: Props) {
             {
               screeningDate: latest?.["Encounter date time"] ?? "",
               caseId: latest?.["Subject external ID"] ?? "",
+              healthWorker: latest?.audit?.["Created by"] ?? "",
             },
           ] as const;
         } catch {
-          return [sid, { screeningDate: "", caseId: "" }] as const;
+          return [sid, { screeningDate: "", caseId: "", healthWorker: "" }] as const;
         }
       }),
     ).then(
-      (entries: ReadonlyArray<readonly [string, { screeningDate: string; caseId: string }]>) => {
+      (
+        entries: ReadonlyArray<
+          readonly [string, { screeningDate: string; caseId: string; healthWorker: string }]
+        >,
+      ) => {
         if (cancelled) return;
         setScreeningInfo(Object.fromEntries(entries));
       },
@@ -288,14 +294,12 @@ export function EncounterList({ mode }: Props) {
           {isMobile ? (
             <Stack spacing={1.5} sx={{ p: 1.5 }}>
               {filtered.map((e: EncounterWithLocation) => {
-                const displayName =
-                  e.subject.displayName?.trim() ||
-                  e.subject.externalId ||
-                  e.subject.uuid.slice(0, 8);
                 const info = screeningInfo[e.subject.uuid];
                 const date = mode === "pending" ? info?.screeningDate : e.encounterDateTime;
+                const screeningTs = info?.screeningDate;
                 const village = e.subject.location?.["Village"];
                 const caseId = info?.caseId || e.subject.externalId;
+                const healthWorker = info?.healthWorker;
                 return (
                   <Paper
                     key={e.encounterUuid}
@@ -308,13 +312,7 @@ export function EncounterList({ mode }: Props) {
                     }}
                   >
                     <Stack spacing={0.5}>
-                      <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1}>
-                        <Typography
-                          variant="body1"
-                          sx={{ fontWeight: 700, color: "text.primary" }}
-                        >
-                          {displayName}
-                        </Typography>
+                      <Stack direction="row" justifyContent="flex-end" alignItems="flex-start" spacing={1}>
                         <Button
                           size="small"
                           startIcon={mode === "pending" ? <RateReviewIcon /> : <VisibilityIcon />}
@@ -341,9 +339,21 @@ export function EncounterList({ mode }: Props) {
                       </Typography>
                       <Typography variant="body2" sx={{ color: "text.primary" }}>
                         <Box component="span" sx={{ color: "text.secondary", fontWeight: 500 }}>
+                          Timestamp of screening:{" "}
+                        </Box>
+                        {screeningTs ? format(parseISO(screeningTs), "dd MMM yyyy, h:mm a") : "—"}
+                      </Typography>
+                      <Typography variant="body2" sx={{ color: "text.primary" }}>
+                        <Box component="span" sx={{ color: "text.secondary", fontWeight: 500 }}>
                           Village:{" "}
                         </Box>
                         {village || "—"}
+                      </Typography>
+                      <Typography variant="body2" sx={{ color: "text.primary" }}>
+                        <Box component="span" sx={{ color: "text.secondary", fontWeight: 500 }}>
+                          Health worker:{" "}
+                        </Box>
+                        {healthWorker || "—"}
                       </Typography>
                       {mode === "completed" && (
                         <Typography variant="body2" sx={{ color: "text.primary" }}>
@@ -362,28 +372,29 @@ export function EncounterList({ mode }: Props) {
             <Table size="small" sx={{ tableLayout: "fixed" }}>
               <TableHead>
                 <TableRow sx={{ "& th": { fontWeight: 700, color: "text.primary", fontSize: "0.95rem", backgroundColor: "grey.100" } }}>
-                  <TableCell sx={{ width: mode === "pending" ? "18%" : "15%" }}>Case ID</TableCell>
-                  <TableCell sx={{ width: mode === "pending" ? "25%" : "18%" }}>Name</TableCell>
-                  <TableCell sx={{ width: mode === "pending" ? "17%" : "15%" }}>
+                  <TableCell sx={{ width: mode === "pending" ? "15%" : "13%" }}>Case ID</TableCell>
+                  <TableCell sx={{ width: mode === "pending" ? "16%" : "14%" }}>
                     {mode === "pending" ? "Screening date" : "Reviewed on"}
                   </TableCell>
-                  <TableCell sx={{ width: mode === "pending" ? "25%" : "20%" }}>
+                  <TableCell sx={{ width: mode === "pending" ? "19%" : "16%" }}>
+                    Timestamp of screening
+                  </TableCell>
+                  <TableCell sx={{ width: mode === "pending" ? "19%" : "16%" }}>
                     Village
                   </TableCell>
-                  {mode === "completed" && <TableCell sx={{ width: "18%" }}>Reviewed by</TableCell>}
-                  <TableCell sx={{ width: mode === "pending" ? "15%" : "14%" }} aria-hidden />
+                  <TableCell sx={{ width: mode === "pending" ? "17%" : "15%" }}>Health worker</TableCell>
+                  {mode === "completed" && <TableCell sx={{ width: "14%" }}>Reviewed by</TableCell>}
+                  <TableCell sx={{ width: mode === "pending" ? "14%" : "12%" }} aria-hidden />
                 </TableRow>
               </TableHead>
               <TableBody>
                 {filtered.map((e: EncounterWithLocation) => {
-                  const displayName =
-                    e.subject.displayName?.trim() ||
-                    e.subject.externalId ||
-                    e.subject.uuid.slice(0, 8);
                   const info = screeningInfo[e.subject.uuid];
                   const date = mode === "pending" ? info?.screeningDate : e.encounterDateTime;
+                  const screeningTs = info?.screeningDate;
                   const village = e.subject.location?.["Village"];
                   const caseId = info?.caseId || e.subject.externalId;
+                  const healthWorker = info?.healthWorker;
                   return (
                     <TableRow
                       key={e.encounterUuid}
@@ -392,15 +403,16 @@ export function EncounterList({ mode }: Props) {
                       sx={{ cursor: "pointer" }}
                     >
                       <TableCell sx={{ color: "text.primary" }}>{caseId || "—"}</TableCell>
-                      <TableCell sx={{ fontWeight: 600, color: "text.primary", fontSize: "0.95rem" }}>
-                        {displayName}
-                      </TableCell>
                       <TableCell sx={{ color: "text.primary" }}>
                         {date ? format(parseISO(date), "dd MMM yyyy") : "—"}
                       </TableCell>
                       <TableCell sx={{ color: "text.primary" }}>
+                        {screeningTs ? format(parseISO(screeningTs), "dd MMM yyyy, h:mm a") : "—"}
+                      </TableCell>
+                      <TableCell sx={{ color: "text.primary" }}>
                         {village || "—"}
                       </TableCell>
+                      <TableCell sx={{ color: "text.primary" }}>{healthWorker || "—"}</TableCell>
                       {mode === "completed" && (
                         <TableCell sx={{ color: "text.primary" }}>{e.lastModifiedBy || "—"}</TableCell>
                       )}
