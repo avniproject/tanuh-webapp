@@ -349,9 +349,10 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
   };
 
   // Clinician review is name-blind: the patient name is intentionally not shown.
-  // Title the page with the registration/external ID, falling back to a short
-  // subject id.
-  const caseLabel = loaded.subject["External ID"] || loaded.review["Subject ID"].slice(0, 8);
+  // Title the page with the registration/external ID (the "Case ID"); until that
+  // source is wired up these subjects have none, so fall back to a neutral label
+  // rather than exposing the raw subject UUID.
+  const caseLabel = loaded.subject["External ID"] || "Patient Review";
 
   return (
     <Stack spacing={3}>
@@ -674,7 +675,10 @@ function HabitHistoryCard({ screening }: { screening: EncounterApiResponse }) {
         <DetailRow label="Smokeless Tobacco" value={obs[HABIT_CONCEPTS.smokelessTobacco.name] ?? "—"} />
         <DetailRow label="Areca nut" value={obs[HABIT_CONCEPTS.arecaNut.name] ?? "—"} />
         <DetailRow label="Alcohol" value={obs[HABIT_CONCEPTS.alcohol.name] ?? "—"} />
-        <DetailRow label="Frequency of alcohol" value={obs[HABIT_CONCEPTS.alcoholFrequency.name] ?? "—"} />
+        {/* Frequency is only meaningful for current drinkers. */}
+        {obs[HABIT_CONCEPTS.alcohol.name] === "Current" && (
+          <DetailRow label="Frequency of alcohol" value={obs[HABIT_CONCEPTS.alcoholFrequency.name] ?? "—"} />
+        )}
       </CardContent>
     </Card>
   );
