@@ -12,7 +12,7 @@ export const ENCOUNTER_TYPE = {
     uuid: "634a9542-a37e-461a-83bc-fc8226d6d5cb",
   },
   physicianReviewForm: {
-    name: "Physician Review Form",
+    name: "Clinician Review Form",
     uuid: "714c98f6-3899-4cdc-8036-b683842b8991",
   },
   // Requirements 2.0 Case Updates: when a review resolves to High Risk, the

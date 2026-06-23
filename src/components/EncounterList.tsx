@@ -32,7 +32,6 @@ interface Props {
 }
 
 const PAGE_SIZE = 50;
-const PLACE_OF_REFERRAL_KEY = "Place of referral";
 
 // Two parallel branches share State → District (addressLevelTypes.json):
 //  - patient/admin chain where subjects are registered: State → District →
@@ -59,11 +58,11 @@ export function EncounterList({ mode }: Props) {
   // Requirements 2.0: search a patient by name (or external id). Applied
   // client-side to the loaded page.
   const [nameQuery, setNameQuery] = useState<string>("");
-  // Map of subjectUuid -> info pulled from the latest Oral Screening:
-  // the Place of referral (shown in the completed tab) and the screening
-  // (encounter) date (shown in the pending tab).
+  // Map of subjectUuid -> info pulled from the latest Oral Screening: the
+  // screening (encounter) date (shown as "Screening date" on the pending tab)
+  // and the subject's external ID (the "Case ID", shown on both tabs).
   const [screeningInfo, setScreeningInfo] = useState<
-    Record<string, { referral: string; screeningDate: string }>
+    Record<string, { screeningDate: string; caseId: string }>
   >({});
 
   const { data: pageData, error } = useAsync(
@@ -92,8 +91,9 @@ export function EncounterList({ mode }: Props) {
       setScreeningInfo({});
       return;
     }
+    console.log("[CASEID-DEBUG] review.subject (impl):", pageData.content[0]?.subject);
     Promise.all(
-      subjectIds.map(async (sid) => {
+      subjectIds.map(async (sid, i) => {
         try {
           const res = await listEncounters({
             encounterType: ENCOUNTER_TYPE.oralScreening.name,
@@ -105,24 +105,22 @@ export function EncounterList({ mode }: Props) {
             .sort((a, b) =>
               (b["Encounter date time"] || "").localeCompare(a["Encounter date time"] || ""),
             )[0];
-          const raw = latest?.observations?.[PLACE_OF_REFERRAL_KEY];
+          if (i === 0 && latest) {
+            console.log("[CASEID-DEBUG] oral screening encounter:", latest);
+          }
           return [
             sid,
             {
-              referral: extractReferralName(raw),
               screeningDate: latest?.["Encounter date time"] ?? "",
+              caseId: latest?.["Subject external ID"] ?? "",
             },
           ] as const;
         } catch {
-          return [sid, { referral: "", screeningDate: "" }] as const;
+          return [sid, { screeningDate: "", caseId: "" }] as const;
         }
       }),
     ).then(
-      (
-        entries: ReadonlyArray<
-          readonly [string, { referral: string; screeningDate: string }]
-        >,
-      ) => {
+      (entries: ReadonlyArray<readonly [string, { screeningDate: string; caseId: string }]>) => {
         if (cancelled) return;
         setScreeningInfo(Object.fromEntries(entries));
       },
@@ -143,7 +141,15 @@ export function EncounterList({ mode }: Props) {
         return name.includes(q) || extId.includes(q);
       });
     }
-    if (mode !== "completed") return rows;
+    if (mode !== "completed") {
+      // Pending: show the most recently screened patient first. Rows whose
+      // screening date hasn't loaded yet (or is missing) sort to the bottom.
+      return [...rows].sort((a, b) =>
+        (screeningInfo[b.subject.uuid]?.screeningDate || "").localeCompare(
+          screeningInfo[a.subject.uuid]?.screeningDate || "",
+        ),
+      );
+    }
     const fromDate = from ? parseISO(from) : null;
     const toDate = to ? parseISO(to) : null;
     if (!fromDate && !toDate) return rows;
@@ -154,7 +160,7 @@ export function EncounterList({ mode }: Props) {
       if (toDate && d > toDate) return false;
       return true;
     });
-  }, [pageData, mode, from, to, nameQuery]);
+  }, [pageData, mode, from, to, nameQuery, screeningInfo]);
 
   if (error) return <Box sx={{ p: 3, color: "error.main" }}>Failed to load: {error}</Box>;
   if (!pageData || !filtered)
@@ -289,6 +295,7 @@ export function EncounterList({ mode }: Props) {
                 const info = screeningInfo[e.subject.uuid];
                 const date = mode === "pending" ? info?.screeningDate : e.encounterDateTime;
                 const village = e.subject.location?.["Village"];
+                const caseId = info?.caseId || e.subject.externalId;
                 return (
                   <Paper
                     key={e.encounterUuid}
@@ -322,15 +329,21 @@ export function EncounterList({ mode }: Props) {
                       </Stack>
                       <Typography variant="body2" sx={{ color: "text.primary" }}>
                         <Box component="span" sx={{ color: "text.secondary", fontWeight: 500 }}>
+                          Case ID:{" "}
+                        </Box>
+                        {caseId || "—"}
+                      </Typography>
+                      <Typography variant="body2" sx={{ color: "text.primary" }}>
+                        <Box component="span" sx={{ color: "text.secondary", fontWeight: 500 }}>
                           {mode === "pending" ? "Screening date: " : "Reviewed: "}
                         </Box>
                         {date ? format(parseISO(date), "dd MMM yyyy") : "—"}
                       </Typography>
                       <Typography variant="body2" sx={{ color: "text.primary" }}>
                         <Box component="span" sx={{ color: "text.secondary", fontWeight: 500 }}>
-                          {mode === "pending" ? "Village: " : "Place of referral: "}
+                          Village:{" "}
                         </Box>
-                        {(mode === "pending" ? village : info?.referral) || "—"}
+                        {village || "—"}
                       </Typography>
                       {mode === "completed" && (
                         <Typography variant="body2" sx={{ color: "text.primary" }}>
@@ -349,15 +362,16 @@ export function EncounterList({ mode }: Props) {
             <Table size="small" sx={{ tableLayout: "fixed" }}>
               <TableHead>
                 <TableRow sx={{ "& th": { fontWeight: 700, color: "text.primary", fontSize: "0.95rem", backgroundColor: "grey.100" } }}>
-                  <TableCell sx={{ width: mode === "pending" ? "30%" : "22%" }}>Name</TableCell>
-                  <TableCell sx={{ width: mode === "pending" ? "20%" : "16%" }}>
+                  <TableCell sx={{ width: mode === "pending" ? "18%" : "15%" }}>Case ID</TableCell>
+                  <TableCell sx={{ width: mode === "pending" ? "25%" : "18%" }}>Name</TableCell>
+                  <TableCell sx={{ width: mode === "pending" ? "17%" : "15%" }}>
                     {mode === "pending" ? "Screening date" : "Reviewed on"}
                   </TableCell>
-                  <TableCell sx={{ width: mode === "pending" ? "35%" : "26%" }}>
-                    {mode === "pending" ? "Village" : "Place of referral"}
+                  <TableCell sx={{ width: mode === "pending" ? "25%" : "20%" }}>
+                    Village
                   </TableCell>
-                  {mode === "completed" && <TableCell sx={{ width: "22%" }}>Reviewed by</TableCell>}
-                  <TableCell sx={{ width: "15%" }} aria-hidden />
+                  {mode === "completed" && <TableCell sx={{ width: "18%" }}>Reviewed by</TableCell>}
+                  <TableCell sx={{ width: mode === "pending" ? "15%" : "14%" }} aria-hidden />
                 </TableRow>
               </TableHead>
               <TableBody>
@@ -369,6 +383,7 @@ export function EncounterList({ mode }: Props) {
                   const info = screeningInfo[e.subject.uuid];
                   const date = mode === "pending" ? info?.screeningDate : e.encounterDateTime;
                   const village = e.subject.location?.["Village"];
+                  const caseId = info?.caseId || e.subject.externalId;
                   return (
                     <TableRow
                       key={e.encounterUuid}
@@ -376,6 +391,7 @@ export function EncounterList({ mode }: Props) {
                       onClick={() => navigate(`/review/${e.encounterUuid}`)}
                       sx={{ cursor: "pointer" }}
                     >
+                      <TableCell sx={{ color: "text.primary" }}>{caseId || "—"}</TableCell>
                       <TableCell sx={{ fontWeight: 600, color: "text.primary", fontSize: "0.95rem" }}>
                         {displayName}
                       </TableCell>
@@ -383,7 +399,7 @@ export function EncounterList({ mode }: Props) {
                         {date ? format(parseISO(date), "dd MMM yyyy") : "—"}
                       </TableCell>
                       <TableCell sx={{ color: "text.primary" }}>
-                        {(mode === "pending" ? village : info?.referral) || "—"}
+                        {village || "—"}
                       </TableCell>
                       {mode === "completed" && (
                         <TableCell sx={{ color: "text.primary" }}>{e.lastModifiedBy || "—"}</TableCell>
@@ -432,24 +448,4 @@ export function EncounterList({ mode }: Props) {
       )}
     </Box>
   );
-}
-
-// "Place of referral" can be either a plain string OR a location-hierarchy
-// object (keys = AddressLevelType names, values = location titles). For the
-// table column we want the deepest non-empty facility name.
-function extractReferralName(value: unknown): string {
-  if (value == null) return "";
-  if (typeof value === "string") return value;
-  if (typeof value !== "object") return "";
-  const obj = value as Record<string, unknown>;
-  // Prefer the referral facility (Taluka Hospital), then the patient/admin chain
-  // deepest-first as a fallback.
-  for (const k of [REFERRAL_FACILITY_TYPE, ...[...PATIENT_LOCATION_TYPES].reverse()]) {
-    const v = obj[k];
-    if (typeof v === "string" && v.trim()) return v;
-  }
-  for (const v of Object.values(obj)) {
-    if (typeof v === "string" && v.trim()) return v;
-  }
-  return "";
 }

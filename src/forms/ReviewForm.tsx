@@ -270,7 +270,12 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
   );
   const diagnosisMissing = !effectiveForm.provisionalDiagnosis;
   const subTypeMissing = needsSubType && !effectiveForm.provisionalSubType;
-  const canSubmit = missingPhotoVerdicts.length === 0 && !diagnosisMissing && !subTypeMissing;
+  // Highest-risk photo is mandatory once any photo is Suspicious (the only case
+  // where the checkbox is offered): exactly one must be flagged.
+  const highestRiskRequired = classification === VERDICT_VALUES.suspicious;
+  const highestRiskMissing = highestRiskRequired && effectiveForm.highestRiskSlot == null;
+  const canSubmit =
+    missingPhotoVerdicts.length === 0 && !diagnosisMissing && !subTypeMissing && !highestRiskMissing;
 
   const submit = async () => {
     if (readOnly || !canSubmit) return;
@@ -439,6 +444,7 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
               quality={quality}
               isHighestRisk={isHighestRisk}
               highestRiskDisabled={highestRiskDisabled}
+              highestRiskMissing={!readOnly && highestRiskMissing}
               readOnly={readOnly}
               missing={!readOnly && assessable && !effectiveForm.photoVerdicts[photo.slot]}
               onHighestRiskChange={(checked) =>
@@ -446,9 +452,12 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
               }
               onQualityChange={(q) => {
                 const nextQuality = { ...effectiveForm.photoQuality, [photo.slot]: q };
-                // Marking a photo not-acceptable clears any verdict it had.
+                // Marking a photo not-acceptable clears any verdict it had, and
+                // it can no longer be the highest-risk photo.
                 const nextVerdicts = { ...effectiveForm.photoVerdicts };
                 if (q === QUALITY_VALUES.no) delete nextVerdicts[photo.slot];
+                const clearHighestRisk =
+                  q === QUALITY_VALUES.no && effectiveForm.highestRiskSlot === photo.slot;
                 const nextClass = deriveClassification(presentPhotos, nextVerdicts, nextQuality);
                 const dx = effectiveForm.provisionalDiagnosis;
                 const dxStillValid =
@@ -457,6 +466,7 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
                   ...effectiveForm,
                   photoQuality: nextQuality,
                   photoVerdicts: nextVerdicts,
+                  ...(clearHighestRisk ? { highestRiskSlot: null } : {}),
                   ...(dxStillValid ? {} : { provisionalDiagnosis: "", provisionalSubType: "" }),
                 });
               }}
@@ -468,9 +478,14 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
                 const dx = effectiveForm.provisionalDiagnosis;
                 const dxStillValid =
                   !dx || !nextClass || classificationOf(dx) === null || classificationOf(dx) === nextClass;
+                // A non-suspicious photo can't be the highest-risk one — drop the
+                // flag so it doesn't persist or block flagging another photo.
+                const clearHighestRisk =
+                  v === VERDICT_VALUES.nonSuspicious && effectiveForm.highestRiskSlot === photo.slot;
                 updateForm({
                   ...effectiveForm,
                   photoVerdicts: nextVerdicts,
+                  ...(clearHighestRisk ? { highestRiskSlot: null } : {}),
                   ...(dxStillValid ? {} : { provisionalDiagnosis: "", provisionalSubType: "" }),
                 });
               }}
@@ -683,6 +698,7 @@ function PhotoReviewRow({
   quality,
   isHighestRisk,
   highestRiskDisabled,
+  highestRiskMissing,
   readOnly,
   missing,
   onHighestRiskChange,
@@ -695,6 +711,7 @@ function PhotoReviewRow({
   quality: string;
   isHighestRisk: boolean;
   highestRiskDisabled: boolean;
+  highestRiskMissing: boolean;
   readOnly: boolean;
   missing: boolean;
   onHighestRiskChange: (checked: boolean) => void;
@@ -726,32 +743,43 @@ function PhotoReviewRow({
                 </RadioGroup>
               </FormControl>
 
-              <FormControl disabled={readOnly || notAcceptable} error={missing}>
-                <Typography variant="body2" sx={{ mb: 1, fontWeight: 600 }} color="text.primary">
-                  Clinician diagnosis *
-                </Typography>
-                <RadioGroup row value={value} onChange={(_, v) => onChange(v)}>
-                  {verdictAnswers.map((a) => (
-                    <FormControlLabel key={a.uuid} value={a.name} control={<Radio />} label={a.name} />
-                  ))}
-                </RadioGroup>
-                {!notAcceptable && missing && (
-                  <FormHelperText>Clinician diagnosis is required.</FormHelperText>
-                )}
-              </FormControl>
+              {/* Clinician diagnosis — only shown when the photo is acceptable. */}
+              {!notAcceptable && (
+                <FormControl disabled={readOnly} error={missing}>
+                  <Typography variant="body2" sx={{ mb: 1, fontWeight: 600 }} color="text.primary">
+                    Clinician diagnosis *
+                  </Typography>
+                  <RadioGroup row value={value} onChange={(_, v) => onChange(v)}>
+                    {verdictAnswers.map((a) => (
+                      <FormControlLabel key={a.uuid} value={a.name} control={<Radio />} label={a.name} />
+                    ))}
+                  </RadioGroup>
+                  {missing && (
+                    <FormHelperText>Clinician diagnosis is required.</FormHelperText>
+                  )}
+                </FormControl>
+              )}
 
-              {/* Highest Risk Photo? — at most one across the set; checking one
-                  disables the checkbox on all others. */}
-              <FormControlLabel
-                control={
-                  <Checkbox
-                    checked={isHighestRisk}
-                    disabled={readOnly || highestRiskDisabled}
-                    onChange={(_, checked) => onHighestRiskChange(checked)}
+              {/* Highest Risk Photo? — at most one across the set. Once a photo
+                  is flagged the checkbox is hidden on all others. Only meaningful
+                  for an acceptable, suspicious photo, so hide it otherwise. */}
+              {!notAcceptable && value !== VERDICT_VALUES.nonSuspicious && !highestRiskDisabled && (
+                <FormControl error={highestRiskMissing}>
+                  <FormControlLabel
+                    control={
+                      <Checkbox
+                        checked={isHighestRisk}
+                        disabled={readOnly}
+                        onChange={(_, checked) => onHighestRiskChange(checked)}
+                      />
+                    }
+                    label="Highest Risk Photo? *"
                   />
-                }
-                label="Highest Risk Photo?"
-              />
+                  {highestRiskMissing && (
+                    <FormHelperText>Mark the highest risk photo.</FormHelperText>
+                  )}
+                </FormControl>
+              )}
             </Stack>
           </Grid>
         </Grid>
