@@ -55,9 +55,6 @@ export function EncounterList({ mode }: Props) {
 
   const [from, setFrom] = useState<string>("");
   const [to, setTo] = useState<string>("");
-  // Requirements 2.0: search a patient by name (or external id). Applied
-  // client-side to the loaded page.
-  const [nameQuery, setNameQuery] = useState<string>("");
   // Map of subjectUuid -> info pulled from the latest Oral Screening: the
   // screening (encounter) date (shown as "Screening date" on the pending tab),
   // the subject's external ID (the "Case ID"), and the health worker who filled
@@ -138,15 +135,7 @@ export function EncounterList({ mode }: Props) {
 
   const filtered = useMemo(() => {
     if (!pageData) return null;
-    let rows = pageData.content;
-    const q = nameQuery.trim().toLowerCase();
-    if (q) {
-      rows = rows.filter((e) => {
-        const name = e.subject.displayName?.toLowerCase() ?? "";
-        const extId = e.subject.externalId?.toLowerCase() ?? "";
-        return name.includes(q) || extId.includes(q);
-      });
-    }
+    const rows = pageData.content;
     if (mode !== "completed") {
       // Pending: show the most recently screened patient first. Rows whose
       // screening date hasn't loaded yet (or is missing) sort to the bottom.
@@ -166,7 +155,7 @@ export function EncounterList({ mode }: Props) {
       if (toDate && d > toDate) return false;
       return true;
     });
-  }, [pageData, mode, from, to, nameQuery, screeningInfo]);
+  }, [pageData, mode, from, to, screeningInfo]);
 
   if (error) return <Box sx={{ p: 3, color: "error.main" }}>Failed to load: {error}</Box>;
   if (!pageData || !filtered)
@@ -211,13 +200,6 @@ export function EncounterList({ mode }: Props) {
         spacing={1.5}
         sx={{ p: { xs: 1.5, sm: 2 }, borderBottom: "1px solid #e5e7eb" }}
       >
-        <TextField
-          label="Search patient by name"
-          size="small"
-          value={nameQuery}
-          onChange={(e) => setNameQuery(e.target.value)}
-          sx={{ maxWidth: { sm: 360 } }}
-        />
         <Stack
           direction={{ xs: "column", sm: "row" }}
           alignItems={{ xs: "stretch", sm: "center" }}
