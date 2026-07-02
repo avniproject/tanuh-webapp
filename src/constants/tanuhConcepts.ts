@@ -241,8 +241,9 @@ export const AI_VERDICT_GROUP_CHILD = {
 // Requirements 2.0: the Physician Review Form stores per-photo verdicts in its
 // OWN repeatable QuestionGroup ("Images"), replacing the flat per-slot
 // `Photo N — Physician verdict` concepts (their form elements are now voided).
-// Written as an array of `{ "Physician verdict": "Suspicious" | "Non-Suspicious" }`,
-// one row per reviewed photo, index-aligned to the screening photos shown.
+// Written as an array of rows, one per reviewed photo: each carries the photo's
+// "Oral Image" media URL (copied from the screening, so the mobile dashboard can
+// render the thumbnail beside its verdict) plus quality/verdict/highest-risk.
 export const REVIEW_IMAGE_GROUP = {
   name: "Images",
   uuid: "483cc24f-7781-4f4a-a257-f7fa842a5371",

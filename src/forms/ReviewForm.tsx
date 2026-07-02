@@ -293,13 +293,17 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
     try {
       const observations: Record<string, unknown> = {};
       // Physician verdicts → review form's repeatable Images QuestionGroup,
-      // one row per shown photo, index-aligned to `presentPhotos`. Photo-less
-      // reviews (limited mouth opening) skip the group entirely rather than
-      // writing an empty array.
-      if (presentPhotos.length > 0) {
-        observations[REVIEW_IMAGE_GROUP.name] = presentPhotos.map((slot) => {
+      // one row per shown photo. Each row carries the photo's Oral Image value
+      // (the stored media URL from the screening) so consumers — notably the
+      // mobile app's patient dashboard — can show the thumbnail next to its
+      // verdict instead of relying on index alignment with the screening.
+      // Photo-less reviews (limited mouth opening) skip the group entirely
+      // rather than writing an empty array.
+      if (photos.length > 0) {
+        observations[REVIEW_IMAGE_GROUP.name] = photos.map(({ slot, imageUrl }) => {
           const quality = effectiveForm.photoQuality[slot] ?? QUALITY_VALUES.yes;
           const row: Record<string, unknown> = {
+            [REVIEW_IMAGE_GROUP_CHILD.image.name]: imageUrl,
             [REVIEW_IMAGE_GROUP_CHILD.acceptableQuality.name]: quality,
           };
           // Not-acceptable photos are not assessable, so they carry no verdict.
