@@ -47,6 +47,7 @@ import {
   REVIEW_IMAGE_GROUP,
   REVIEW_IMAGE_GROUP_CHILD,
   VERDICT_VALUES,
+  VISUAL_EXAM_CONCEPTS,
   readObs,
   type PhotoSlot,
 } from "@/constants/tanuhConcepts";
@@ -239,6 +240,13 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
   // Legacy flat-layout screenings are not supported for review: render their data
   // but disable all inputs and the Complete button (same plumbing as completed).
   const isLegacy = isLegacyOralScreening(loaded.screening.observations as Record<string, unknown>);
+  // Limited-mouth-opening screenings capture no images by design (the bundle
+  // forces the referral instead) — the review then rests on the visual-exam
+  // findings, not photos.
+  const mouthNotOpen =
+    (loaded.screening.observations as Record<string, unknown>)[
+      VISUAL_EXAM_CONCEPTS.ableToOpenMouth.name
+    ] === "No";
   const completed = isCompleted(loaded.review);
   const readOnly = completed || isLegacy;
   const classification = deriveClassification(presentPhotos, effectiveForm.photoVerdicts, effectiveForm.photoQuality);
@@ -285,22 +293,26 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
     try {
       const observations: Record<string, unknown> = {};
       // Physician verdicts → review form's repeatable Images QuestionGroup,
-      // one row per shown photo, index-aligned to `presentPhotos`.
-      observations[REVIEW_IMAGE_GROUP.name] = presentPhotos.map((slot) => {
-        const quality = effectiveForm.photoQuality[slot] ?? QUALITY_VALUES.yes;
-        const row: Record<string, unknown> = {
-          [REVIEW_IMAGE_GROUP_CHILD.acceptableQuality.name]: quality,
-        };
-        // Not-acceptable photos are not assessable, so they carry no verdict.
-        if (quality !== QUALITY_VALUES.no && effectiveForm.photoVerdicts[slot]) {
-          row[REVIEW_IMAGE_GROUP_CHILD.physicianVerdict.name] = effectiveForm.photoVerdicts[slot];
-        }
-        // The single highest-risk flag lands on its row only.
-        if (effectiveForm.highestRiskSlot === slot) {
-          row[REVIEW_IMAGE_GROUP_CHILD.highestRiskPhoto.name] = QUALITY_VALUES.yes;
-        }
-        return row;
-      });
+      // one row per shown photo, index-aligned to `presentPhotos`. Photo-less
+      // reviews (limited mouth opening) skip the group entirely rather than
+      // writing an empty array.
+      if (presentPhotos.length > 0) {
+        observations[REVIEW_IMAGE_GROUP.name] = presentPhotos.map((slot) => {
+          const quality = effectiveForm.photoQuality[slot] ?? QUALITY_VALUES.yes;
+          const row: Record<string, unknown> = {
+            [REVIEW_IMAGE_GROUP_CHILD.acceptableQuality.name]: quality,
+          };
+          // Not-acceptable photos are not assessable, so they carry no verdict.
+          if (quality !== QUALITY_VALUES.no && effectiveForm.photoVerdicts[slot]) {
+            row[REVIEW_IMAGE_GROUP_CHILD.physicianVerdict.name] = effectiveForm.photoVerdicts[slot];
+          }
+          // The single highest-risk flag lands on its row only.
+          if (effectiveForm.highestRiskSlot === slot) {
+            row[REVIEW_IMAGE_GROUP_CHILD.highestRiskPhoto.name] = QUALITY_VALUES.yes;
+          }
+          return row;
+        });
+      }
       if (classification) observations[REVIEW_CONCEPTS.classification.name] = classification;
       observations[REVIEW_CONCEPTS.provisionalDiagnosis.name] = effectiveForm.provisionalDiagnosis;
       if (needsSubType && effectiveForm.provisionalSubType) {
@@ -425,13 +437,26 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
         <Grid size={{ xs: 12, md: 6 }}>
           <SymptomsCard screening={loaded.screening} />
         </Grid>
+        {/* Shown only for the limited-mouth-opening path for now — whether it
+            should appear on every review is pending a decision with Tanuh. */}
+        {mouthNotOpen && (
+          <Grid size={{ xs: 12, md: 6 }}>
+            <OralVisualExamCard screening={loaded.screening} />
+          </Grid>
+        )}
       </Grid>
 
       <Typography variant="h6">Images</Typography>
       <Stack spacing={2}>
-        {presentPhotos.length === 0 && (
-          <Alert severity="info">No images recorded on the linked Oral Screening encounter.</Alert>
-        )}
+        {presentPhotos.length === 0 &&
+          (mouthNotOpen ? (
+            <Alert severity="warning">
+              Patient could not open mouth — no images could be captured. Referral to a dentist was
+              recorded at screening.
+            </Alert>
+          ) : (
+            <Alert severity="info">No images recorded on the linked Oral Screening encounter.</Alert>
+          ))}
         {photos.map((photo) => {
           const quality = effectiveForm.photoQuality[photo.slot] ?? QUALITY_VALUES.yes;
           const assessable = quality !== QUALITY_VALUES.no;
@@ -693,6 +718,33 @@ function SymptomsCard({ screening }: { screening: EncounterApiResponse }) {
           Symptoms
         </Typography>
         <DetailRow label="Any symptoms" value={obs[SYMPTOMS_CONCEPT.name] ?? "—"} />
+      </CardContent>
+    </Card>
+  );
+}
+
+// Visual-exam findings from the screening — the review's only clinical context
+// when limited mouth opening prevented photo capture. "Do you see any lesions?"
+// and the referral acknowledgment are mutually exclusive paths in the bundle,
+// so rows render only when their observation exists.
+function OralVisualExamCard({ screening }: { screening: EncounterApiResponse }) {
+  const obs = screening.observations as Record<string, string | undefined>;
+  const lesions = obs[VISUAL_EXAM_CONCEPTS.seeAnyLesions.name];
+  const referralRequired = obs[VISUAL_EXAM_CONCEPTS.referralRequiredLimitedMouth.name];
+  return (
+    <Card variant="outlined" sx={{ height: "100%" }}>
+      <CardContent>
+        <Typography variant="overline" color="text.secondary">
+          Oral Visual Exam
+        </Typography>
+        <DetailRow
+          label="Able to open mouth"
+          value={obs[VISUAL_EXAM_CONCEPTS.ableToOpenMouth.name] ?? "—"}
+        />
+        {lesions != null && <DetailRow label="Lesions seen" value={lesions} />}
+        {referralRequired != null && (
+          <DetailRow label="Referral required (limited mouth opening)" value={referralRequired} />
+        )}
       </CardContent>
     </Card>
   );

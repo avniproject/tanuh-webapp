@@ -278,6 +278,20 @@ export function isLegacyOralScreening(obs: Record<string, unknown>): boolean {
   });
 }
 
+// Oral Visual Examination findings on the Oral Screening encounter. The bundle's
+// skip logic makes these mutually exclusive paths: "Do you see any lesions?" is
+// asked only when the mouth opens; the referral acknowledgment (a mandatory
+// Yes-only radio) is recorded only when it does not — such encounters carry no
+// images at all, so the review must lean on these instead.
+export const VISUAL_EXAM_CONCEPTS = {
+  ableToOpenMouth: { name: "Able to Open Mouth?", uuid: "6be1c060-14da-4c5c-a4ef-7d8a1c920de1" },
+  seeAnyLesions: { name: "Do you see any lesions?", uuid: "bcf70ad2-ffed-413e-9f48-e3ab36757208" },
+  referralRequiredLimitedMouth: {
+    name: "Referral is required due to limited mouth opening",
+    uuid: "49d59a0e-458c-4e7d-a2ae-3e2928f98e5d",
+  },
+} as const;
+
 // Per-image "Suspicious Lesion?" question, a child of the capture QuestionGroups.
 export const ANY_SUSPICIOUS_LESION_CONCEPT = {
   name: "Suspicious Lesion?",
