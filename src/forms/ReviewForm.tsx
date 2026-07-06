@@ -53,6 +53,7 @@ import {
 } from "@/constants/tanuhConcepts";
 import {
   classificationOf,
+  LIMITED_MOUTH_REVIEW,
   lookupDiagnosis,
   NON_HOMOGENEOUS_LEUKOPLAKIA,
   RISK,
@@ -249,7 +250,11 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
     ] === "No";
   const completed = isCompleted(loaded.review);
   const readOnly = completed || isLegacy;
-  const classification = deriveClassification(presentPhotos, effectiveForm.photoVerdicts, effectiveForm.photoQuality);
+  // Limited mouth opening: the whole Diagnosis section is pre-populated with
+  // the spec's fixed values — the clinician only writes Notes.
+  const classification = mouthNotOpen
+    ? LIMITED_MOUTH_REVIEW.classification
+    : deriveClassification(presentPhotos, effectiveForm.photoVerdicts, effectiveForm.photoQuality);
   const mapping = lookupDiagnosis(effectiveForm.provisionalDiagnosis, effectiveForm.provisionalSubType);
   const needsSubType = effectiveForm.provisionalDiagnosis === NON_HOMOGENEOUS_LEUKOPLAKIA;
   const updateForm = (next: FormState) => setForm(next);
@@ -259,14 +264,26 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
   // deliberately maps to nothing (Oral submucosal fibrosis) — a bare dash there
   // reads like a bug to physicians.
   const derivationPending =
-    !effectiveForm.provisionalDiagnosis || (needsSubType && !effectiveForm.provisionalSubType);
-  const riskDisplay = derivationPending ? "—" : (mapping?.risk ?? "Not applicable");
-  const actionDisplay = derivationPending ? "—" : (mapping?.action ?? "Not applicable");
+    !mouthNotOpen &&
+    (!effectiveForm.provisionalDiagnosis || (needsSubType && !effectiveForm.provisionalSubType));
+  const riskDisplay = mouthNotOpen
+    ? LIMITED_MOUTH_REVIEW.risk
+    : derivationPending
+      ? "—"
+      : (mapping?.risk ?? "Not applicable");
+  const actionDisplay = mouthNotOpen
+    ? LIMITED_MOUTH_REVIEW.action
+    : derivationPending
+      ? "—"
+      : (mapping?.action ?? "Not applicable");
 
   // Diagnosis list filtered by the photo-derived classification; "Not
   // applicable" diagnoses (OSMF, classificationOf === null) are always shown.
   // Before classification is known (photos not all verdicted) show everything.
   const diagnosisOptions = loaded.provisionalDiagnosisAnswers.filter((a) => {
+    // "N/A" exists only for the pre-populated limited-mouth path; never offer
+    // it as a pickable diagnosis.
+    if (a.name === LIMITED_MOUTH_REVIEW.diagnosis) return false;
     if (!classification) return true;
     const c = classificationOf(a.name);
     return c === null || c === classification;
@@ -277,11 +294,12 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
       (effectiveForm.photoQuality[slot] ?? QUALITY_VALUES.yes) !== QUALITY_VALUES.no &&
       !effectiveForm.photoVerdicts[slot],
   );
-  const diagnosisMissing = !effectiveForm.provisionalDiagnosis;
-  const subTypeMissing = needsSubType && !effectiveForm.provisionalSubType;
+  const diagnosisMissing = !mouthNotOpen && !effectiveForm.provisionalDiagnosis;
+  const subTypeMissing = !mouthNotOpen && needsSubType && !effectiveForm.provisionalSubType;
   // Highest-risk photo is mandatory once any photo is Suspicious (the only case
-  // where the checkbox is offered): exactly one must be flagged.
-  const highestRiskRequired = classification === VERDICT_VALUES.suspicious;
+  // where the checkbox is offered): exactly one must be flagged. Never on the
+  // limited-mouth path — its classification is Suspicious with zero photos.
+  const highestRiskRequired = !mouthNotOpen && classification === VERDICT_VALUES.suspicious;
   const highestRiskMissing = highestRiskRequired && effectiveForm.highestRiskSlot == null;
   const canSubmit =
     missingPhotoVerdicts.length === 0 && !diagnosisMissing && !subTypeMissing && !highestRiskMissing;
@@ -318,13 +336,18 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
         });
       }
       if (classification) observations[REVIEW_CONCEPTS.classification.name] = classification;
-      observations[REVIEW_CONCEPTS.provisionalDiagnosis.name] = effectiveForm.provisionalDiagnosis;
+      observations[REVIEW_CONCEPTS.provisionalDiagnosis.name] = mouthNotOpen
+        ? LIMITED_MOUTH_REVIEW.diagnosis
+        : effectiveForm.provisionalDiagnosis;
       if (needsSubType && effectiveForm.provisionalSubType) {
         observations[REVIEW_CONCEPTS.provisionalSubType.name] = effectiveForm.provisionalSubType;
       }
-      // Risk band + recommended action are auto-derived (read-only in the UI).
-      if (mapping?.risk) observations[REVIEW_CONCEPTS.highLowRisk.name] = mapping.risk;
-      if (mapping?.action) observations[REVIEW_CONCEPTS.recommendedAction.name] = mapping.action;
+      // Risk band + recommended action are auto-derived (read-only in the UI);
+      // the limited-mouth path writes the spec's fixed values instead.
+      const risk = mouthNotOpen ? LIMITED_MOUTH_REVIEW.risk : mapping?.risk;
+      const action = mouthNotOpen ? LIMITED_MOUTH_REVIEW.action : mapping?.action;
+      if (risk) observations[REVIEW_CONCEPTS.highLowRisk.name] = risk;
+      if (action) observations[REVIEW_CONCEPTS.recommendedAction.name] = action;
       if (effectiveForm.notes.trim()) observations[REVIEW_CONCEPTS.notes.name] = effectiveForm.notes;
       observations[REVIEW_CONCEPTS.reviewTimestamp.name] = new Date().toISOString();
 
@@ -338,7 +361,9 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
       // "High Risk Follow-up" visit for the screening worker (inform patient,
       // pick biopsy hospital). The review itself is already saved at this
       // point, so a failure here is reported without retrying the review.
-      if (mapping?.risk === RISK.high) {
+      // Deliberately NOT triggered by the limited-mouth path: its pre-set
+      // High Risk pairs with the dentist-visit action, not the biopsy flow.
+      if (!mouthNotOpen && mapping?.risk === RISK.high) {
         try {
           await ensureHighRiskFollowUp(loaded.review["Subject ID"]);
         } catch (err) {
@@ -455,8 +480,7 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
         {presentPhotos.length === 0 &&
           (mouthNotOpen ? (
             <Alert severity="warning">
-              Patient could not open mouth — no images could be captured. Referral to a dentist was
-              recorded at screening.
+              Patient is unable to open their mouth; therefore, images are not available.
             </Alert>
           ) : (
             <Alert severity="info">No images recorded on the linked Oral Screening encounter.</Alert>
@@ -543,35 +567,50 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
                 {classification || "—"}
               </Typography>
               <Typography variant="caption" color="text.secondary">
-                Auto-computed from photo verdicts above.
+                {mouthNotOpen
+                  ? "Pre-populated — patient unable to open mouth."
+                  : "Auto-computed from photo verdicts above."}
               </Typography>
             </Box>
 
-            {/* Provisional diagnosis — single-select, filtered by classification. */}
-            <TextField
-              select
-              label="Provisional diagnosis"
-              value={effectiveForm.provisionalDiagnosis}
-              disabled={readOnly}
-              required
-              error={diagnosisMissing}
-              helperText={diagnosisMissing ? "Select a provisional diagnosis." : ""}
-              onChange={(e) => {
-                const dx = e.target.value;
-                updateForm({
-                  ...effectiveForm,
-                  provisionalDiagnosis: dx,
-                  ...(dx === NON_HOMOGENEOUS_LEUKOPLAKIA ? {} : { provisionalSubType: "" }),
-                });
-              }}
-            >
-              <MenuItem value="">—</MenuItem>
-              {diagnosisOptions.map((a) => (
-                <MenuItem key={a.uuid} value={a.name}>
-                  {a.name}
-                </MenuItem>
-              ))}
-            </TextField>
+            {/* Provisional diagnosis — single-select, filtered by classification.
+                Limited-mouth reviews fix it to N/A (read-only). */}
+            {mouthNotOpen ? (
+              <Box>
+                <Typography variant="body2" sx={{ mb: 0.5 }}>
+                  Provisional diagnosis
+                </Typography>
+                <Typography variant="h6">{LIMITED_MOUTH_REVIEW.diagnosis}</Typography>
+                <Typography variant="caption" color="text.secondary">
+                  Pre-populated — patient unable to open mouth.
+                </Typography>
+              </Box>
+            ) : (
+              <TextField
+                select
+                label="Provisional diagnosis"
+                value={effectiveForm.provisionalDiagnosis}
+                disabled={readOnly}
+                required
+                error={diagnosisMissing}
+                helperText={diagnosisMissing ? "Select a provisional diagnosis." : ""}
+                onChange={(e) => {
+                  const dx = e.target.value;
+                  updateForm({
+                    ...effectiveForm,
+                    provisionalDiagnosis: dx,
+                    ...(dx === NON_HOMOGENEOUS_LEUKOPLAKIA ? {} : { provisionalSubType: "" }),
+                  });
+                }}
+              >
+                <MenuItem value="">—</MenuItem>
+                {diagnosisOptions.map((a) => (
+                  <MenuItem key={a.uuid} value={a.name}>
+                    {a.name}
+                  </MenuItem>
+                ))}
+              </TextField>
+            )}
 
             {/* Dependent sub-type — only for Non-homogeneous leukoplakia. */}
             {needsSubType && (
@@ -599,11 +638,16 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
               <Typography variant="body2" sx={{ mb: 0.5 }}>
                 High-risk / Low-risk
               </Typography>
-              <Typography variant="h6" color={mapping?.risk === RISK.high ? "error.main" : "text.primary"}>
+              <Typography
+                variant="h6"
+                color={riskDisplay === RISK.high ? "error.main" : "text.primary"}
+              >
                 {riskDisplay}
               </Typography>
               <Typography variant="caption" color="text.secondary">
-                Auto-derived from the diagnosis.
+                {mouthNotOpen
+                  ? "Pre-populated — patient unable to open mouth."
+                  : "Auto-derived from the diagnosis."}
               </Typography>
             </Box>
 
@@ -614,7 +658,9 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
               </Typography>
               <Typography variant="h6">{actionDisplay}</Typography>
               <Typography variant="caption" color="text.secondary">
-                Auto-derived from the diagnosis.
+                {mouthNotOpen
+                  ? "Pre-populated — patient unable to open mouth."
+                  : "Auto-derived from the diagnosis."}
               </Typography>
             </Box>
 

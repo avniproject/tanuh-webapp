@@ -39,6 +39,21 @@ export const ACTION = {
 // The one diagnosis that opens the dependent sub-type dropdown.
 export const NON_HOMOGENEOUS_LEUKOPLAKIA = "Non-homogeneous leukoplakia";
 
+// Limited-mouth-opening reviews carry no images, so the clinician does not
+// diagnose — these fixed values are pre-populated instead (Tanuh spec,
+// 2026-07-06). "N/A" was added as an answer of the Provisional diagnosis
+// concept in the bundle for exactly this; it must never appear in the
+// diagnosis dropdown on the normal photo path. Note the deliberate spec
+// combination: High Risk with the dentist-visit action (not the biopsy one),
+// so lookupDiagnosis("N/A") returning null keeps the High Risk Follow-up
+// (biopsy) visit from being scheduled on this path.
+export const LIMITED_MOUTH_REVIEW = {
+  classification: CLASSIFICATION.suspicious,
+  diagnosis: "N/A",
+  risk: RISK.high,
+  action: ACTION.dentistFollowUp,
+} as const;
+
 export interface DiagnosisMapping {
   classification: string | null; // null = "Not applicable"
   risk: string | null;
