@@ -1,6 +1,7 @@
+import { useEffect, useState } from "react";
 import { Box, Skeleton, Typography } from "@mui/material";
 import CloudSyncOutlinedIcon from "@mui/icons-material/CloudSyncOutlined";
-import { getSignedMediaUrl, isPendingMediaUpload } from "@/api/media";
+import { evictSignedMediaUrl, getSignedMediaUrl, isPendingMediaUpload } from "@/api/media";
 import { useAsync } from "@/hooks/useAsync";
 
 interface Props {
@@ -11,9 +12,17 @@ interface Props {
 
 export function MediaImg({ src, alt, sx }: Props) {
   const pendingUpload = !!src && isPendingMediaUpload(src);
+  // A signed URL can expire while cached (long-open session) — on <img> error,
+  // evict it and re-sign once; a second failure means the object itself is bad.
+  const [attempt, setAttempt] = useState(0);
+  const [failed, setFailed] = useState(false);
+  useEffect(() => {
+    setAttempt(0);
+    setFailed(false);
+  }, [src]);
   const { data: signed, error } = useAsync(
     () => (src && !pendingUpload ? getSignedMediaUrl(src) : Promise.resolve("")),
-    [src, pendingUpload],
+    [src, pendingUpload, attempt],
   );
 
   if (!src) return <Typography color="text.secondary">No image</Typography>;
@@ -45,12 +54,18 @@ export function MediaImg({ src, alt, sx }: Props) {
       </Box>
     );
   if (error) return <Typography color="error">Image unavailable: {error}</Typography>;
+  if (failed) return <Typography color="error">Image unavailable: failed to load from storage</Typography>;
   if (!signed) return <Skeleton variant="rectangular" sx={{ width: "100%", aspectRatio: "4/3", ...sx }} />;
   return (
     <Box
       component="img"
       src={signed}
       alt={alt}
+      onError={() => {
+        if (src) evictSignedMediaUrl(src);
+        if (attempt === 0) setAttempt(1);
+        else setFailed(true);
+      }}
       sx={{
         width: "100%",
         maxHeight: 280,
