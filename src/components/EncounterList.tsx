@@ -2,8 +2,6 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Box,
   Button,
-  Checkbox,
-  FormControlLabel,
   Paper,
   Skeleton,
   Stack,
@@ -14,12 +12,15 @@ import {
   TablePagination,
   TableRow,
   TextField,
+  ToggleButton,
+  ToggleButtonGroup,
   Typography,
   useMediaQuery,
 } from "@mui/material";
-import { useTheme } from "@mui/material/styles";
+import { alpha, useTheme } from "@mui/material/styles";
 import RateReviewIcon from "@mui/icons-material/RateReview";
 import VisibilityIcon from "@mui/icons-material/Visibility";
+import WarningAmberRoundedIcon from "@mui/icons-material/WarningAmberRounded";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { format, parseISO } from "date-fns";
 import {
@@ -43,6 +44,52 @@ interface Props {
 }
 
 const PAGE_SIZE = 50;
+
+// Headline number card. "error" tone is a status color, so it carries an icon
+// alongside the color — the state must read without color alone.
+function StatTile({
+  label,
+  value,
+  tone,
+  testId,
+}: {
+  label: string;
+  value: number | string;
+  tone?: "error";
+  testId?: string;
+}) {
+  return (
+    <Paper
+      variant="outlined"
+      data-testid={testId}
+      sx={{
+        px: 2,
+        py: 1.25,
+        minWidth: 168,
+        ...(tone === "error"
+          ? {
+              borderColor: "error.light",
+              bgcolor: (t) => alpha(t.palette.error.main, 0.04),
+            }
+          : {}),
+      }}
+    >
+      <Typography variant="body2" color="text.secondary">
+        {label}
+      </Typography>
+      <Stack direction="row" spacing={0.75} alignItems="center">
+        {tone === "error" && <WarningAmberRoundedIcon color="error" fontSize="small" />}
+        <Typography
+          variant="h5"
+          component="div"
+          sx={{ fontWeight: 600, color: tone === "error" ? "error.main" : "text.primary" }}
+        >
+          {value}
+        </Typography>
+      </Stack>
+    </Paper>
+  );
+}
 
 // Two parallel branches share State → District (addressLevelTypes.json):
 //  - patient/admin chain where subjects are registered: State → District →
@@ -267,14 +314,18 @@ export function EncounterList({ mode }: Props) {
         spacing={1.5}
         sx={{ p: { xs: 1.5, sm: 2 }, borderBottom: "1px solid #e5e7eb" }}
       >
-        {/* Server-truth total (all pages), not the current page's row count.
-            The completed tab's From/To date filter only refines the current
-            page client-side, so this total deliberately stays unchanged. */}
-        <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
-          {mode === "pending" ? "Total pending reviews" : "Total completed reviews"}:{" "}
-          {pageData.totalElements}
-          {mode === "completed" && <> · High Risk: {highRiskCount ?? "…"}</>}
-        </Typography>
+        {/* KPI row. Totals are server truth across all pages — display filters
+            (High Risk, date range) narrow the rows below, not these numbers. */}
+        <Stack direction="row" spacing={1.5} sx={{ flexWrap: "wrap", rowGap: 1.5 }}>
+          <StatTile
+            testId="stat-total"
+            label={mode === "pending" ? "Pending reviews" : "Completed reviews"}
+            value={pageData.totalElements}
+          />
+          {mode === "completed" && (
+            <StatTile testId="stat-high-risk" label="High risk" value={highRiskCount ?? "…"} tone="error" />
+          )}
+        </Stack>
         <Stack
           direction={{ xs: "column", sm: "row" }}
           alignItems={{ xs: "stretch", sm: "center" }}
@@ -318,39 +369,83 @@ export function EncounterList({ mode }: Props) {
           />
         </Stack>
         {mode === "completed" && (
-          <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap", rowGap: 1 }} alignItems="center">
-            <FormControlLabel
-              control={
-                <Checkbox
-                  checked={riskOnly}
-                  // Disabled until the risk sweep resolves — an unfiltered list
-                  // must never masquerade as a High Risk-filtered one.
-                  disabled={!highRiskUuids}
-                  onChange={(_, checked) => handleRiskOnlyChange(checked)}
+          <>
+            <Stack
+              direction={{ xs: "column", sm: "row" }}
+              alignItems={{ xs: "stretch", sm: "center" }}
+              spacing={{ xs: 1, sm: 2 }}
+            >
+              <Typography
+                variant="body1"
+                sx={{ minWidth: { xs: 0, sm: 140 }, fontWeight: 600, color: "text.primary" }}
+              >
+                Risk
+              </Typography>
+              <ToggleButtonGroup
+                exclusive
+                size="small"
+                value={riskOnly ? "high" : "all"}
+                // Disabled until the risk sweep resolves — an unfiltered list
+                // must never masquerade as a High Risk-filtered one.
+                disabled={!highRiskUuids}
+                onChange={(_, v: string | null) => {
+                  if (v) handleRiskOnlyChange(v === "high");
+                }}
+              >
+                <ToggleButton value="all" sx={{ px: 2, textTransform: "none", fontWeight: 600 }}>
+                  All reviews
+                </ToggleButton>
+                <ToggleButton
+                  value="high"
+                  sx={{
+                    px: 2,
+                    textTransform: "none",
+                    fontWeight: 600,
+                    "&.Mui-selected": {
+                      color: "error.main",
+                      bgcolor: (t) => alpha(t.palette.error.main, 0.08),
+                      "&:hover": { bgcolor: (t) => alpha(t.palette.error.main, 0.12) },
+                    },
+                  }}
+                >
+                  <WarningAmberRoundedIcon fontSize="small" sx={{ mr: 0.75 }} />
+                  High Risk only
+                </ToggleButton>
+              </ToggleButtonGroup>
+            </Stack>
+            <Stack
+              direction={{ xs: "column", sm: "row" }}
+              alignItems={{ xs: "stretch", sm: "center" }}
+              spacing={{ xs: 1, sm: 2 }}
+            >
+              <Typography
+                variant="body1"
+                sx={{ minWidth: { xs: 0, sm: 140 }, fontWeight: 600, color: "text.primary" }}
+              >
+                Reviewed between
+              </Typography>
+              <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap", rowGap: 1 }}>
+                <TextField
+                  label="From"
+                  type="date"
+                  size="small"
+                  value={from}
+                  onChange={(e) => setFrom(e.target.value)}
+                  InputLabelProps={{ shrink: true }}
+                  sx={{ flex: { xs: 1, sm: "0 1 auto" } }}
                 />
-              }
-              label="High Risk only"
-              sx={{ mr: 1 }}
-            />
-            <TextField
-              label="From"
-              type="date"
-              size="small"
-              value={from}
-              onChange={(e) => setFrom(e.target.value)}
-              InputLabelProps={{ shrink: true }}
-              sx={{ flex: { xs: 1, sm: "0 1 auto" } }}
-            />
-            <TextField
-              label="To"
-              type="date"
-              size="small"
-              value={to}
-              onChange={(e) => setTo(e.target.value)}
-              InputLabelProps={{ shrink: true }}
-              sx={{ flex: { xs: 1, sm: "0 1 auto" } }}
-            />
-          </Stack>
+                <TextField
+                  label="To"
+                  type="date"
+                  size="small"
+                  value={to}
+                  onChange={(e) => setTo(e.target.value)}
+                  InputLabelProps={{ shrink: true }}
+                  sx={{ flex: { xs: 1, sm: "0 1 auto" } }}
+                />
+              </Stack>
+            </Stack>
+          </>
         )}
       </Stack>
 
