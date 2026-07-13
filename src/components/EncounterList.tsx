@@ -17,10 +17,9 @@ import {
   Typography,
   useMediaQuery,
 } from "@mui/material";
-import { alpha, useTheme } from "@mui/material/styles";
+import { useTheme } from "@mui/material/styles";
 import RateReviewIcon from "@mui/icons-material/RateReview";
 import VisibilityIcon from "@mui/icons-material/Visibility";
-import WarningAmberRoundedIcon from "@mui/icons-material/WarningAmberRounded";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { format, parseISO } from "date-fns";
 import {
@@ -45,48 +44,24 @@ interface Props {
 
 const PAGE_SIZE = 50;
 
-// Headline number card. "error" tone is a status color, so it carries an icon
-// alongside the color — the state must read without color alone.
+// Headline number card.
 function StatTile({
   label,
   value,
-  tone,
   testId,
 }: {
   label: string;
   value: number | string;
-  tone?: "error";
   testId?: string;
 }) {
   return (
-    <Paper
-      variant="outlined"
-      data-testid={testId}
-      sx={{
-        px: 2,
-        py: 1.25,
-        minWidth: 168,
-        ...(tone === "error"
-          ? {
-              borderColor: "error.light",
-              bgcolor: (t) => alpha(t.palette.error.main, 0.04),
-            }
-          : {}),
-      }}
-    >
+    <Paper variant="outlined" data-testid={testId} sx={{ px: 2, py: 1.25, minWidth: 168 }}>
       <Typography variant="body2" color="text.secondary">
         {label}
       </Typography>
-      <Stack direction="row" spacing={0.75} alignItems="center">
-        {tone === "error" && <WarningAmberRoundedIcon color="error" fontSize="small" />}
-        <Typography
-          variant="h5"
-          component="div"
-          sx={{ fontWeight: 600, color: tone === "error" ? "error.main" : "text.primary" }}
-        >
-          {value}
-        </Typography>
-      </Stack>
+      <Typography variant="h5" component="div" sx={{ fontWeight: 600, color: "text.primary" }}>
+        {value}
+      </Typography>
     </Paper>
   );
 }
@@ -323,7 +298,7 @@ export function EncounterList({ mode }: Props) {
             value={pageData.totalElements}
           />
           {mode === "completed" && (
-            <StatTile testId="stat-high-risk" label="High risk" value={highRiskCount ?? "…"} tone="error" />
+            <StatTile testId="stat-high-risk" label="High risk" value={highRiskCount ?? "…"} />
           )}
         </Stack>
         <Stack
@@ -395,20 +370,7 @@ export function EncounterList({ mode }: Props) {
                 <ToggleButton value="all" sx={{ px: 2, textTransform: "none", fontWeight: 600 }}>
                   All reviews
                 </ToggleButton>
-                <ToggleButton
-                  value="high"
-                  sx={{
-                    px: 2,
-                    textTransform: "none",
-                    fontWeight: 600,
-                    "&.Mui-selected": {
-                      color: "error.main",
-                      bgcolor: (t) => alpha(t.palette.error.main, 0.08),
-                      "&:hover": { bgcolor: (t) => alpha(t.palette.error.main, 0.12) },
-                    },
-                  }}
-                >
-                  <WarningAmberRoundedIcon fontSize="small" sx={{ mr: 0.75 }} />
+                <ToggleButton value="high" sx={{ px: 2, textTransform: "none", fontWeight: 600 }}>
                   High Risk only
                 </ToggleButton>
               </ToggleButtonGroup>
