@@ -89,9 +89,8 @@ export function EncounterList({ mode }: Props) {
       setScreeningInfo({});
       return;
     }
-    console.log("[CASEID-DEBUG] review.subject (impl):", pageData.content[0]?.subject);
     Promise.all(
-      subjectIds.map(async (sid, i) => {
+      subjectIds.map(async (sid) => {
         try {
           const res = await listEncounters({
             encounterType: ENCOUNTER_TYPE.oralScreening.name,
@@ -103,9 +102,6 @@ export function EncounterList({ mode }: Props) {
             .sort((a, b) =>
               (b["Encounter date time"] || "").localeCompare(a["Encounter date time"] || ""),
             )[0];
-          if (i === 0 && latest) {
-            console.log("[CASEID-DEBUG] oral screening encounter:", latest);
-          }
           return [
             sid,
             {
