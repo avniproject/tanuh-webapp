@@ -68,6 +68,26 @@ export function clearCatchmentCache(): void {
   catchmentCache = null;
 }
 
+// The server caps page size at 200; MAX_PAGES is a runaway guard. Fetching
+// everything lets the completed tab filter, count and paginate client-side —
+// correct across the whole list, not just one server page. If volumes outgrow
+// this, the filters must move server-side (CPG-2170).
+const FULL_FETCH_PAGE_SIZE = 200;
+const FULL_FETCH_MAX_PAGES = 10;
+
+export async function getAllEncountersWithLocation(
+  p: Omit<EncounterListParams, "page" | "size">,
+): Promise<{ content: EncounterWithLocation[]; totalElements: number }> {
+  const first = await getEncountersWithLocation({ ...p, page: 0, size: FULL_FETCH_PAGE_SIZE });
+  const content = [...first.content];
+  const totalPages = Math.min(first.totalPages, FULL_FETCH_MAX_PAGES);
+  for (let page = 1; page < totalPages; page++) {
+    const next = await getEncountersWithLocation({ ...p, page, size: FULL_FETCH_PAGE_SIZE });
+    content.push(...next.content);
+  }
+  return { content, totalElements: first.totalElements };
+}
+
 export async function getEncountersWithLocation(
   p: EncounterListParams,
 ): Promise<PagedResponse<EncounterWithLocation>> {

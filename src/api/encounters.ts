@@ -97,3 +97,30 @@ export function isScheduled(encounter: EncounterApiResponse): boolean {
 export function isCompleted(encounter: EncounterApiResponse): boolean {
   return encounter["Encounter date time"] != null && !encounter.Voided;
 }
+
+/**
+ * Pages through /api/encounters to collect the uuids of completed encounters
+ * of a type whose observation equals a value — used by the completed list's
+ * High Risk filter and count, because the /api/impl list response carries no
+ * observations. PAGE_CAP bounds the sweep: at Tanuh review volumes (hundreds)
+ * this is 2-3 requests; if the org ever outgrows the cap, the filter must move
+ * server-side (CPG-2170) rather than the cap being raised.
+ */
+export async function findCompletedEncounterUuidsWithObservation(
+  encounterType: string,
+  observationName: string,
+  observationValue: string,
+): Promise<Set<string>> {
+  const PAGE_CAP = 30;
+  const uuids = new Set<string>();
+  for (let page = 0; page < PAGE_CAP; page++) {
+    const res = await listEncounters({ encounterType, page, size: 100 });
+    for (const encounter of res.content) {
+      if (isCompleted(encounter) && encounter.observations?.[observationName] === observationValue) {
+        uuids.add(encounter.ID);
+      }
+    }
+    if (page + 1 >= res.totalPages) break;
+  }
+  return uuids;
+}

@@ -2,6 +2,8 @@ import { useEffect, useMemo, useState } from "react";
 import {
   Box,
   Button,
+  Checkbox,
+  FormControlLabel,
   Paper,
   Skeleton,
   Stack,
@@ -20,9 +22,18 @@ import RateReviewIcon from "@mui/icons-material/RateReview";
 import VisibilityIcon from "@mui/icons-material/Visibility";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { format, parseISO } from "date-fns";
-import { getEncountersWithLocation, type EncounterWithLocation } from "@/api/impl";
-import { listEncounters } from "@/api/encounters";
-import { ENCOUNTER_TYPE, PLACE_OF_REFERRAL_CONCEPT } from "@/constants/tanuhConcepts";
+import {
+  getAllEncountersWithLocation,
+  getEncountersWithLocation,
+  type EncounterWithLocation,
+} from "@/api/impl";
+import { findCompletedEncounterUuidsWithObservation, listEncounters } from "@/api/encounters";
+import {
+  ENCOUNTER_TYPE,
+  PLACE_OF_REFERRAL_CONCEPT,
+  REVIEW_CONCEPTS,
+} from "@/constants/tanuhConcepts";
+import { RISK } from "@/forms/diagnosisMapping";
 import { useAsync } from "@/hooks/useAsync";
 import { LocationFilter } from "./LocationFilter";
 import { FacilityFilter } from "./FacilityFilter";
@@ -48,6 +59,7 @@ export function EncounterList({ mode }: Props) {
   const [params, setParams] = useSearchParams();
   const referralUuid = params.get("referral");
   const patientLocationUuid = params.get("loc");
+  const riskOnly = mode === "completed" && params.get("risk") === "high";
   const pageIndex = Math.max(0, parseInt(params.get("page") ?? "0", 10) || 0);
   const navigate = useNavigate();
   const theme = useTheme();
@@ -63,22 +75,47 @@ export function EncounterList({ mode }: Props) {
     Record<string, { screeningDate: string; caseId: string; healthWorker: string }>
   >({});
 
+  // Pending stays server-paged. Completed fetches ALL pages up front so the
+  // High Risk and date filters — and the counts shown for them — are correct
+  // across the whole list rather than just the visible page; pagination then
+  // happens client-side over the filtered rows.
+  const listParams = {
+    encounterType: ENCOUNTER_TYPE.physicianReviewForm.name,
+    // Requirements 2.0: filter by the patient's location subtree
+    // (State → District → Taluka → Village).
+    locationUuid: patientLocationUuid,
+    // Linked-observation filter: only fires when a referral facility is picked.
+    linkedEncounterType: referralUuid ? ENCOUNTER_TYPE.oralScreening.name : null,
+    linkedObservationConceptUuid: referralUuid ? PLACE_OF_REFERRAL_CONCEPT.uuid : null,
+    linkedLocationUuid: referralUuid,
+  };
   const { data: pageData, error } = useAsync(
     () =>
-      getEncountersWithLocation({
-        encounterType: ENCOUNTER_TYPE.physicianReviewForm.name,
-        status: mode === "pending" ? "scheduled" : "completed",
-        // Requirements 2.0: filter by the patient's location subtree
-        // (State → District → Taluka → Village).
-        locationUuid: patientLocationUuid,
-        // Linked-observation filter: only fires when a referral facility is picked.
-        linkedEncounterType: referralUuid ? ENCOUNTER_TYPE.oralScreening.name : null,
-        linkedObservationConceptUuid: referralUuid ? PLACE_OF_REFERRAL_CONCEPT.uuid : null,
-        linkedLocationUuid: referralUuid,
-        page: pageIndex,
-        size: PAGE_SIZE,
-      }),
-    [mode, referralUuid, patientLocationUuid, pageIndex],
+      mode === "completed"
+        ? getAllEncountersWithLocation({ ...listParams, status: "completed" })
+        : getEncountersWithLocation({
+            ...listParams,
+            status: "scheduled",
+            page: pageIndex,
+            size: PAGE_SIZE,
+          }),
+    [mode, referralUuid, patientLocationUuid, mode === "pending" ? pageIndex : -1],
+  );
+
+  // Which completed reviews are High Risk. The /api/impl rows carry no
+  // observations, so this is resolved once per visit from /api/encounters.
+  // null while loading (or on failure): the toggle stays disabled and the
+  // count shows "…" instead of silently rendering unfiltered rows.
+  const { data: highRiskUuids } = useAsync<Set<string> | null>(
+    () =>
+      mode === "completed"
+        ? findCompletedEncounterUuidsWithObservation(
+            ENCOUNTER_TYPE.physicianReviewForm.name,
+            REVIEW_CONCEPTS.highLowRisk.name,
+            RISK.high,
+          )
+        : Promise.resolve(null),
+    [mode],
   );
 
   useEffect(() => {
@@ -131,7 +168,7 @@ export function EncounterList({ mode }: Props) {
 
   const filtered = useMemo(() => {
     if (!pageData) return null;
-    const rows = pageData.content;
+    let rows = pageData.content;
     if (mode !== "completed") {
       // Pending: show the most recently screened patient first. Rows whose
       // screening date hasn't loaded yet (or is missing) sort to the bottom.
@@ -140,6 +177,9 @@ export function EncounterList({ mode }: Props) {
           screeningInfo[a.subject.uuid]?.screeningDate || "",
         ),
       );
+    }
+    if (riskOnly && highRiskUuids) {
+      rows = rows.filter((e) => highRiskUuids.has(e.encounterUuid));
     }
     const fromDate = from ? parseISO(from) : null;
     const toDate = to ? parseISO(to) : null;
@@ -151,7 +191,7 @@ export function EncounterList({ mode }: Props) {
       if (toDate && d > toDate) return false;
       return true;
     });
-  }, [pageData, mode, from, to, screeningInfo]);
+  }, [pageData, mode, from, to, screeningInfo, riskOnly, highRiskUuids]);
 
   if (error) return <Box sx={{ p: 3, color: "error.main" }}>Failed to load: {error}</Box>;
   if (!pageData || !filtered)
@@ -164,6 +204,37 @@ export function EncounterList({ mode }: Props) {
         </Stack>
       </Box>
     );
+
+  // Completed paginates client-side over the filtered rows (the fetch brought
+  // everything); pending keeps server paging. Clamp the page so a filter that
+  // shrinks the list can't strand the user on an out-of-range page.
+  const totalRows = mode === "completed" ? filtered.length : pageData.totalElements;
+  const effectivePageIndex =
+    mode === "completed"
+      ? Math.min(pageIndex, Math.max(0, Math.ceil(totalRows / PAGE_SIZE) - 1))
+      : pageIndex;
+  const visibleRows =
+    mode === "completed"
+      ? filtered.slice(effectivePageIndex * PAGE_SIZE, (effectivePageIndex + 1) * PAGE_SIZE)
+      : filtered;
+  // High Risk count over everything the current location/referral filters
+  // allow — deliberately not narrowed by the date or High Risk display filters.
+  const highRiskCount =
+    mode === "completed" && highRiskUuids
+      ? pageData.content.filter((e) => highRiskUuids.has(e.encounterUuid)).length
+      : null;
+
+  const handleRiskOnlyChange = (checked: boolean) => {
+    setParams(
+      (sp) => {
+        if (checked) sp.set("risk", "high");
+        else sp.delete("risk");
+        sp.delete("page");
+        return sp;
+      },
+      { replace: false },
+    );
+  };
 
   const handleReferralChange = (uuid: string | null) => {
     setParams(
@@ -202,6 +273,7 @@ export function EncounterList({ mode }: Props) {
         <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
           {mode === "pending" ? "Total pending reviews" : "Total completed reviews"}:{" "}
           {pageData.totalElements}
+          {mode === "completed" && <> · High Risk: {highRiskCount ?? "…"}</>}
         </Typography>
         <Stack
           direction={{ xs: "column", sm: "row" }}
@@ -246,7 +318,20 @@ export function EncounterList({ mode }: Props) {
           />
         </Stack>
         {mode === "completed" && (
-          <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap", rowGap: 1 }}>
+          <Stack direction="row" spacing={1} sx={{ flexWrap: "wrap", rowGap: 1 }} alignItems="center">
+            <FormControlLabel
+              control={
+                <Checkbox
+                  checked={riskOnly}
+                  // Disabled until the risk sweep resolves — an unfiltered list
+                  // must never masquerade as a High Risk-filtered one.
+                  disabled={!highRiskUuids}
+                  onChange={(_, checked) => handleRiskOnlyChange(checked)}
+                />
+              }
+              label="High Risk only"
+              sx={{ mr: 1 }}
+            />
             <TextField
               label="From"
               type="date"
@@ -271,15 +356,15 @@ export function EncounterList({ mode }: Props) {
 
       {filtered.length === 0 ? (
         <Typography color="text.secondary" sx={{ p: 4, textAlign: "center" }}>
-          No {mode === "pending" ? "pending" : "completed"} reviews
+          No {riskOnly ? "High Risk " : ""}{mode === "pending" ? "pending" : "completed"} reviews
           {referralUuid ? " for the selected referral facility." : " in your catchment."}
         </Typography>
       ) : (
         <>
           {isMobile ? (
             <Stack spacing={1.5} sx={{ p: 1.5 }}>
-              {filtered.map((e: EncounterWithLocation, index: number) => {
-                const serialNumber = pageIndex * PAGE_SIZE + index + 1;
+              {visibleRows.map((e: EncounterWithLocation, index: number) => {
+                const serialNumber = effectivePageIndex * PAGE_SIZE + index + 1;
                 const info = screeningInfo[e.subject.uuid];
                 const date = mode === "pending" ? info?.screeningDate : e.encounterDateTime;
                 const screeningTs = info?.screeningDate;
@@ -378,8 +463,8 @@ export function EncounterList({ mode }: Props) {
                 </TableRow>
               </TableHead>
               <TableBody>
-                {filtered.map((e: EncounterWithLocation, index: number) => {
-                  const serialNumber = pageIndex * PAGE_SIZE + index + 1;
+                {visibleRows.map((e: EncounterWithLocation, index: number) => {
+                  const serialNumber = effectivePageIndex * PAGE_SIZE + index + 1;
                   const info = screeningInfo[e.subject.uuid];
                   const date = mode === "pending" ? info?.screeningDate : e.encounterDateTime;
                   const screeningTs = info?.screeningDate;
@@ -426,11 +511,11 @@ export function EncounterList({ mode }: Props) {
               </TableBody>
             </Table>
           )}
-          {pageData.totalElements > PAGE_SIZE && (
+          {totalRows > PAGE_SIZE && (
             <TablePagination
               component="div"
-              count={pageData.totalElements}
-              page={pageIndex}
+              count={totalRows}
+              page={effectivePageIndex}
               rowsPerPage={PAGE_SIZE}
               rowsPerPageOptions={[PAGE_SIZE]}
               onPageChange={(_, next) =>
