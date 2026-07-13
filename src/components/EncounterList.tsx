@@ -196,6 +196,13 @@ export function EncounterList({ mode }: Props) {
         spacing={1.5}
         sx={{ p: { xs: 1.5, sm: 2 }, borderBottom: "1px solid #e5e7eb" }}
       >
+        {/* Server-truth total (all pages), not the current page's row count.
+            The completed tab's From/To date filter only refines the current
+            page client-side, so this total deliberately stays unchanged. */}
+        <Typography variant="subtitle1" sx={{ fontWeight: 700 }}>
+          {mode === "pending" ? "Total pending reviews" : "Total completed reviews"}:{" "}
+          {pageData.totalElements}
+        </Typography>
         <Stack
           direction={{ xs: "column", sm: "row" }}
           alignItems={{ xs: "stretch", sm: "center" }}
@@ -271,7 +278,8 @@ export function EncounterList({ mode }: Props) {
         <>
           {isMobile ? (
             <Stack spacing={1.5} sx={{ p: 1.5 }}>
-              {filtered.map((e: EncounterWithLocation) => {
+              {filtered.map((e: EncounterWithLocation, index: number) => {
+                const serialNumber = pageIndex * PAGE_SIZE + index + 1;
                 const info = screeningInfo[e.subject.uuid];
                 const date = mode === "pending" ? info?.screeningDate : e.encounterDateTime;
                 const screeningTs = info?.screeningDate;
@@ -290,7 +298,10 @@ export function EncounterList({ mode }: Props) {
                     }}
                   >
                     <Stack spacing={0.5}>
-                      <Stack direction="row" justifyContent="flex-end" alignItems="flex-start" spacing={1}>
+                      <Stack direction="row" justifyContent="space-between" alignItems="flex-start" spacing={1}>
+                        <Typography variant="subtitle2" sx={{ color: "text.secondary", pt: 0.5 }}>
+                          #{serialNumber}
+                        </Typography>
                         <Button
                           size="small"
                           startIcon={mode === "pending" ? <RateReviewIcon /> : <VisibilityIcon />}
@@ -350,23 +361,25 @@ export function EncounterList({ mode }: Props) {
             <Table size="small" sx={{ tableLayout: "fixed" }}>
               <TableHead>
                 <TableRow sx={{ "& th": { fontWeight: 700, color: "text.primary", fontSize: "0.95rem", backgroundColor: "grey.100" } }}>
-                  <TableCell sx={{ width: mode === "pending" ? "15%" : "13%" }}>Case ID</TableCell>
-                  <TableCell sx={{ width: mode === "pending" ? "16%" : "14%" }}>
+                  <TableCell sx={{ width: "6%" }}>S.No</TableCell>
+                  <TableCell sx={{ width: mode === "pending" ? "14%" : "12%" }}>Case ID</TableCell>
+                  <TableCell sx={{ width: mode === "pending" ? "15%" : "13%" }}>
                     {mode === "pending" ? "Screening date" : "Reviewed on"}
                   </TableCell>
-                  <TableCell sx={{ width: mode === "pending" ? "19%" : "16%" }}>
+                  <TableCell sx={{ width: mode === "pending" ? "18%" : "15%" }}>
                     Timestamp of screening
                   </TableCell>
-                  <TableCell sx={{ width: mode === "pending" ? "19%" : "16%" }}>
+                  <TableCell sx={{ width: mode === "pending" ? "17%" : "14%" }}>
                     Village
                   </TableCell>
-                  <TableCell sx={{ width: mode === "pending" ? "17%" : "15%" }}>Health worker</TableCell>
+                  <TableCell sx={{ width: mode === "pending" ? "16%" : "14%" }}>Health worker</TableCell>
                   {mode === "completed" && <TableCell sx={{ width: "14%" }}>Reviewed by</TableCell>}
                   <TableCell sx={{ width: mode === "pending" ? "14%" : "12%" }} aria-hidden />
                 </TableRow>
               </TableHead>
               <TableBody>
-                {filtered.map((e: EncounterWithLocation) => {
+                {filtered.map((e: EncounterWithLocation, index: number) => {
+                  const serialNumber = pageIndex * PAGE_SIZE + index + 1;
                   const info = screeningInfo[e.subject.uuid];
                   const date = mode === "pending" ? info?.screeningDate : e.encounterDateTime;
                   const screeningTs = info?.screeningDate;
@@ -380,6 +393,7 @@ export function EncounterList({ mode }: Props) {
                       onClick={() => navigate(`/review/${e.encounterUuid}`)}
                       sx={{ cursor: "pointer" }}
                     >
+                      <TableCell sx={{ color: "text.secondary" }}>{serialNumber}</TableCell>
                       <TableCell sx={{ color: "text.primary" }}>{caseId || "—"}</TableCell>
                       <TableCell sx={{ color: "text.primary" }}>
                         {date ? format(parseISO(date), "dd MMM yyyy") : "—"}
