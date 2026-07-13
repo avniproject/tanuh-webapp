@@ -21,7 +21,7 @@ import { useTheme } from "@mui/material/styles";
 import RateReviewIcon from "@mui/icons-material/RateReview";
 import VisibilityIcon from "@mui/icons-material/Visibility";
 import { useNavigate, useSearchParams } from "react-router-dom";
-import { format, parseISO } from "date-fns";
+import { endOfDay, format, parseISO } from "date-fns";
 import {
   getAllEncountersWithLocation,
   getEncountersWithLocation,
@@ -151,10 +151,13 @@ export function EncounterList({ mode }: Props) {
     Promise.all(
       subjectIds.map(async (sid) => {
         try {
+          // size must comfortably exceed any real screening count per subject:
+          // the API pages by lastModified, so a small page can miss the LATEST
+          // screening entirely for a much-screened subject.
           const res = await listEncounters({
             encounterType: ENCOUNTER_TYPE.oralScreening.name,
             subjectId: sid,
-            size: 5,
+            size: 50,
           });
           const latest = res.content
             .filter((enc) => !enc.Voided && enc["Encounter date time"])
@@ -204,7 +207,9 @@ export function EncounterList({ mode }: Props) {
       rows = rows.filter((e) => highRiskUuids.has(e.encounterUuid));
     }
     const fromDate = from ? parseISO(from) : null;
-    const toDate = to ? parseISO(to) : null;
+    // Inclusive of the To day: a bare date parses to midnight, which would
+    // silently drop everything reviewed ON that day.
+    const toDate = to ? endOfDay(parseISO(to)) : null;
     if (!fromDate && !toDate) return rows;
     return rows.filter((e) => {
       if (!e.encounterDateTime) return false;

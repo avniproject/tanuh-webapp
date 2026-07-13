@@ -176,7 +176,9 @@ async function loadReview(encounterUuid: string): Promise<LoadedState> {
   const subjectId = review["Subject ID"];
   const [subject, screeningPage, verdictConcept, diagnosisConcept, subTypeConcept] = await Promise.all([
     getSubject(subjectId),
-    listEncounters({ encounterType: ENCOUNTER_TYPE.oralScreening.name, subjectId, size: 5 }),
+    // size must comfortably exceed any real screening count per subject: the
+    // API pages by lastModified, so a small page can miss the LATEST screening.
+    listEncounters({ encounterType: ENCOUNTER_TYPE.oralScreening.name, subjectId, size: 50 }),
     getConcept(REVIEW_IMAGE_GROUP_CHILD.physicianVerdict.uuid),
     getConcept(REVIEW_CONCEPTS.provisionalDiagnosis.uuid),
     getConcept(REVIEW_CONCEPTS.provisionalSubType.uuid),
@@ -222,7 +224,23 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
   const [submitError, setSubmitError] = useState<string | null>(null);
   const navigate = useNavigate();
 
-  const effectiveForm = form ?? (loaded && isCompleted(loaded.review) ? prefillFromCompleted(loaded.review) : emptyForm);
+  // A completed review always renders from its STORED observations — an
+  // in-progress draft left in sessionStorage (e.g. someone else completed the
+  // review first) is stale and must not shadow the recorded answers.
+  const prefilled = useMemo(
+    () => (loaded && isCompleted(loaded.review) ? prefillFromCompleted(loaded.review) : null),
+    [loaded],
+  );
+  const effectiveForm = prefilled ?? form ?? emptyForm;
+  useEffect(() => {
+    if (!prefilled) return;
+    setForm(null);
+    try {
+      sessionStorage.removeItem(storageKey);
+    } catch {
+      // storage may be disabled — nothing to clean up.
+    }
+  }, [prefilled, storageKey]);
 
   const photos = useMemo<ReviewPhoto[]>(
     () => (loaded ? collectPhotos(loaded.screening.observations as Record<string, unknown>) : []),
@@ -250,11 +268,20 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
     ] === "No";
   const completed = isCompleted(loaded.review);
   const readOnly = completed || isLegacy;
+  // A completed review shows what was RECORDED. Re-deriving from the current
+  // diagnosisMapping would silently rewrite how past reviews read whenever the
+  // mapping table changes (it already changed once — the OSMF row).
+  const storedObs = loaded.review.observations as Record<string, unknown>;
+  const storedClassification = completed ? readObs<string>(storedObs, REVIEW_CONCEPTS.classification) : undefined;
+  const storedRisk = completed ? (storedObs[REVIEW_CONCEPTS.highLowRisk.name] as string | undefined) : undefined;
+  const storedAction = completed ? (storedObs[REVIEW_CONCEPTS.recommendedAction.name] as string | undefined) : undefined;
   // Limited mouth opening: the whole Diagnosis section is pre-populated with
   // the spec's fixed values — the clinician only writes Notes.
-  const classification = mouthNotOpen
-    ? LIMITED_MOUTH_REVIEW.classification
-    : deriveClassification(presentPhotos, effectiveForm.photoVerdicts, effectiveForm.photoQuality);
+  const classification = completed
+    ? (storedClassification ?? "")
+    : mouthNotOpen
+      ? LIMITED_MOUTH_REVIEW.classification
+      : deriveClassification(presentPhotos, effectiveForm.photoVerdicts, effectiveForm.photoQuality);
   const mapping = lookupDiagnosis(effectiveForm.provisionalDiagnosis, effectiveForm.provisionalSubType);
   const needsSubType = effectiveForm.provisionalDiagnosis === NON_HOMOGENEOUS_LEUKOPLAKIA;
   const updateForm = (next: FormState) => setForm(next);
@@ -266,16 +293,20 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
   const derivationPending =
     !mouthNotOpen &&
     (!effectiveForm.provisionalDiagnosis || (needsSubType && !effectiveForm.provisionalSubType));
-  const riskDisplay = mouthNotOpen
-    ? LIMITED_MOUTH_REVIEW.risk
-    : derivationPending
-      ? "—"
-      : (mapping?.risk ?? "Not applicable");
-  const actionDisplay = mouthNotOpen
-    ? LIMITED_MOUTH_REVIEW.action
-    : derivationPending
-      ? "—"
-      : (mapping?.action ?? "Not applicable");
+  const riskDisplay = completed
+    ? (storedRisk ?? "—")
+    : mouthNotOpen
+      ? LIMITED_MOUTH_REVIEW.risk
+      : derivationPending
+        ? "—"
+        : (mapping?.risk ?? "Not applicable");
+  const actionDisplay = completed
+    ? (storedAction ?? "—")
+    : mouthNotOpen
+      ? LIMITED_MOUTH_REVIEW.action
+      : derivationPending
+        ? "—"
+        : (mapping?.action ?? "Not applicable");
 
   // Diagnosis list filtered by the photo-derived classification; "Not
   // applicable" diagnoses (OSMF, classificationOf === null) are always shown.
@@ -284,10 +315,19 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
     // "N/A" exists only for the pre-populated limited-mouth path; never offer
     // it as a pickable diagnosis.
     if (a.name === LIMITED_MOUTH_REVIEW.diagnosis) return false;
+    // Read-only: nothing is pickable, so don't filter — the stored selection
+    // must render regardless of what the classification filter would say.
+    if (readOnly) return true;
     if (!classification) return true;
     const c = classificationOf(a.name);
     return c === null || c === classification;
   });
+  // A stored diagnosis whose answer was voided later would otherwise render
+  // as a blank select — surface it as its own (disabled-list) entry instead.
+  const storedDiagnosisNotInOptions =
+    readOnly &&
+    Boolean(effectiveForm.provisionalDiagnosis) &&
+    !diagnosisOptions.some((a) => a.name === effectiveForm.provisionalDiagnosis);
 
   const missingPhotoVerdicts = presentPhotos.filter(
     (slot) =>
@@ -309,6 +349,16 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
     setSubmitting(true);
     setSubmitError(null);
     try {
+      // Another physician may have completed this review since it was opened —
+      // re-check so a second submit can't silently overwrite the first.
+      // Best-effort (not transactional), but it closes the common case.
+      const current = await getEncounter(loaded.review.ID);
+      if (isCompleted(current)) {
+        setSubmitError(
+          "This review has already been completed by someone else. Go back and reopen it to see the recorded answers.",
+        );
+        return;
+      }
       const observations: Record<string, unknown> = {};
       // Physician verdicts → review form's repeatable Images QuestionGroup,
       // one row per shown photo. Each row carries the photo's Oral Image value
@@ -604,6 +654,11 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
                 }}
               >
                 <MenuItem value="">—</MenuItem>
+                {storedDiagnosisNotInOptions && (
+                  <MenuItem value={effectiveForm.provisionalDiagnosis}>
+                    {effectiveForm.provisionalDiagnosis}
+                  </MenuItem>
+                )}
                 {diagnosisOptions.map((a) => (
                   <MenuItem key={a.uuid} value={a.name}>
                     {a.name}
@@ -711,9 +766,14 @@ function RegDetailsCard({ subject, screening }: { subject: SubjectApiResponse; s
     ? format(parseISO(screening["Encounter date time"] as string), "dd-MM-yyyy")
     : "—";
   const loc = subject.location ?? {};
+  // An address level can arrive with a null TYPE name — serialized as the
+  // literal key "null" — so its title can't be matched to a labelled row.
+  // When that happens (or a level's value is explicitly null) show "Unknown"
+  // rather than implying the level doesn't exist.
   const getLocationValue = (key: string) => {
     const value = loc[key];
-    return value ?? (value === null || loc["null"] ? "Unknown" : "—");
+    if (value) return value;
+    return value === null || loc["null"] != null ? "Unknown" : "—";
   };
   const state = getLocationValue("State");
   const district = getLocationValue("District");
