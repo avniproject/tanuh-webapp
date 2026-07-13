@@ -23,6 +23,7 @@ import { addDays, differenceInYears, format, parseISO } from "date-fns";
 import { useNavigate } from "react-router-dom";
 import {
   getEncounter,
+  invalidateEncounterSweeps,
   isCompleted,
   isScheduled,
   listEncounters,
@@ -407,6 +408,9 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
         "Encounter date time": new Date().toISOString(),
         observations,
       });
+      // The list tabs cache their org-wide sweeps — drop them so the review
+      // just completed shows up in the counts and High Risk set immediately.
+      invalidateEncounterSweeps();
       // Requirements 2.0 Case Updates: a High Risk diagnosis schedules a
       // "High Risk Follow-up" visit for the screening worker (inform patient,
       // pick biopsy hospital). The review itself is already saved at this

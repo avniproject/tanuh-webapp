@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import {
   Box,
   Button,
@@ -22,12 +22,11 @@ import RateReviewIcon from "@mui/icons-material/RateReview";
 import VisibilityIcon from "@mui/icons-material/Visibility";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { endOfDay, format, parseISO } from "date-fns";
+import { getAllEncountersWithLocation, type EncounterWithLocation } from "@/api/impl";
 import {
-  getAllEncountersWithLocation,
-  getEncountersWithLocation,
-  type EncounterWithLocation,
-} from "@/api/impl";
-import { findCompletedEncounterUuidsWithObservation, listEncounters } from "@/api/encounters";
+  findCompletedEncounterUuidsWithCodedValue,
+  getLatestScreeningInfoBySubject,
+} from "@/api/encounters";
 import {
   ENCOUNTER_TYPE,
   PLACE_OF_REFERRAL_CONCEPT,
@@ -89,18 +88,11 @@ export function EncounterList({ mode }: Props) {
 
   const [from, setFrom] = useState<string>("");
   const [to, setTo] = useState<string>("");
-  // Map of subjectUuid -> info pulled from the latest Oral Screening: the
-  // screening (encounter) date (shown as "Screening date" on the pending tab),
-  // the subject's external ID (the "Case ID"), and the health worker who filled
-  // the screening (its creator) — all shown on both tabs.
-  const [screeningInfo, setScreeningInfo] = useState<
-    Record<string, { screeningDate: string; caseId: string; healthWorker: string }>
-  >({});
 
-  // Pending stays server-paged. Completed fetches ALL pages up front so the
-  // High Risk and date filters — and the counts shown for them — are correct
-  // across the whole list rather than just the visible page; pagination then
-  // happens client-side over the filtered rows.
+  // Both tabs fetch ALL pages up front so sorting (pending: newest screening
+  // first, ACROSS pages) and the display filters + counts (completed: High
+  // Risk, date range) are correct over the whole list, not just one server
+  // page; pagination then happens client-side.
   const listParams = {
     encounterType: ENCOUNTER_TYPE.physicianReviewForm.name,
     // Requirements 2.0: filter by the patient's location subtree
@@ -113,93 +105,49 @@ export function EncounterList({ mode }: Props) {
   };
   const { data: pageData, error } = useAsync(
     () =>
-      mode === "completed"
-        ? getAllEncountersWithLocation({ ...listParams, status: "completed" })
-        : getEncountersWithLocation({
-            ...listParams,
-            status: "scheduled",
-            page: pageIndex,
-            size: PAGE_SIZE,
-          }),
-    [mode, referralUuid, patientLocationUuid, mode === "pending" ? pageIndex : -1],
+      getAllEncountersWithLocation({
+        ...listParams,
+        status: mode === "pending" ? "scheduled" : "completed",
+      }),
+    [mode, referralUuid, patientLocationUuid],
+  );
+
+  // subjectUuid -> latest Oral Screening info (screening date, Case ID,
+  // health worker) from ONE cached org-wide sweep — replaces the previous
+  // request-per-subject-per-page fan-out. null while loading: rows render
+  // with "—" placeholders until it lands.
+  const { data: screeningInfo } = useAsync(
+    () => getLatestScreeningInfoBySubject(ENCOUNTER_TYPE.oralScreening.name),
+    [mode],
   );
 
   // Which completed reviews are High Risk. The /api/impl rows carry no
-  // observations, so this is resolved once per visit from /api/encounters.
+  // observations, so this is resolved from /api/encounters — filtered
+  // server-side via the stock `concepts` observation filter and cached.
   // null while loading (or on failure): the toggle stays disabled and the
   // count shows "…" instead of silently rendering unfiltered rows.
   const { data: highRiskUuids } = useAsync<Set<string> | null>(
     () =>
       mode === "completed"
-        ? findCompletedEncounterUuidsWithObservation(
+        ? findCompletedEncounterUuidsWithCodedValue(
             ENCOUNTER_TYPE.physicianReviewForm.name,
-            REVIEW_CONCEPTS.highLowRisk.name,
+            REVIEW_CONCEPTS.highLowRisk,
             RISK.high,
           )
         : Promise.resolve(null),
     [mode],
   );
 
-  useEffect(() => {
-    if (!pageData) return;
-    let cancelled = false;
-    const subjectIds = Array.from(new Set(pageData.content.map((e) => e.subject.uuid)));
-    if (subjectIds.length === 0) {
-      setScreeningInfo({});
-      return;
-    }
-    Promise.all(
-      subjectIds.map(async (sid) => {
-        try {
-          // size must comfortably exceed any real screening count per subject:
-          // the API pages by lastModified, so a small page can miss the LATEST
-          // screening entirely for a much-screened subject.
-          const res = await listEncounters({
-            encounterType: ENCOUNTER_TYPE.oralScreening.name,
-            subjectId: sid,
-            size: 50,
-          });
-          const latest = res.content
-            .filter((enc) => !enc.Voided && enc["Encounter date time"])
-            .sort((a, b) =>
-              (b["Encounter date time"] || "").localeCompare(a["Encounter date time"] || ""),
-            )[0];
-          return [
-            sid,
-            {
-              screeningDate: latest?.["Encounter date time"] ?? "",
-              caseId: latest?.["Subject external ID"] ?? "",
-              healthWorker: latest?.audit?.["Created by"] ?? "",
-            },
-          ] as const;
-        } catch {
-          return [sid, { screeningDate: "", caseId: "", healthWorker: "" }] as const;
-        }
-      }),
-    ).then(
-      (
-        entries: ReadonlyArray<
-          readonly [string, { screeningDate: string; caseId: string; healthWorker: string }]
-        >,
-      ) => {
-        if (cancelled) return;
-        setScreeningInfo(Object.fromEntries(entries));
-      },
-    );
-    return () => {
-      cancelled = true;
-    };
-  }, [pageData]);
-
   const filtered = useMemo(() => {
     if (!pageData) return null;
     let rows = pageData.content;
     if (mode !== "completed") {
-      // Pending: show the most recently screened patient first. Rows whose
-      // screening date hasn't loaded yet (or is missing) sort to the bottom.
+      // Pending: show the most recently screened patient first — across the
+      // WHOLE list (all pages were fetched). Rows whose screening date hasn't
+      // loaded yet (or is missing) sort to the bottom.
       return [...rows].sort((a, b) =>
-        (screeningInfo[b.subject.uuid]?.screeningDate || "").localeCompare(
-          screeningInfo[a.subject.uuid]?.screeningDate || "",
+        (screeningInfo?.[b.subject.uuid]?.screeningDate || "").localeCompare(
+          screeningInfo?.[a.subject.uuid]?.screeningDate || "",
         ),
       );
     }
@@ -232,18 +180,18 @@ export function EncounterList({ mode }: Props) {
       </Box>
     );
 
-  // Completed paginates client-side over the filtered rows (the fetch brought
-  // everything); pending keeps server paging. Clamp the page so a filter that
-  // shrinks the list can't strand the user on an out-of-range page.
-  const totalRows = mode === "completed" ? filtered.length : pageData.totalElements;
-  const effectivePageIndex =
-    mode === "completed"
-      ? Math.min(pageIndex, Math.max(0, Math.ceil(totalRows / PAGE_SIZE) - 1))
-      : pageIndex;
-  const visibleRows =
-    mode === "completed"
-      ? filtered.slice(effectivePageIndex * PAGE_SIZE, (effectivePageIndex + 1) * PAGE_SIZE)
-      : filtered;
+  // Both tabs paginate client-side over the (sorted, filtered) full fetch.
+  // Clamp the page so a filter that shrinks the list can't strand the user on
+  // an out-of-range page.
+  const totalRows = filtered.length;
+  const effectivePageIndex = Math.min(
+    pageIndex,
+    Math.max(0, Math.ceil(totalRows / PAGE_SIZE) - 1),
+  );
+  const visibleRows = filtered.slice(
+    effectivePageIndex * PAGE_SIZE,
+    (effectivePageIndex + 1) * PAGE_SIZE,
+  );
   // High Risk count over everything the current location/referral filters
   // allow — deliberately not narrowed by the date or High Risk display filters.
   const highRiskCount =
@@ -427,7 +375,7 @@ export function EncounterList({ mode }: Props) {
             <Stack spacing={1.5} sx={{ p: 1.5 }}>
               {visibleRows.map((e: EncounterWithLocation, index: number) => {
                 const serialNumber = effectivePageIndex * PAGE_SIZE + index + 1;
-                const info = screeningInfo[e.subject.uuid];
+                const info = screeningInfo?.[e.subject.uuid];
                 const date = mode === "pending" ? info?.screeningDate : e.encounterDateTime;
                 const screeningTs = info?.screeningDate;
                 const village = e.subject.location?.["Village"];
@@ -527,7 +475,7 @@ export function EncounterList({ mode }: Props) {
               <TableBody>
                 {visibleRows.map((e: EncounterWithLocation, index: number) => {
                   const serialNumber = effectivePageIndex * PAGE_SIZE + index + 1;
-                  const info = screeningInfo[e.subject.uuid];
+                  const info = screeningInfo?.[e.subject.uuid];
                   const date = mode === "pending" ? info?.screeningDate : e.encounterDateTime;
                   const screeningTs = info?.screeningDate;
                   const village = e.subject.location?.["Village"];
