@@ -109,9 +109,3 @@ export function classificationOf(diagnosis: string): string | null {
   if (diagnosis === NON_HOMOGENEOUS_LEUKOPLAKIA) return CLASSIFICATION.suspicious;
   return DIAGNOSIS_MAP[diagnosis]?.classification ?? null;
 }
-
-// True once the selection resolves to a High Risk band — drives the
-// "High Risk Follow-up" task (pending a Task API; see project notes).
-export function isHighRisk(diagnosis: string, subType?: string): boolean {
-  return lookupDiagnosis(diagnosis, subType)?.risk === RISK.high;
-}

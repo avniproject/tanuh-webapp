@@ -1,6 +1,6 @@
 {
   "name": "avni-tanuh-physician-app",
-  "version": "0.1.0",
+  "version": "1.6.1",
   "private": true,
   "description": "Physician Review CRUD webapp for Tanuh — sits on top of Avni Web APIs",
   "type": "module",
