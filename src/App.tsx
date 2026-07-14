@@ -1,9 +1,10 @@
 import { BrowserRouter, Route, Routes, Navigate, useLocation, useNavigate } from "react-router-dom";
-import { CssBaseline, ThemeProvider, Tab, Tabs, Box, CircularProgress } from "@mui/material";
+import { CssBaseline, ThemeProvider, Tab, Tabs, Box, Button, CircularProgress } from "@mui/material";
 import { theme } from "@/theme";
 import { AuthProvider } from "@/auth/AuthProvider";
 import { useAuth } from "@/auth/authContext";
 import { AppShell } from "@/components/AppShell";
+import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { ReviewListPage } from "@/pages/ReviewListPage";
 import { ReviewDetail } from "@/pages/ReviewDetail";
 import { NotAuthorized } from "@/pages/NotAuthorized";
@@ -90,7 +91,21 @@ function GatedRoutes() {
             </ListLayout>
           }
         />
-        <Route path="/review/:encounterUuid" element={<ReviewDetail />} />
+        <Route
+          path="/review/:encounterUuid"
+          element={
+            // Scoped boundary: a review whose data breaks rendering degrades to
+            // this message while the list tabs keep working. "Back to reviews"
+            // is a full navigation on purpose — it also resets the boundary.
+            <ErrorBoundary
+              title="This review can't be displayed."
+              description="The rest of the app still works. Reload to try again, or go back to the review list and report this case to your administrator."
+              action={<Button href="/pending">Back to reviews</Button>}
+            >
+              <ReviewDetail />
+            </ErrorBoundary>
+          }
+        />
         <Route path="*" element={<Navigate to="/pending" replace />} />
       </Route>
     </Routes>
@@ -101,11 +116,15 @@ export default function App() {
   return (
     <ThemeProvider theme={theme}>
       <CssBaseline />
-      <BrowserRouter>
-        <AuthProvider>
-          <GatedRoutes />
-        </AuthProvider>
-      </BrowserRouter>
+      {/* Outside the router and auth provider so a crash in either is caught;
+          inside the theme so the fallback is styled. */}
+      <ErrorBoundary>
+        <BrowserRouter>
+          <AuthProvider>
+            <GatedRoutes />
+          </AuthProvider>
+        </BrowserRouter>
+      </ErrorBoundary>
     </ThemeProvider>
   );
 }
