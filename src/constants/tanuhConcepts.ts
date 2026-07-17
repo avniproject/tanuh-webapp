@@ -46,6 +46,17 @@ export const SYMPTOMS_CONCEPT = {
   uuid: "4113f78c-756b-4ea7-b2cd-c92cfa9ed369",
 } as const;
 
+// Unique tracking identifier written by each encounter form's decision rule:
+// <Patient ID><type code><n> (e.g. P0123ORA2 = patient 123's 2nd Oral
+// Screening), with a <type code><uuid tail> fallback (e.g. ORAE5F23A) for
+// patients that have no Patient ID. Deployed by
+// ~/Avni/tools/build_encounter_id_bundle_v2.py. Rules only run on mobile, so
+// encounters created by this webapp do not carry it.
+export const ENCOUNTER_ID_CONCEPT = {
+  name: "Encounter ID",
+  uuid: "503a1c90-a8e0-5914-b4ca-66da90b0a9d2",
+} as const;
+
 export const PHOTO_SLOTS = [1, 2, 3, 4, 5, 6, 7, 8] as const;
 export type PhotoSlot = (typeof PHOTO_SLOTS)[number];
 

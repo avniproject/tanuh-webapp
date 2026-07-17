@@ -379,7 +379,7 @@ export function EncounterList({ mode }: Props) {
                 const date = mode === "pending" ? info?.screeningDate : e.encounterDateTime;
                 const screeningTs = info?.screeningDate;
                 const village = e.subject.location?.["Village"];
-                const caseId = info?.caseId || e.subject.externalId;
+                const caseId = info?.encounterId || info?.caseId || e.subject.externalId;
                 const healthWorker = info?.healthWorker;
                 return (
                   <Paper
@@ -479,7 +479,7 @@ export function EncounterList({ mode }: Props) {
                   const date = mode === "pending" ? info?.screeningDate : e.encounterDateTime;
                   const screeningTs = info?.screeningDate;
                   const village = e.subject.location?.["Village"];
-                  const caseId = info?.caseId || e.subject.externalId;
+                  const caseId = info?.encounterId || info?.caseId || e.subject.externalId;
                   const healthWorker = info?.healthWorker;
                   return (
                     <TableRow

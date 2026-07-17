@@ -35,6 +35,7 @@ import { getConcept, type ConceptAnswer } from "@/api/concepts";
 import type { EncounterApiResponse, SubjectApiResponse } from "@/api/types";
 import {
   ENCOUNTER_TYPE,
+  ENCOUNTER_ID_CONCEPT,
   HABIT_CONCEPTS,
   SYMPTOMS_CONCEPT,
   isLegacyOralScreening,
@@ -444,10 +445,13 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
   };
 
   // Clinician review is name-blind: the patient name is intentionally not shown.
-  // Title the page with the registration/external ID (the "Case ID"); until that
-  // source is wired up these subjects have none, so fall back to a neutral label
-  // rather than exposing the raw subject UUID.
-  const caseLabel = loaded.subject["External ID"] || "Patient Review";
+  // Title the page with the screening's Encounter ID (the same value the list
+  // shows as Case ID), falling back to the registration/external ID; subjects
+  // with neither get a neutral label rather than the raw subject UUID.
+  const caseLabel =
+    readObs<string>(loaded.screening.observations as Record<string, unknown>, ENCOUNTER_ID_CONCEPT) ||
+    loaded.subject["External ID"] ||
+    "Patient Review";
 
   return (
     <Stack spacing={3}>

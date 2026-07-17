@@ -1,4 +1,5 @@
 import { http } from "@/auth/httpClient";
+import { ENCOUNTER_ID_CONCEPT, readObs } from "@/constants/tanuhConcepts";
 import { getConcept } from "./concepts";
 import type { EncounterApiResponse, PagedResponse } from "./types";
 
@@ -172,6 +173,7 @@ export async function findCompletedEncounterUuidsWithCodedValue(
 export interface LatestScreeningInfo {
   screeningDate: string;
   caseId: string;
+  encounterId: string;
   healthWorker: string;
 }
 
@@ -202,6 +204,7 @@ export async function getLatestScreeningInfoBySubject(
       {
         screeningDate: encounter["Encounter date time"] ?? "",
         caseId: encounter["Subject external ID"] ?? "",
+        encounterId: readObs<string>(encounter.observations ?? {}, ENCOUNTER_ID_CONCEPT) ?? "",
         healthWorker: encounter.audit?.["Created by"] ?? "",
       },
     ]),
