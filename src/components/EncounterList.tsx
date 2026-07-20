@@ -2,6 +2,8 @@ import { useMemo, useState } from "react";
 import {
   Box,
   Button,
+  IconButton,
+  InputAdornment,
   Paper,
   Skeleton,
   Stack,
@@ -20,6 +22,8 @@ import {
 import { useTheme } from "@mui/material/styles";
 import RateReviewIcon from "@mui/icons-material/RateReview";
 import VisibilityIcon from "@mui/icons-material/Visibility";
+import SearchIcon from "@mui/icons-material/Search";
+import ClearIcon from "@mui/icons-material/Clear";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { endOfDay, format, parseISO } from "date-fns";
 import { getAllEncountersWithLocation, type EncounterWithLocation } from "@/api/impl";
@@ -88,6 +92,7 @@ export function EncounterList({ mode }: Props) {
 
   const [from, setFrom] = useState<string>("");
   const [to, setTo] = useState<string>("");
+  const [search, setSearch] = useState<string>("");
 
   // Both tabs fetch ALL pages up front so sorting (pending: newest screening
   // first, ACROSS pages) and the display filters + counts (completed: High
@@ -141,15 +146,28 @@ export function EncounterList({ mode }: Props) {
   const filtered = useMemo(() => {
     if (!pageData) return null;
     let rows = pageData.content;
+
+    // Case ID search — applied to both tabs. Matches the Case ID actually shown
+    // in the row (Encounter ID, falling back to legacy Case ID / external ID).
+    const query = search.trim().toLowerCase();
+    const matchesSearch = (e: EncounterWithLocation) => {
+      if (!query) return true;
+      const info = screeningInfo?.[e.subject.uuid];
+      const caseId = info?.encounterId || info?.caseId || e.subject.externalId || "";
+      return caseId.toLowerCase().includes(query);
+    };
+
     if (mode !== "completed") {
       // Pending: show the most recently screened patient first — across the
       // WHOLE list (all pages were fetched). Rows whose screening date hasn't
       // loaded yet (or is missing) sort to the bottom.
-      return [...rows].sort((a, b) =>
-        (screeningInfo?.[b.subject.uuid]?.screeningDate || "").localeCompare(
-          screeningInfo?.[a.subject.uuid]?.screeningDate || "",
-        ),
-      );
+      return [...rows]
+        .filter(matchesSearch)
+        .sort((a, b) =>
+          (screeningInfo?.[b.subject.uuid]?.screeningDate || "").localeCompare(
+            screeningInfo?.[a.subject.uuid]?.screeningDate || "",
+          ),
+        );
     }
     if (riskOnly && highRiskUuids) {
       rows = rows.filter((e) => highRiskUuids.has(e.encounterUuid));
@@ -158,15 +176,16 @@ export function EncounterList({ mode }: Props) {
     // Inclusive of the To day: a bare date parses to midnight, which would
     // silently drop everything reviewed ON that day.
     const toDate = to ? endOfDay(parseISO(to)) : null;
-    if (!fromDate && !toDate) return rows;
     return rows.filter((e) => {
+      if (!matchesSearch(e)) return false;
+      if (!fromDate && !toDate) return true;
       if (!e.encounterDateTime) return false;
       const d = parseISO(e.encounterDateTime);
       if (fromDate && d < fromDate) return false;
       if (toDate && d > toDate) return false;
       return true;
     });
-  }, [pageData, mode, from, to, screeningInfo, riskOnly, highRiskUuids]);
+  }, [pageData, mode, from, to, search, screeningInfo, riskOnly, highRiskUuids]);
 
   if (error) return <Box sx={{ p: 3, color: "error.main" }}>Failed to load: {error}</Box>;
   if (!pageData || !filtered)
@@ -235,6 +254,21 @@ export function EncounterList({ mode }: Props) {
     );
   };
 
+  const handleSearchChange = (value: string) => {
+    setSearch(value);
+    // Narrowing the list can leave the user on an out-of-range page; jump back
+    // to the first page of results.
+    if (pageIndex !== 0) {
+      setParams(
+        (sp) => {
+          sp.delete("page");
+          return sp;
+        },
+        { replace: true },
+      );
+    }
+  };
+
   return (
     <Box>
       <Stack
@@ -294,6 +328,44 @@ export function EncounterList({ mode }: Props) {
             value={referralUuid}
             onChange={handleReferralChange}
             types={[REFERRAL_FACILITY_TYPE]}
+          />
+        </Stack>
+        <Stack
+          direction={{ xs: "column", sm: "row" }}
+          alignItems={{ xs: "stretch", sm: "center" }}
+          spacing={{ xs: 1, sm: 2 }}
+        >
+          <Typography
+            variant="body1"
+            sx={{ minWidth: { xs: 0, sm: 140 }, fontWeight: 600, color: "text.primary" }}
+          >
+            Case ID
+          </Typography>
+          <TextField
+            size="small"
+            placeholder="Search by Case ID"
+            value={search}
+            onChange={(e) => handleSearchChange(e.target.value)}
+            sx={{ width: { xs: "100%", sm: 280 } }}
+            InputProps={{
+              startAdornment: (
+                <InputAdornment position="start">
+                  <SearchIcon fontSize="small" color="action" />
+                </InputAdornment>
+              ),
+              endAdornment: search ? (
+                <InputAdornment position="end">
+                  <IconButton
+                    aria-label="Clear search"
+                    size="small"
+                    edge="end"
+                    onClick={() => handleSearchChange("")}
+                  >
+                    <ClearIcon fontSize="small" />
+                  </IconButton>
+                </InputAdornment>
+              ) : null,
+            }}
           />
         </Stack>
         {mode === "completed" && (
@@ -366,8 +438,15 @@ export function EncounterList({ mode }: Props) {
 
       {filtered.length === 0 ? (
         <Typography color="text.secondary" sx={{ p: 4, textAlign: "center" }}>
-          No {riskOnly ? "High Risk " : ""}{mode === "pending" ? "pending" : "completed"} reviews
-          {referralUuid ? " for the selected referral facility." : " in your catchment."}
+          {search.trim() ? (
+            <>No {mode === "pending" ? "pending" : "completed"} reviews match Case ID “{search.trim()}”.</>
+          ) : (
+            <>
+              No {riskOnly ? "High Risk " : ""}
+              {mode === "pending" ? "pending" : "completed"} reviews
+              {referralUuid ? " for the selected referral facility." : " in your catchment."}
+            </>
+          )}
         </Typography>
       ) : (
         <>
