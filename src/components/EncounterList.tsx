@@ -1,4 +1,4 @@
-import { useMemo, useState } from "react";
+import { useCallback, useMemo, useState } from "react";
 import {
   Box,
   Button,
@@ -30,6 +30,7 @@ import { getAllEncountersWithLocation, type EncounterWithLocation } from "@/api/
 import {
   findCompletedEncounterUuidsWithCodedValue,
   getLatestScreeningInfoBySubject,
+  getReviewScreeningPairing,
 } from "@/api/encounters";
 import {
   ENCOUNTER_TYPE,
@@ -126,6 +127,19 @@ export function EncounterList({ mode }: Props) {
     [mode],
   );
 
+  // reviewUuid -> the specific screening that review covers, so a subject's
+  // multiple reviews each show their OWN Case ID instead of all collapsing onto
+  // the subject's latest screening. Falls back to `screeningInfo` (latest per
+  // subject) for any review not resolved by the pairing.
+  const { data: reviewPairing } = useAsync(
+    () =>
+      getReviewScreeningPairing(
+        ENCOUNTER_TYPE.physicianReviewForm.name,
+        ENCOUNTER_TYPE.oralScreening.name,
+      ),
+    [mode],
+  );
+
   // Which completed reviews are High Risk. The /api/impl rows carry no
   // observations, so this is resolved from /api/encounters — filtered
   // server-side via the stock `concepts` observation filter and cached.
@@ -143,6 +157,15 @@ export function EncounterList({ mode }: Props) {
     [mode],
   );
 
+  // The screening a given review row should be labelled by: its paired
+  // screening, falling back to the subject's latest. Undefined until the
+  // pairing sweep lands (rows render "—" rather than a wrong latest value).
+  const infoFor = useCallback(
+    (e: EncounterWithLocation) =>
+      reviewPairing ? (reviewPairing[e.encounterUuid] ?? screeningInfo?.[e.subject.uuid]) : undefined,
+    [reviewPairing, screeningInfo],
+  );
+
   const filtered = useMemo(() => {
     if (!pageData) return null;
     let rows = pageData.content;
@@ -152,7 +175,7 @@ export function EncounterList({ mode }: Props) {
     const query = search.trim().toLowerCase();
     const matchesSearch = (e: EncounterWithLocation) => {
       if (!query) return true;
-      const info = screeningInfo?.[e.subject.uuid];
+      const info = infoFor(e);
       const caseId = info?.encounterId || info?.caseId || e.subject.externalId || "";
       return caseId.toLowerCase().includes(query);
     };
@@ -164,9 +187,7 @@ export function EncounterList({ mode }: Props) {
       return [...rows]
         .filter(matchesSearch)
         .sort((a, b) =>
-          (screeningInfo?.[b.subject.uuid]?.screeningDate || "").localeCompare(
-            screeningInfo?.[a.subject.uuid]?.screeningDate || "",
-          ),
+          (infoFor(b)?.screeningDate || "").localeCompare(infoFor(a)?.screeningDate || ""),
         );
     }
     if (riskOnly && highRiskUuids) {
@@ -185,7 +206,7 @@ export function EncounterList({ mode }: Props) {
       if (toDate && d > toDate) return false;
       return true;
     });
-  }, [pageData, mode, from, to, search, screeningInfo, riskOnly, highRiskUuids]);
+  }, [pageData, mode, from, to, search, infoFor, riskOnly, highRiskUuids]);
 
   if (error) return <Box sx={{ p: 3, color: "error.main" }}>Failed to load: {error}</Box>;
   if (!pageData || !filtered)
@@ -454,7 +475,7 @@ export function EncounterList({ mode }: Props) {
             <Stack spacing={1.5} sx={{ p: 1.5 }}>
               {visibleRows.map((e: EncounterWithLocation, index: number) => {
                 const serialNumber = effectivePageIndex * PAGE_SIZE + index + 1;
-                const info = screeningInfo?.[e.subject.uuid];
+                const info = infoFor(e);
                 const date = mode === "pending" ? info?.screeningDate : e.encounterDateTime;
                 const screeningTs = info?.screeningDate;
                 const village = e.subject.location?.["Village"];
@@ -554,7 +575,7 @@ export function EncounterList({ mode }: Props) {
               <TableBody>
                 {visibleRows.map((e: EncounterWithLocation, index: number) => {
                   const serialNumber = effectivePageIndex * PAGE_SIZE + index + 1;
-                  const info = screeningInfo?.[e.subject.uuid];
+                  const info = infoFor(e);
                   const date = mode === "pending" ? info?.screeningDate : e.encounterDateTime;
                   const screeningTs = info?.screeningDate;
                   const village = e.subject.location?.["Village"];

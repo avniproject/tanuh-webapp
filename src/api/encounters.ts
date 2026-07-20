@@ -1,5 +1,5 @@
 import { http } from "@/auth/httpClient";
-import { ENCOUNTER_ID_CONCEPT, readObs } from "@/constants/tanuhConcepts";
+import { ENCOUNTER_ID_CONCEPT, REVIEWED_ORAL_SCREENING_CONCEPT, readObs } from "@/constants/tanuhConcepts";
 import { getConcept } from "./concepts";
 import type { EncounterApiResponse, PagedResponse } from "./types";
 
@@ -171,16 +171,101 @@ export async function findCompletedEncounterUuidsWithCodedValue(
 }
 
 export interface LatestScreeningInfo {
+  screeningUuid: string;
   screeningDate: string;
   caseId: string;
   encounterId: string;
   healthWorker: string;
 }
 
+// Sortable creation key. A completed Oral Screening schedules its review
+// immediately, so ordering both by creation time keeps a subject's screenings
+// and reviews aligned for index pairing.
+function createdAtKey(e: EncounterApiResponse): string {
+  return e.audit?.["Created at"] ?? e["Encounter date time"] ?? e["Earliest scheduled date"] ?? "";
+}
+
+function toScreeningInfo(screening: EncounterApiResponse): LatestScreeningInfo {
+  return {
+    screeningUuid: screening.ID,
+    screeningDate: screening["Encounter date time"] ?? "",
+    caseId: screening["Subject external ID"] ?? "",
+    encounterId: readObs<string>(screening.observations ?? {}, ENCOUNTER_ID_CONCEPT) ?? "",
+    healthWorker: screening.audit?.["Created by"] ?? "",
+  };
+}
+
+function groupBySubject(encounters: EncounterApiResponse[]): Record<string, EncounterApiResponse[]> {
+  const bySubject: Record<string, EncounterApiResponse[]> = {};
+  for (const e of encounters) (bySubject[e["Subject ID"]] ??= []).push(e);
+  return bySubject;
+}
+
 /**
- * Latest completed encounter of a type per subject — feeds the list rows'
- * screening date / Case ID / health-worker columns from ONE org-wide sweep
- * instead of a request per subject per page.
+ * Pair each of a subject's review encounters to the specific Oral Screening it
+ * covers. A stamped review (`Reviewed Oral Screening` = the screening's UUID)
+ * is authoritative and freezes that pairing; unstamped reviews (legacy +
+ * still-pending) fall back to created-order index pairing against the
+ * screenings not already claimed by a stamp. Returns reviewUuid -> screening.
+ */
+export function pairReviewsToScreenings(
+  reviews: EncounterApiResponse[],
+  screenings: EncounterApiResponse[],
+): Map<string, EncounterApiResponse> {
+  const completed = screenings
+    .filter(isCompleted)
+    .sort((a, b) => createdAtKey(a).localeCompare(createdAtKey(b)));
+  const byUuid = new Map(completed.map((s) => [s.ID, s]));
+  const result = new Map<string, EncounterApiResponse>();
+  const claimed = new Set<string>();
+  const active = reviews.filter((r) => !r.Voided);
+  // 1) stamped reviews claim their exact screening
+  for (const r of active) {
+    const stamp = readObs<string>(r.observations ?? {}, REVIEWED_ORAL_SCREENING_CONCEPT);
+    if (stamp && byUuid.has(stamp)) {
+      result.set(r.ID, byUuid.get(stamp)!);
+      claimed.add(stamp);
+    }
+  }
+  // 2) unstamped reviews pair with the remaining screenings, oldest-first
+  const unstamped = active
+    .filter((r) => !result.has(r.ID))
+    .sort((a, b) => createdAtKey(a).localeCompare(createdAtKey(b)));
+  const unclaimed = completed.filter((s) => !claimed.has(s.ID));
+  unstamped.forEach((r, i) => {
+    const screening = unclaimed[i] ?? completed[completed.length - 1];
+    if (screening) result.set(r.ID, screening);
+  });
+  return result;
+}
+
+/**
+ * reviewUuid -> the screening info its row should show. Built from two cached
+ * org-wide sweeps (reviews with obs for the stamp, screenings for Case IDs), so
+ * each of a subject's reviews shows its OWN screening's Case ID instead of all
+ * collapsing onto the subject's latest screening.
+ */
+export async function getReviewScreeningPairing(
+  reviewEncounterType: string,
+  screeningEncounterType: string,
+): Promise<Record<string, LatestScreeningInfo>> {
+  const [reviewsAll, screeningsAll] = await Promise.all([
+    sweepEncounters(reviewEncounterType),
+    sweepEncounters(screeningEncounterType),
+  ]);
+  const reviewsBySubject = groupBySubject(reviewsAll.filter((r) => !r.Voided));
+  const screeningsBySubject = groupBySubject(screeningsAll);
+  const pairing: Record<string, LatestScreeningInfo> = {};
+  for (const [subjectId, reviews] of Object.entries(reviewsBySubject)) {
+    const paired = pairReviewsToScreenings(reviews, screeningsBySubject[subjectId] ?? []);
+    for (const [reviewUuid, screening] of paired) pairing[reviewUuid] = toScreeningInfo(screening);
+  }
+  return pairing;
+}
+
+/**
+ * Latest completed screening per subject — the fallback label for a review row
+ * whose pairing can't be resolved (e.g. a review beyond the sweep cap).
  */
 export async function getLatestScreeningInfoBySubject(
   encounterType: string,
@@ -199,14 +284,6 @@ export async function getLatestScreeningInfoBySubject(
     }
   }
   return Object.fromEntries(
-    Object.entries(latest).map(([subjectId, encounter]) => [
-      subjectId,
-      {
-        screeningDate: encounter["Encounter date time"] ?? "",
-        caseId: encounter["Subject external ID"] ?? "",
-        encounterId: readObs<string>(encounter.observations ?? {}, ENCOUNTER_ID_CONCEPT) ?? "",
-        healthWorker: encounter.audit?.["Created by"] ?? "",
-      },
-    ]),
+    Object.entries(latest).map(([subjectId, encounter]) => [subjectId, toScreeningInfo(encounter)]),
   );
 }

@@ -27,6 +27,7 @@ import {
   isCompleted,
   isScheduled,
   listEncounters,
+  pairReviewsToScreenings,
   scheduleEncounter,
   submitEncounter,
 } from "@/api/encounters";
@@ -46,6 +47,7 @@ import {
   PHOTO_SLOTS,
   QUALITY_VALUES,
   REVIEW_CONCEPTS,
+  REVIEWED_ORAL_SCREENING_CONCEPT,
   REVIEW_IMAGE_GROUP,
   REVIEW_IMAGE_GROUP_CHILD,
   VERDICT_VALUES,
@@ -176,18 +178,26 @@ async function ensureHighRiskFollowUp(subjectId: string): Promise<void> {
 async function loadReview(encounterUuid: string): Promise<LoadedState> {
   const review = await getEncounter(encounterUuid);
   const subjectId = review["Subject ID"];
-  const [subject, screeningPage, verdictConcept, diagnosisConcept, subTypeConcept] = await Promise.all([
-    getSubject(subjectId),
-    // size must comfortably exceed any real screening count per subject: the
-    // API pages by lastModified, so a small page can miss the LATEST screening.
-    listEncounters({ encounterType: ENCOUNTER_TYPE.oralScreening.name, subjectId, size: 50 }),
-    getConcept(REVIEW_IMAGE_GROUP_CHILD.physicianVerdict.uuid),
-    getConcept(REVIEW_CONCEPTS.provisionalDiagnosis.uuid),
-    getConcept(REVIEW_CONCEPTS.provisionalSubType.uuid),
-  ]);
-  const screening = screeningPage.content
-    .filter((e) => !e.Voided && e["Encounter date time"] != null)
-    .sort((a, b) => (b["Encounter date time"] || "").localeCompare(a["Encounter date time"] || ""))[0];
+  const [subject, screeningPage, reviewPage, verdictConcept, diagnosisConcept, subTypeConcept] =
+    await Promise.all([
+      getSubject(subjectId),
+      // size must comfortably exceed any real screening/review count per subject:
+      // the API pages by lastModified, so a small page can miss encounters.
+      listEncounters({ encounterType: ENCOUNTER_TYPE.oralScreening.name, subjectId, size: 50 }),
+      listEncounters({ encounterType: ENCOUNTER_TYPE.physicianReviewForm.name, subjectId, size: 50 }),
+      getConcept(REVIEW_IMAGE_GROUP_CHILD.physicianVerdict.uuid),
+      getConcept(REVIEW_CONCEPTS.provisionalDiagnosis.uuid),
+      getConcept(REVIEW_CONCEPTS.provisionalSubType.uuid),
+    ]);
+  // Load the specific screening THIS review covers (its stamped source, or the
+  // created-order paired one), not just the subject's latest — otherwise a
+  // multi-screening subject's reviews would all bind to the newest screening.
+  const paired = pairReviewsToScreenings(reviewPage.content, screeningPage.content);
+  const screening =
+    paired.get(review.ID) ??
+    screeningPage.content
+      .filter((e) => !e.Voided && e["Encounter date time"] != null)
+      .sort((a, b) => (b["Encounter date time"] || "").localeCompare(a["Encounter date time"] || ""))[0];
   if (!screening) throw new Error("No completed Oral Screening encounter for this subject");
   return {
     review,
@@ -402,6 +412,9 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
       if (action) observations[REVIEW_CONCEPTS.recommendedAction.name] = action;
       if (effectiveForm.notes.trim()) observations[REVIEW_CONCEPTS.notes.name] = effectiveForm.notes;
       observations[REVIEW_CONCEPTS.reviewTimestamp.name] = new Date().toISOString();
+      // Permanently tie this review to the screening it covered, so the list can
+      // label it by its own Case ID instead of the subject's latest screening.
+      observations[REVIEWED_ORAL_SCREENING_CONCEPT.name] = loaded.screening.ID;
 
       await submitEncounter(loaded.review.ID, {
         "Encounter type": ENCOUNTER_TYPE.physicianReviewForm.name,

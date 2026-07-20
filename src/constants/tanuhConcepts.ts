@@ -57,6 +57,20 @@ export const ENCOUNTER_ID_CONCEPT = {
   uuid: "503a1c90-a8e0-5914-b4ca-66da90b0a9d2",
 } as const;
 
+// Written by this webapp onto a completed review: the UUID (`ID`) of the Oral
+// Screening encounter that review covered. A subject can have several
+// screenings, each scheduling its own review, but Avni scheduled visits carry
+// no link back to the screening that triggered them — so without this stamp the
+// list can only fall back to the subject's *latest* screening for every review,
+// making a subject's multiple reviews all show the same Case ID. This concept
+// (deployed by ~/Avni/tools/build_review_source_concept_bundle.py) is the
+// permanent per-review→screening link; unstamped legacy/pending reviews fall
+// back to created-order index pairing.
+export const REVIEWED_ORAL_SCREENING_CONCEPT = {
+  name: "Reviewed Oral Screening",
+  uuid: "f3c97f76-24a2-54f9-aa77-c71f111e9b71",
+} as const;
+
 export const PHOTO_SLOTS = [1, 2, 3, 4, 5, 6, 7, 8] as const;
 export type PhotoSlot = (typeof PHOTO_SLOTS)[number];
 
