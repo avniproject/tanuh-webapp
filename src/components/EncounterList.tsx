@@ -417,24 +417,10 @@ export function EncounterList({ mode }: Props) {
                       </Typography>
                       <Typography variant="body2" sx={{ color: "text.primary" }}>
                         <Box component="span" sx={{ color: "text.secondary", fontWeight: 500 }}>
-                          {mode === "pending" ? "Screening date: " : "Reviewed: "}
+                          Screening date:{" "}
                         </Box>
-                        {mode === "pending"
-                          ? screeningTs
-                            ? format(parseISO(screeningTs), "dd MMM yyyy, h:mm a")
-                            : "—"
-                          : date
-                            ? format(parseISO(date), "dd MMM yyyy")
-                            : "—"}
+                        {screeningTs ? format(parseISO(screeningTs), "dd MMM yyyy, h:mm a") : "—"}
                       </Typography>
-                      {mode === "completed" && (
-                        <Typography variant="body2" sx={{ color: "text.primary" }}>
-                          <Box component="span" sx={{ color: "text.secondary", fontWeight: 500 }}>
-                            Timestamp of screening:{" "}
-                          </Box>
-                          {screeningTs ? format(parseISO(screeningTs), "dd MMM yyyy, h:mm a") : "—"}
-                        </Typography>
-                      )}
                       <Typography variant="body2" sx={{ color: "text.primary" }}>
                         <Box component="span" sx={{ color: "text.secondary", fontWeight: 500 }}>
                           Village:{" "}
@@ -447,6 +433,14 @@ export function EncounterList({ mode }: Props) {
                         </Box>
                         {healthWorker || "—"}
                       </Typography>
+                      {mode === "completed" && (
+                        <Typography variant="body2" sx={{ color: "text.primary" }}>
+                          <Box component="span" sx={{ color: "text.secondary", fontWeight: 500 }}>
+                            Reviewed on:{" "}
+                          </Box>
+                          {date ? format(parseISO(date), "dd MMM yyyy") : "—"}
+                        </Typography>
+                      )}
                       {mode === "completed" && (
                         <Typography variant="body2" sx={{ color: "text.primary" }}>
                           <Box component="span" sx={{ color: "text.secondary", fontWeight: 500 }}>
@@ -466,20 +460,16 @@ export function EncounterList({ mode }: Props) {
                 <TableRow sx={{ "& th": { fontWeight: 700, color: "text.primary", fontSize: "0.95rem", backgroundColor: "grey.100" } }}>
                   <TableCell sx={{ width: "6%" }}>S.No</TableCell>
                   <TableCell sx={{ width: mode === "pending" ? "16%" : "12%" }}>Case ID</TableCell>
-                  <TableCell sx={{ width: mode === "pending" ? "22%" : "13%" }}>
-                    {mode === "pending" ? "Screening date" : "Reviewed on"}
+                  <TableCell sx={{ width: mode === "pending" ? "22%" : "16%" }}>
+                    Screening date
                   </TableCell>
-                  {mode === "completed" && (
-                    <TableCell sx={{ width: "15%" }}>
-                      Timestamp of screening
-                    </TableCell>
-                  )}
-                  <TableCell sx={{ width: mode === "pending" ? "18%" : "14%" }}>
+                  <TableCell sx={{ width: mode === "pending" ? "18%" : "13%" }}>
                     Village
                   </TableCell>
-                  <TableCell sx={{ width: mode === "pending" ? "16%" : "14%" }}>Health worker</TableCell>
+                  <TableCell sx={{ width: mode === "pending" ? "16%" : "13%" }}>Health worker</TableCell>
+                  {mode === "completed" && <TableCell sx={{ width: "13%" }}>Reviewed on</TableCell>}
                   {mode === "completed" && <TableCell sx={{ width: "14%" }}>Reviewed by</TableCell>}
-                  <TableCell sx={{ width: mode === "pending" ? "14%" : "12%" }} aria-hidden />
+                  <TableCell sx={{ width: mode === "pending" ? "14%" : "7%" }} aria-hidden />
                 </TableRow>
               </TableHead>
               <TableBody>
@@ -501,23 +491,17 @@ export function EncounterList({ mode }: Props) {
                       <TableCell sx={{ color: "text.secondary" }}>{serialNumber}</TableCell>
                       <TableCell sx={{ color: "text.primary" }}>{caseId || "—"}</TableCell>
                       <TableCell sx={{ color: "text.primary" }}>
-                        {mode === "pending"
-                          ? screeningTs
-                            ? format(parseISO(screeningTs), "dd MMM yyyy, h:mm a")
-                            : "—"
-                          : date
-                            ? format(parseISO(date), "dd MMM yyyy")
-                            : "—"}
+                        {screeningTs ? format(parseISO(screeningTs), "dd MMM yyyy, h:mm a") : "—"}
                       </TableCell>
-                      {mode === "completed" && (
-                        <TableCell sx={{ color: "text.primary" }}>
-                          {screeningTs ? format(parseISO(screeningTs), "dd MMM yyyy, h:mm a") : "—"}
-                        </TableCell>
-                      )}
                       <TableCell sx={{ color: "text.primary" }}>
                         {village || "—"}
                       </TableCell>
                       <TableCell sx={{ color: "text.primary" }}>{healthWorker || "—"}</TableCell>
+                      {mode === "completed" && (
+                        <TableCell sx={{ color: "text.primary" }}>
+                          {date ? format(parseISO(date), "dd MMM yyyy") : "—"}
+                        </TableCell>
+                      )}
                       {mode === "completed" && (
                         <TableCell sx={{ color: "text.primary" }}>{e.lastModifiedBy || "—"}</TableCell>
                       )}
