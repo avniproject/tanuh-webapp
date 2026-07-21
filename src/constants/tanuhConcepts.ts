@@ -47,11 +47,19 @@ export const SYMPTOMS_CONCEPT = {
 } as const;
 
 // Unique tracking identifier written by each encounter form's decision rule:
-// <Patient ID><type code><n> (e.g. P0123ORA2 = patient 123's 2nd Oral
-// Screening), with a <type code><uuid tail> fallback (e.g. ORAE5F23A) for
-// patients that have no Patient ID. Deployed by
-// ~/Avni/tools/build_encounter_id_bundle_v2.py. Rules only run on mobile, so
-// encounters created by this webapp do not carry it.
+// <Patient ID><type code><nnn>, zero-padded to 3 (e.g. P0123ORA002 = patient
+// 123's 2nd Oral Screening). Patients with no Patient ID — everyone registered
+// before the identifier pool existed — fall back to a <subject uuid tail>
+// prefix (e.g. 18A1B2ORA002), which is stable across that patient's encounters
+// so their cases still group and sort together.
+//
+// The sequence is max(prior encounters of the type, highest suffix already
+// issued) + 1, so voiding a mid-sequence encounter cannot cause a number to be
+// re-issued. Ids issued before this webapp's v1.9 are unpadded (P0123ORA2) and
+// both forms coexist — canonicalise before comparing or searching.
+//
+// Deployed by ~/Avni/tools/build_encounter_id_bundle_v4.py. Rules only run on
+// mobile, so encounters created by this webapp do not carry it.
 export const ENCOUNTER_ID_CONCEPT = {
   name: "Encounter ID",
   uuid: "503a1c90-a8e0-5914-b4ca-66da90b0a9d2",

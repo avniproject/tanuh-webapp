@@ -172,12 +172,18 @@ export function EncounterList({ mode }: Props) {
 
     // Case ID search — applied to both tabs. Matches the Case ID actually shown
     // in the row (Encounter ID, falling back to legacy Case ID / external ID).
-    const query = search.trim().toLowerCase();
+    // Sequence numbers are zero-padded (P0102ORA006) but clinicians type them
+    // unpadded, and pre-v4 encounters carry genuinely unpadded ids, so both the
+    // query and the candidate are canonicalised to an unpadded suffix first.
+    // Only digits following a 3-letter type code are unpadded — the leading
+    // zeros of the Patient ID itself (P0102) are significant.
+    const unpad = (id: string) => id.toLowerCase().replace(/([a-z]{3})0*(\d+)$/, "$1$2");
+    const query = unpad(search.trim());
     const matchesSearch = (e: EncounterWithLocation) => {
       if (!query) return true;
       const info = infoFor(e);
       const caseId = info?.encounterId || info?.caseId || e.subject.externalId || "";
-      return caseId.toLowerCase().includes(query);
+      return unpad(caseId).includes(query);
     };
 
     if (mode !== "completed") {
