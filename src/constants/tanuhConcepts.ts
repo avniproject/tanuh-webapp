@@ -59,10 +59,19 @@ export const SYMPTOMS_CONCEPT = {
 // both forms coexist — canonicalise before comparing or searching.
 //
 // Deployed by ~/Avni/tools/build_encounter_id_bundle_v4.py. Rules only run on
-// mobile, so encounters created by this webapp do not carry it.
+// mobile; for Clinician Reviews completed here, ReviewForm writes the id
+// itself at submit using the same sequence scheme (computeNextEncounterId).
 export const ENCOUNTER_ID_CONCEPT = {
   name: "Encounter ID",
   uuid: "503a1c90-a8e0-5914-b4ca-66da90b0a9d2",
+} as const;
+
+// The subject's pool-issued identifier (e.g. P0123), written at registration
+// on mobile from the "Patient ID" identifier source. Prefix of every
+// Encounter ID; subjects registered while the pool was empty have none.
+export const PATIENT_ID_CONCEPT = {
+  name: "Patient ID",
+  uuid: "de560361-145a-51fa-b0bb-944686b8087e",
 } as const;
 
 // Written by this webapp onto a completed review: the UUID (`ID`) of the Oral

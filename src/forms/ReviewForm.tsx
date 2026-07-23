@@ -22,6 +22,7 @@ import LockOutlinedIcon from "@mui/icons-material/LockOutlined";
 import { addDays, differenceInYears, format, parseISO } from "date-fns";
 import { useNavigate } from "react-router-dom";
 import {
+  computeNextEncounterId,
   getEncounter,
   invalidateEncounterSweeps,
   isCompleted,
@@ -38,6 +39,7 @@ import {
   ENCOUNTER_TYPE,
   ENCOUNTER_ID_CONCEPT,
   HABIT_CONCEPTS,
+  PATIENT_ID_CONCEPT,
   SYMPTOMS_CONCEPT,
   isLegacyOralScreening,
   ORAL_IMAGE_GROUP,
@@ -363,8 +365,17 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
     try {
       // Another physician may have completed this review since it was opened —
       // re-check so a second submit can't silently overwrite the first.
-      // Best-effort (not transactional), but it closes the common case.
-      const current = await getEncounter(loaded.review.ID);
+      // Best-effort (not transactional), but it closes the common case. The
+      // subject's reviews are re-fetched alongside (not reused from load time)
+      // so the Encounter ID sequence below is computed on current data.
+      const [current, reviewsNow] = await Promise.all([
+        getEncounter(loaded.review.ID),
+        listEncounters({
+          encounterType: ENCOUNTER_TYPE.physicianReviewForm.name,
+          subjectId: loaded.review["Subject ID"],
+          size: 50,
+        }),
+      ]);
       if (isCompleted(current)) {
         setSubmitError(
           "This review has already been completed by someone else. Go back and reopen it to see the recorded answers.",
@@ -415,6 +426,19 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
       // Permanently tie this review to the screening it covered, so the list can
       // label it by its own Case ID instead of the subject's latest screening.
       observations[REVIEWED_ORAL_SCREENING_CONCEPT.name] = loaded.screening.ID;
+      // Rules only run on mobile, so the review's Encounter ID is written here.
+      // An id already on the encounter is reused verbatim (the PUT replaces
+      // observations wholesale — recomputing could change it); a subject
+      // without a Patient ID gets none, exactly like the mobile rule.
+      const encounterId =
+        readObs<string>(current.observations ?? {}, ENCOUNTER_ID_CONCEPT) ??
+        computeNextEncounterId(
+          readObs<string>(loaded.subject.observations ?? {}, PATIENT_ID_CONCEPT),
+          "CLR",
+          reviewsNow.content,
+          loaded.review.ID,
+        );
+      if (encounterId) observations[ENCOUNTER_ID_CONCEPT.name] = encounterId;
 
       await submitEncounter(loaded.review.ID, {
         "Encounter type": ENCOUNTER_TYPE.physicianReviewForm.name,

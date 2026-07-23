@@ -109,6 +109,33 @@ export function isCompleted(encounter: EncounterApiResponse): boolean {
   return encounter["Encounter date time"] != null && !encounter.Voided;
 }
 
+/**
+ * Next Encounter ID for an encounter being completed, mirroring the mobile
+ * decision rule: sequence = max(count of the subject's other performed
+ * encounters of the type, highest numeric suffix already issued) + 1, so a
+ * voided mid-sequence encounter can never cause a number to be re-issued.
+ * Returns null when the subject has no Patient ID — like the rule, no id is
+ * written at all in that case.
+ */
+export function computeNextEncounterId(
+  patientId: string | null | undefined,
+  typeCode: string,
+  siblings: EncounterApiResponse[],
+  selfUuid: string,
+): string | null {
+  if (!patientId) return null;
+  const performed = siblings.filter(
+    (e) => e.ID !== selfUuid && !e.Voided && e["Encounter date time"] != null,
+  );
+  let sequence = performed.length;
+  for (const e of performed) {
+    const previousId = readObs<string>(e.observations ?? {}, ENCOUNTER_ID_CONCEPT);
+    const match = previousId?.match(/(\d+)\s*$/);
+    if (match && parseInt(match[1], 10) > sequence) sequence = parseInt(match[1], 10);
+  }
+  return patientId + typeCode + String(sequence + 1).padStart(3, "0");
+}
+
 // ---------------------------------------------------------------------------
 // Org-wide encounter sweeps. The list tabs remount on every tab switch and
 // each mount needs the same data (High Risk set, latest screening per
