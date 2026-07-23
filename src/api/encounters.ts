@@ -1,6 +1,7 @@
 import { http } from "@/auth/httpClient";
 import { ENCOUNTER_ID_CONCEPT, REVIEWED_ORAL_SCREENING_CONCEPT, readObs } from "@/constants/tanuhConcepts";
 import { getConcept } from "./concepts";
+import { idbGet, idbSet } from "./idbStore";
 import type { EncounterApiResponse, PagedResponse } from "./types";
 
 const EPOCH = "2000-01-01T00:00:00.000Z";
@@ -13,6 +14,10 @@ interface ListParams {
   // observation — for a single-select Coded concept that is the answer
   // concept's uuid, not its display name.
   concepts?: Record<string, string>;
+  // Lower bound of the server's lastModified window (inclusive). Defaults to
+  // EPOCH (everything). The delta cache passes its watermark here to fetch only
+  // rows changed since the last sweep.
+  lastModifiedDateTime?: string;
   page?: number;
   size?: number;
 }
@@ -24,7 +29,7 @@ export async function listEncounters(params: ListParams): Promise<PagedResponse<
   const now = new Date(Date.now() + 60 * 60 * 1000).toISOString();
   const response = await http.get<PagedResponse<EncounterApiResponse>>("/api/encounters", {
     params: {
-      lastModifiedDateTime: EPOCH,
+      lastModifiedDateTime: params.lastModifiedDateTime ?? EPOCH,
       now,
       encounterType: params.encounterType,
       subjectId: params.subjectId,
@@ -155,6 +160,7 @@ const sweepCache = new Map<string, { at: number; promise: Promise<EncounterApiRe
 // tabs stop serving pre-write cached sweeps.
 export function invalidateEncounterSweeps(): void {
   sweepCache.clear();
+  invalidateCachedEncounters();
 }
 
 export function sweepEncounters(
@@ -176,6 +182,137 @@ export function sweepEncounters(
   sweepCache.set(key, { at: Date.now(), promise });
   promise.catch(() => sweepCache.delete(key));
   return promise;
+}
+
+// ---------------------------------------------------------------------------
+// Persistent + delta-updated encounter cache (warm replacement for the
+// unfiltered sweepEncounters above).
+//
+// A completed encounter's observations, dates and pairing stamp never change,
+// so instead of re-sweeping the whole org on every list load we persist the
+// swept rows in IndexedDB and, on the next load, fetch only the rows changed
+// since the last sweep (the stock /api/encounters `lastModifiedDateTime`
+// window) and merge. First load is a full sweep (cold cache); every load after
+// transfers only the delta.
+//
+// Correctness: the server filters `last_modified_date_time BETWEEN from AND to`
+// (inclusive) ordered oldest-first, so re-requesting from the stored watermark
+// (minus a small overlap) and upserting by ID cannot drop a row that ties on a
+// timestamp boundary. Voids arrive in the delta as Voided=true and upsert over
+// the cached copy; the pairing consumers already filter voided. Hard deletes
+// (rare in Avni — voiding is the norm) are not reconciled.
+//
+// Rows are trimmed to only the fields getReviewScreeningPairing /
+// getLatestScreeningInfoBySubject read, so the store stays small (no image
+// group / photo-URL arrays). Bump CACHE_SCHEMA if that field set changes.
+// ---------------------------------------------------------------------------
+const CACHE_SCHEMA = 1;
+const CACHE_OVERLAP_MS = 5 * 60 * 1000;
+const CACHE_COLD_PAGE_CAP = 200; // ~20k rows; one-time cold-start guard
+const CACHE_PAGE_SIZE = 100;
+
+interface CachedEncounters {
+  schema: number;
+  watermark: string; // max "Last modified at" seen so far, ISO
+  records: EncounterApiResponse[];
+}
+
+// Keep only the fields the pairing/screening-info consumers read; drop the rest
+// (notably the heavy repeatable image groups) so the persisted set stays tiny.
+function trimForCache(e: EncounterApiResponse): EncounterApiResponse {
+  const obs: Record<string, unknown> = {};
+  for (const ref of [ENCOUNTER_ID_CONCEPT, REVIEWED_ORAL_SCREENING_CONCEPT]) {
+    const v = e.observations?.[ref.name];
+    if (v !== undefined) obs[ref.name] = v;
+  }
+  return {
+    ID: e.ID,
+    "Subject ID": e["Subject ID"],
+    "Subject external ID": e["Subject external ID"],
+    "Subject type": e["Subject type"],
+    Voided: e.Voided,
+    "External ID": e["External ID"],
+    "Encounter type": e["Encounter type"],
+    "Encounter date time": e["Encounter date time"],
+    "Earliest scheduled date": e["Earliest scheduled date"],
+    "Max scheduled date": e["Max scheduled date"],
+    "Cancel date time": e["Cancel date time"],
+    observations: obs,
+    audit: {
+      "Created at": e.audit?.["Created at"],
+      "Created by": e.audit?.["Created by"],
+      "Last modified at": e.audit?.["Last modified at"],
+    },
+  };
+}
+
+async function fetchEncountersSince(
+  encounterType: string,
+  since: string,
+): Promise<EncounterApiResponse[]> {
+  const all: EncounterApiResponse[] = [];
+  for (let page = 0; page < CACHE_COLD_PAGE_CAP; page++) {
+    const res = await listEncounters({
+      encounterType,
+      lastModifiedDateTime: since,
+      page,
+      size: CACHE_PAGE_SIZE,
+    });
+    all.push(...res.content);
+    if (page + 1 >= res.totalPages) break;
+  }
+  return all;
+}
+
+const cachedLayerMemo = new Map<string, { at: number; promise: Promise<EncounterApiResponse[]> }>();
+
+/**
+ * Warm-cache + delta replacement for `sweepEncounters(type)` (unfiltered). Reads
+ * the type's full org set from IndexedDB and tops it up with only the rows
+ * changed since the last call, so repeat list loads no longer re-sweep the org.
+ * On any storage failure it still returns a correct set (a full fetch), just
+ * without the persistence benefit.
+ */
+export function getCachedEncounters(encounterType: string): Promise<EncounterApiResponse[]> {
+  const memo = cachedLayerMemo.get(encounterType);
+  if (memo && Date.now() - memo.at < SWEEP_TTL_MS) return memo.promise;
+  const key = `enc-cache:${encounterType}`;
+  const promise = (async () => {
+    let cached = await idbGet<CachedEncounters>(key);
+    if (!cached || cached.schema !== CACHE_SCHEMA) {
+      cached = { schema: CACHE_SCHEMA, watermark: EPOCH, records: [] };
+    }
+    const since =
+      cached.watermark === EPOCH
+        ? EPOCH
+        : new Date(Date.parse(cached.watermark) - CACHE_OVERLAP_MS).toISOString();
+    const fresh = await fetchEncountersSince(encounterType, since);
+    const byId = new Map(cached.records.map((r) => [r.ID, r]));
+    let maxLm = Date.parse(cached.watermark);
+    for (const e of fresh) {
+      byId.set(e.ID, trimForCache(e));
+      const lm = Date.parse(e.audit?.["Last modified at"] ?? "");
+      if (!Number.isNaN(lm) && lm > maxLm) maxLm = lm;
+    }
+    const records = [...byId.values()];
+    const next: CachedEncounters = {
+      schema: CACHE_SCHEMA,
+      watermark: Number.isNaN(maxLm) ? EPOCH : new Date(maxLm).toISOString(),
+      records,
+    };
+    void idbSet(key, next);
+    return records;
+  })();
+  cachedLayerMemo.set(encounterType, { at: Date.now(), promise });
+  promise.catch(() => cachedLayerMemo.delete(encounterType));
+  return promise;
+}
+
+// Drop the in-memory memo so the next getCachedEncounters call issues a fresh
+// delta fetch (e.g. right after a review submit). The persistent store is kept —
+// the delta picks up the just-written row via its bumped lastModified.
+export function invalidateCachedEncounters(): void {
+  cachedLayerMemo.clear();
 }
 
 /**
@@ -277,8 +414,8 @@ export async function getReviewScreeningPairing(
   screeningEncounterType: string,
 ): Promise<Record<string, LatestScreeningInfo>> {
   const [reviewsAll, screeningsAll] = await Promise.all([
-    sweepEncounters(reviewEncounterType),
-    sweepEncounters(screeningEncounterType),
+    getCachedEncounters(reviewEncounterType),
+    getCachedEncounters(screeningEncounterType),
   ]);
   const reviewsBySubject = groupBySubject(reviewsAll.filter((r) => !r.Voided));
   const screeningsBySubject = groupBySubject(screeningsAll);
@@ -297,7 +434,7 @@ export async function getReviewScreeningPairing(
 export async function getLatestScreeningInfoBySubject(
   encounterType: string,
 ): Promise<Record<string, LatestScreeningInfo>> {
-  const all = await sweepEncounters(encounterType);
+  const all = await getCachedEncounters(encounterType);
   const latest: Record<string, EncounterApiResponse> = {};
   for (const encounter of all) {
     if (!isCompleted(encounter)) continue;
