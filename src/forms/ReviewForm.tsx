@@ -177,6 +177,26 @@ async function ensureHighRiskFollowUp(subjectId: string): Promise<void> {
   });
 }
 
+// Schedules the Referral Slip so it lands under Visits Planned on the patient
+// dashboard. Same shape and window as the High Risk Follow-up above; the guard
+// keeps re-reviews and double-submits from stacking up slips, and the encounter
+// type's eligibility rule suppresses the unplanned entry while one is pending.
+async function ensureReferralSlip(subjectId: string): Promise<void> {
+  const existing = await listEncounters({
+    encounterType: ENCOUNTER_TYPE.referralSlip.name,
+    subjectId,
+    size: 50,
+  });
+  if (existing.content.some(isScheduled)) return;
+  const now = new Date();
+  await scheduleEncounter({
+    "Encounter type": ENCOUNTER_TYPE.referralSlip.name,
+    "Subject ID": subjectId,
+    "Earliest scheduled date": now.toISOString(),
+    "Max scheduled date": addDays(now, 7).toISOString(),
+  });
+}
+
 async function loadReview(encounterUuid: string): Promise<LoadedState> {
   const review = await getEncounter(encounterUuid);
   const subjectId = review["Subject ID"];
@@ -451,8 +471,9 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
       invalidateEncounterSweeps();
       // Requirements 2.0 Case Updates: a High Risk diagnosis schedules a
       // "High Risk Follow-up" visit for the screening worker (inform patient,
-      // pick biopsy hospital). The review itself is already saved at this
-      // point, so a failure here is reported without retrying the review.
+      // pick biopsy hospital), and a "Referral Slip" for them to hand over.
+      // The review itself is already saved at this point, so a failure here is
+      // reported without retrying the review.
       // Deliberately NOT triggered by the limited-mouth path: its pre-set
       // High Risk pairs with the dentist-visit action, not the biopsy flow.
       if (!mouthNotOpen && mapping?.risk === RISK.high) {
@@ -463,6 +484,16 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
           setSubmitError(
             `Review saved, but scheduling the High Risk Follow-up visit failed: ${message}. ` +
               "Please raise it with the field team so the worker is informed.",
+          );
+          return;
+        }
+        try {
+          await ensureReferralSlip(loaded.review["Subject ID"]);
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          setSubmitError(
+            `Review saved, but scheduling the Referral Slip failed: ${message}. ` +
+              "The worker can still raise the slip from the patient's New Form list.",
           );
           return;
         }

@@ -23,6 +23,14 @@ export const ENCOUNTER_TYPE = {
     name: "High Risk Follow-up",
     uuid: "805a9993-627e-5c65-bd18-6913a0936a65",
   },
+  // Prefilled referral document the field worker hands the patient. Offered as an
+  // unplanned visit by an eligibility rule on the encounter type; the webapp also
+  // schedules it on a High Risk review so it surfaces under Visits Planned instead
+  // of the worker hunting for it under "New Form" (SCRUM-37).
+  referralSlip: {
+    name: "Referral Slip",
+    uuid: "6e74e8e0-ee1c-5004-b730-dba097da4cfe",
+  },
 } as const;
 
 export const FORM = {
