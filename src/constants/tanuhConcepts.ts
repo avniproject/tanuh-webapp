@@ -19,8 +19,15 @@ export const ENCOUNTER_TYPE = {
   // webapp schedules this visit for the screening worker (it appears on
   // mobile in a visit list named after this encounter type). Deployed by
   // ~/Desktop/Avni/tools/build_high_risk_followup_bundle.py.
+  //
+  // RENAMED 2026-08-06: "High Risk Follow-up" -> "High Risk Referral" on UAT.
+  // scheduleEncounter/listEncounters address this type by NAME, so this constant
+  // and the org's encounter type must agree or ensureHighRiskFollowUp throws and
+  // the clinician sees "Review saved, but scheduling ... failed". At the time of
+  // writing prod (org 1113) still carries the OLD name: rename it there before
+  // this build reaches tanuh.avniproject.org.
   highRiskFollowUp: {
-    name: "High Risk Follow-up",
+    name: "High Risk Referral",
     uuid: "805a9993-627e-5c65-bd18-6913a0936a65",
   },
   // Prefilled referral document the field worker hands the patient. Offered as an

@@ -157,7 +157,7 @@ function deriveClassification(
   return "";
 }
 
-// Schedules the High Risk Follow-up visit unless the subject already has one
+// Schedules the High Risk Referral visit unless the subject already has one
 // open — re-reviews and double-submits must not pile up duplicate visits.
 // Window: due immediately, overdue after 7 days (the scoping doc's follow-up
 // convention; the sheet itself doesn't specify dates).
@@ -178,7 +178,7 @@ async function ensureHighRiskFollowUp(subjectId: string): Promise<void> {
 }
 
 // Schedules the Referral Slip so it lands under Visits Planned on the patient
-// dashboard. Same shape and window as the High Risk Follow-up above; the guard
+// dashboard. Same shape and window as the High Risk Referral above; the guard
 // keeps re-reviews and double-submits from stacking up slips, and the encounter
 // type's eligibility rule suppresses the unplanned entry while one is pending.
 async function ensureReferralSlip(subjectId: string): Promise<void> {
@@ -470,7 +470,7 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
       // just completed shows up in the counts and High Risk set immediately.
       invalidateEncounterSweeps();
       // Requirements 2.0 Case Updates: a High Risk diagnosis schedules a
-      // "High Risk Follow-up" visit for the screening worker (inform patient,
+      // "High Risk Referral" visit for the screening worker (inform patient,
       // pick biopsy hospital), and a "Referral Slip" for them to hand over.
       // The review itself is already saved at this point, so a failure here is
       // reported without retrying the review.
@@ -482,7 +482,7 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           setSubmitError(
-            `Review saved, but scheduling the High Risk Follow-up visit failed: ${message}. ` +
+            `Review saved, but scheduling the High Risk Referral visit failed: ${message}. ` +
               "Please raise it with the field team so the worker is informed.",
           );
           return;

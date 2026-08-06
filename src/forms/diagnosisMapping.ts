@@ -45,7 +45,7 @@ export const NON_HOMOGENEOUS_LEUKOPLAKIA = "Non-homogeneous leukoplakia";
 // concept in the bundle for exactly this; it must never appear in the
 // diagnosis dropdown on the normal photo path. Note the deliberate spec
 // combination: High Risk with the dentist-visit action (not the biopsy one),
-// so lookupDiagnosis("N/A") returning null keeps the High Risk Follow-up
+// so lookupDiagnosis("N/A") returning null keeps the High Risk Referral
 // (biopsy) visit from being scheduled on this path.
 export const LIMITED_MOUTH_REVIEW = {
   classification: CLASSIFICATION.suspicious,
