@@ -6,6 +6,7 @@ import type { IdpDetails } from "./IdpDetails";
 import type { IdpClient } from "./IdpClient";
 import { AuthContext, type AuthState, type MeResponse } from "./authContext";
 import { clearCatchmentCache } from "@/api/impl";
+import { bindEncounterCacheScope, clearEncounterCacheScope } from "@/api/encounters";
 
 async function loadMe(): Promise<MeResponse> {
   const response = await http.get<MeResponse>("/me");
@@ -56,6 +57,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
 
       try {
         const user = await loadMe();
+        bindEncounterCacheScope(user);
         if (!cancelled) setState({ status: "ready", idp: client, user });
       } catch (err) {
         if (cancelled) return;
@@ -84,12 +86,14 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (!idp) throw new Error("IDP not initialised");
     await idp.signIn(username, password);
     const user = await loadMe();
+    bindEncounterCacheScope(user);
     setState({ status: "ready", idp, user });
   };
 
   const signOut = async () => {
     if (state.status === "ready") {
       clearCatchmentCache();
+      clearEncounterCacheScope();
       await state.idp.signOut();
       setState({ status: "loading" });
       window.location.reload();
