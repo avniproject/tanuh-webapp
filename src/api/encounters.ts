@@ -1,8 +1,9 @@
 import { http } from "@/auth/httpClient";
 import { ENCOUNTER_ID_CONCEPT, REVIEWED_ORAL_SCREENING_CONCEPT, readObs } from "@/constants/tanuhConcepts";
 import { getConcept } from "./concepts";
-import { idbGet, idbSet } from "./idbStore";
+import { idbDel, idbGet, idbSet } from "./idbStore";
 import type { EncounterApiResponse, PagedResponse } from "./types";
+import type { MeResponse } from "@/auth/authContext";
 
 const EPOCH = "2000-01-01T00:00:00.000Z";
 
@@ -210,6 +211,29 @@ const CACHE_SCHEMA = 1;
 const CACHE_OVERLAP_MS = 5 * 60 * 1000;
 const CACHE_COLD_PAGE_CAP = 200; // ~20k rows; one-time cold-start guard
 const CACHE_PAGE_SIZE = 100;
+// The persisted rows belong to whoever fetched them. Both Tanuh orgs sit on the
+// same Avni server behind this origin, so under the unscoped v1 key a UAT
+// sign-in poured org-1071 rows into the prod store and carried its watermark
+// past the prod rows created meanwhile — those never arrived (prod, 2026-09-11).
+const CACHE_KEY_PREFIX = "enc-cache:v2";
+const LEGACY_CACHE_KEY_PREFIX = "enc-cache";
+
+let cacheScope: string | null = null;
+
+// Called by AuthProvider once /me has answered. A different sign-in (other
+// org or user) gets its own persisted store and drops the in-memory memos.
+export function bindEncounterCacheScope(
+  user: Pick<MeResponse, "organisationId" | "organisationName" | "userUUID" | "username">,
+): void {
+  const scope = `${user.organisationId ?? user.organisationName ?? "org"}:${user.userUUID ?? user.username}`;
+  if (scope !== cacheScope) invalidateEncounterSweeps();
+  cacheScope = scope;
+}
+
+export function clearEncounterCacheScope(): void {
+  cacheScope = null;
+  invalidateEncounterSweeps();
+}
 
 interface CachedEncounters {
   schema: number;
@@ -276,11 +300,14 @@ const cachedLayerMemo = new Map<string, { at: number; promise: Promise<Encounter
 export function getCachedEncounters(encounterType: string): Promise<EncounterApiResponse[]> {
   const memo = cachedLayerMemo.get(encounterType);
   if (memo && Date.now() - memo.at < SWEEP_TTL_MS) return memo.promise;
-  const key = `enc-cache:${encounterType}`;
+  // No scope yet (list mounted before /me answered): full fetch, persist nothing.
+  const key = cacheScope ? `${CACHE_KEY_PREFIX}:${cacheScope}:${encounterType}` : null;
   const promise = (async () => {
-    let cached = await idbGet<CachedEncounters>(key);
+    let cached = key ? await idbGet<CachedEncounters>(key) : undefined;
     if (!cached || cached.schema !== CACHE_SCHEMA) {
       cached = { schema: CACHE_SCHEMA, watermark: EPOCH, records: [] };
+      // first scoped load in this browser: retire the unscoped v1 store
+      if (key) void idbDel(`${LEGACY_CACHE_KEY_PREFIX}:${encounterType}`);
     }
     const since =
       cached.watermark === EPOCH
@@ -300,7 +327,7 @@ export function getCachedEncounters(encounterType: string): Promise<EncounterApi
       watermark: Number.isNaN(maxLm) ? EPOCH : new Date(maxLm).toISOString(),
       records,
     };
-    void idbSet(key, next);
+    if (key) void idbSet(key, next);
     return records;
   })();
   cachedLayerMemo.set(encounterType, { at: Date.now(), promise });
