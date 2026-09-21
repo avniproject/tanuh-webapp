@@ -38,4 +38,5 @@ typecheck: ## Run TypeScript type-check
 lint: ## Run ESLint
 	npm run lint
 
-test: typecheck build ## Typecheck + build (no test suite yet)
+test: typecheck lint ## Run the unit tests, plus typecheck and lint
+	npm test

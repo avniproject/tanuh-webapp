@@ -61,6 +61,10 @@ export function MediaImg({ src, alt, sx }: Props) {
       component="img"
       src={signed}
       alt={alt}
+      // A review now shows every captured photo, not a capped 8, so a 16-photo
+      // encounter would otherwise pull 16 full-size camera JPEGs before the
+      // clinician scrolls past the first one.
+      loading="lazy"
       onError={() => {
         if (src) evictSignedMediaUrl(src);
         if (attempt === 0) setAttempt(1);
