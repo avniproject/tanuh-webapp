@@ -1,5 +1,13 @@
 import { http } from "@/auth/httpClient";
-import { ENCOUNTER_ID_CONCEPT, REVIEWED_ORAL_SCREENING_CONCEPT, readObs } from "@/constants/tanuhConcepts";
+import {
+  ENCOUNTER_ID_CONCEPT,
+  REVIEWED_ORAL_SCREENING_CONCEPT,
+  SCREENING_AI_RISK_CONCEPT,
+  SCREENING_DATA_QUALITY_CONCEPT,
+  readAiRisk,
+  readDataQuality,
+  readObs,
+} from "@/constants/tanuhConcepts";
 import { getConcept } from "./concepts";
 import { idbDel, idbGet, idbSet } from "./idbStore";
 import type { EncounterApiResponse, PagedResponse } from "./types";
@@ -206,8 +214,17 @@ export function sweepEncounters(
 // Rows are trimmed to only the fields getReviewScreeningPairing /
 // getLatestScreeningInfoBySubject read, so the store stays small (no image
 // group / photo-URL arrays). Bump CACHE_SCHEMA if that field set changes.
+// Schema history: 1 = Encounter ID + Reviewed Oral Screening; 2 = + Data Quality
+// and AI Risk Assessment (PE-96). A mismatch below discards the persisted rows and
+// the watermark, so the next load is one cold full sweep — the intended migration.
 // ---------------------------------------------------------------------------
-const CACHE_SCHEMA = 1;
+const CACHE_SCHEMA = 2;
+const CACHED_OBS_REFS = [
+  ENCOUNTER_ID_CONCEPT,
+  REVIEWED_ORAL_SCREENING_CONCEPT,
+  SCREENING_DATA_QUALITY_CONCEPT,
+  SCREENING_AI_RISK_CONCEPT,
+] as const;
 const CACHE_OVERLAP_MS = 5 * 60 * 1000;
 const CACHE_COLD_PAGE_CAP = 200; // ~20k rows; one-time cold-start guard
 const CACHE_PAGE_SIZE = 100;
@@ -245,7 +262,7 @@ interface CachedEncounters {
 // (notably the heavy repeatable image groups) so the persisted set stays tiny.
 function trimForCache(e: EncounterApiResponse): EncounterApiResponse {
   const obs: Record<string, unknown> = {};
-  for (const ref of [ENCOUNTER_ID_CONCEPT, REVIEWED_ORAL_SCREENING_CONCEPT]) {
+  for (const ref of CACHED_OBS_REFS) {
     const v = e.observations?.[ref.name];
     if (v !== undefined) obs[ref.name] = v;
   }
@@ -367,6 +384,10 @@ export interface LatestScreeningInfo {
   caseId: string;
   encounterId: string;
   healthWorker: string;
+  // PE-96: backend-stamped observations on the screening (absent on rows the
+  // job/backfill has not reached). The list shows only dataQuality === "Pass".
+  dataQuality?: string;
+  aiRisk?: string;
 }
 
 // Sortable creation key. A completed Oral Screening schedules its review
@@ -377,12 +398,15 @@ function createdAtKey(e: EncounterApiResponse): string {
 }
 
 function toScreeningInfo(screening: EncounterApiResponse): LatestScreeningInfo {
+  const obs = screening.observations ?? {};
   return {
     screeningUuid: screening.ID,
     screeningDate: screening["Encounter date time"] ?? "",
     caseId: screening["Subject external ID"] ?? "",
-    encounterId: readObs<string>(screening.observations ?? {}, ENCOUNTER_ID_CONCEPT) ?? "",
+    encounterId: readObs<string>(obs, ENCOUNTER_ID_CONCEPT) ?? "",
     healthWorker: screening.audit?.["Created by"] ?? "",
+    dataQuality: readDataQuality(obs),
+    aiRisk: readAiRisk(obs),
   };
 }
 
