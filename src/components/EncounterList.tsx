@@ -33,6 +33,7 @@ import {
   getReviewScreeningPairing,
 } from "@/api/encounters";
 import {
+  DATA_QUALITY_VALUES,
   ENCOUNTER_TYPE,
   PLACE_OF_REFERRAL_CONCEPT,
   REVIEW_CONCEPTS,
@@ -41,6 +42,7 @@ import { RISK } from "@/forms/diagnosisMapping";
 import { useAsync } from "@/hooks/useAsync";
 import { LocationFilter } from "./LocationFilter";
 import { FacilityFilter } from "./FacilityFilter";
+import { AiRiskBadge } from "./StatusBadge";
 
 interface Props {
   mode: "pending" | "completed";
@@ -122,7 +124,7 @@ export function EncounterList({ mode }: Props) {
   // health worker) from ONE cached org-wide sweep — replaces the previous
   // request-per-subject-per-page fan-out. null while loading: rows render
   // with "—" placeholders until it lands.
-  const { data: screeningInfo } = useAsync(
+  const { data: screeningInfo, error: screeningError } = useAsync(
     () => getLatestScreeningInfoBySubject(ENCOUNTER_TYPE.oralScreening.name),
     [mode],
   );
@@ -131,7 +133,7 @@ export function EncounterList({ mode }: Props) {
   // multiple reviews each show their OWN Case ID instead of all collapsing onto
   // the subject's latest screening. Falls back to `screeningInfo` (latest per
   // subject) for any review not resolved by the pairing.
-  const { data: reviewPairing } = useAsync(
+  const { data: reviewPairing, error: pairingError } = useAsync(
     () =>
       getReviewScreeningPairing(
         ENCOUNTER_TYPE.physicianReviewForm.name,
@@ -166,9 +168,19 @@ export function EncounterList({ mode }: Props) {
     [reviewPairing, screeningInfo],
   );
 
+  // PE-96 (client decision, 2026-09-24): only reviews whose paired screening
+  // carries Data Quality = "Pass" are listed, on both tabs. Fail rows AND rows
+  // with no Data Quality observation are hidden — so a new field screening stays
+  // out of the list until the backend stamps it. null until the screening sweep
+  // and the pairing have landed, so the ungated list never flashes.
+  const passRows = useMemo(() => {
+    if (!pageData || !reviewPairing || !screeningInfo) return null;
+    return pageData.content.filter((e) => infoFor(e)?.dataQuality === DATA_QUALITY_VALUES.pass);
+  }, [pageData, reviewPairing, screeningInfo, infoFor]);
+
   const filtered = useMemo(() => {
-    if (!pageData) return null;
-    let rows = pageData.content;
+    if (!passRows) return null;
+    let rows = passRows;
 
     // Case ID search — applied to both tabs. Matches the Case ID actually shown
     // in the row (Encounter ID, falling back to legacy Case ID / external ID).
@@ -212,10 +224,11 @@ export function EncounterList({ mode }: Props) {
       if (toDate && d > toDate) return false;
       return true;
     });
-  }, [pageData, mode, from, to, search, infoFor, riskOnly, highRiskUuids]);
+  }, [passRows, mode, from, to, search, infoFor, riskOnly, highRiskUuids]);
 
-  if (error) return <Box sx={{ p: 3, color: "error.main" }}>Failed to load: {error}</Box>;
-  if (!pageData || !filtered)
+  const loadError = error ?? pairingError ?? screeningError;
+  if (loadError) return <Box sx={{ p: 3, color: "error.main" }}>Failed to load: {loadError}</Box>;
+  if (!pageData || !passRows || !filtered)
     return (
       <Box sx={{ p: { xs: 1.5, sm: 2 } }}>
         <Stack spacing={1.5}>
@@ -238,11 +251,11 @@ export function EncounterList({ mode }: Props) {
     effectivePageIndex * PAGE_SIZE,
     (effectivePageIndex + 1) * PAGE_SIZE,
   );
-  // High Risk count over everything the current location/referral filters
-  // allow — deliberately not narrowed by the date or High Risk display filters.
+  // High Risk count over every Pass-gated row the current location/referral
+  // filters allow — deliberately not narrowed by the date or High Risk display filters.
   const highRiskCount =
     mode === "completed" && highRiskUuids
-      ? pageData.content.filter((e) => highRiskUuids.has(e.encounterUuid)).length
+      ? passRows.filter((e) => highRiskUuids.has(e.encounterUuid)).length
       : null;
 
   const handleRiskOnlyChange = (checked: boolean) => {
@@ -303,13 +316,14 @@ export function EncounterList({ mode }: Props) {
         spacing={1.5}
         sx={{ p: { xs: 1.5, sm: 2 }, borderBottom: "1px solid #e5e7eb" }}
       >
-        {/* KPI row. Totals are server truth across all pages — display filters
-            (High Risk, date range) narrow the rows below, not these numbers. */}
+        {/* KPI row. Totals = the Pass-gated rows across all pages (PE-96) —
+            display filters (High Risk, date range, search) narrow the rows
+            below, not these numbers. */}
         <Stack direction="row" spacing={1.5} sx={{ flexWrap: "wrap", rowGap: 1.5 }}>
           <StatTile
             testId="stat-total"
             label={mode === "pending" ? "Pending reviews" : "Completed reviews"}
-            value={pageData.totalElements}
+            value={passRows.length}
           />
           {mode === "completed" && (
             <StatTile testId="stat-high-risk" label="High risk" value={highRiskCount ?? "…"} />
@@ -470,7 +484,7 @@ export function EncounterList({ mode }: Props) {
           ) : (
             <>
               No {riskOnly ? "High Risk " : ""}
-              {mode === "pending" ? "pending" : "completed"} reviews
+              {mode === "pending" ? "pending" : "completed"} reviews with Data Quality Pass
               {referralUuid ? " for the selected referral facility." : " in your catchment."}
             </>
           )}
@@ -539,6 +553,13 @@ export function EncounterList({ mode }: Props) {
                         </Box>
                         {healthWorker || "—"}
                       </Typography>
+                      {/* A badge is a span, not text — its own row keeps the markup valid. */}
+                      <Stack direction="row" alignItems="center" spacing={0.75}>
+                        <Typography variant="body2" sx={{ color: "text.secondary", fontWeight: 500 }}>
+                          AI Risk Assessment:
+                        </Typography>
+                        <AiRiskBadge dataQuality={info?.dataQuality} aiRisk={info?.aiRisk} />
+                      </Stack>
                       {mode === "completed" && (
                         <Typography variant="body2" sx={{ color: "text.primary" }}>
                           <Box component="span" sx={{ color: "text.secondary", fontWeight: 500 }}>
@@ -564,18 +585,21 @@ export function EncounterList({ mode }: Props) {
             <Table size="small" sx={{ tableLayout: "fixed" }}>
               <TableHead>
                 <TableRow sx={{ "& th": { fontWeight: 700, color: "text.primary", fontSize: "0.95rem", backgroundColor: "grey.100" } }}>
-                  <TableCell sx={{ width: "6%" }}>S.No</TableCell>
-                  <TableCell sx={{ width: mode === "pending" ? "16%" : "12%" }}>Case ID</TableCell>
-                  <TableCell sx={{ width: mode === "pending" ? "22%" : "16%" }}>
+                  <TableCell sx={{ width: mode === "pending" ? "5%" : "4%" }}>S.No</TableCell>
+                  <TableCell sx={{ width: mode === "pending" ? "15%" : "12%" }}>Case ID</TableCell>
+                  <TableCell sx={{ width: mode === "pending" ? "20%" : "14%" }}>
                     Screening date
                   </TableCell>
-                  <TableCell sx={{ width: mode === "pending" ? "18%" : "13%" }}>
+                  <TableCell sx={{ width: mode === "pending" ? "16%" : "11%" }}>
                     Village
                   </TableCell>
-                  <TableCell sx={{ width: mode === "pending" ? "16%" : "13%" }}>Health worker</TableCell>
-                  {mode === "completed" && <TableCell sx={{ width: "13%" }}>Reviewed on</TableCell>}
+                  <TableCell sx={{ width: mode === "pending" ? "16%" : "11%" }}>Health worker</TableCell>
+                  <TableCell sx={{ width: mode === "pending" ? "16%" : "14%", whiteSpace: "nowrap" }}>
+                    AI Risk Assessment
+                  </TableCell>
+                  {mode === "completed" && <TableCell sx={{ width: "12%" }}>Reviewed on</TableCell>}
                   {mode === "completed" && <TableCell sx={{ width: "14%" }}>Reviewed by</TableCell>}
-                  <TableCell sx={{ width: mode === "pending" ? "14%" : "7%" }} aria-hidden />
+                  <TableCell sx={{ width: mode === "pending" ? "12%" : "8%" }} aria-hidden />
                 </TableRow>
               </TableHead>
               <TableBody>
@@ -603,6 +627,9 @@ export function EncounterList({ mode }: Props) {
                         {village || "—"}
                       </TableCell>
                       <TableCell sx={{ color: "text.primary" }}>{healthWorker || "—"}</TableCell>
+                      <TableCell sx={{ whiteSpace: "nowrap" }}>
+                        <AiRiskBadge dataQuality={info?.dataQuality} aiRisk={info?.aiRisk} />
+                      </TableCell>
                       {mode === "completed" && (
                         <TableCell sx={{ color: "text.primary" }}>
                           {date ? format(parseISO(date), "dd MMM yyyy") : "—"}
