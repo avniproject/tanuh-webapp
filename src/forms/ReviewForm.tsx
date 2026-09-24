@@ -33,7 +33,7 @@ import {
   submitEncounter,
 } from "@/api/encounters";
 import { getSubject } from "@/api/subjects";
-import { getConcept, type ConceptAnswer } from "@/api/concepts";
+import { getConcept, hasScreeningQualityGate, type ConceptAnswer } from "@/api/concepts";
 import type { EncounterApiResponse, SubjectApiResponse } from "@/api/types";
 import {
   ENCOUNTER_TYPE,
@@ -236,6 +236,8 @@ async function loadReview(encounterUuid: string): Promise<LoadedState> {
 
 export function ReviewForm({ encounterUuid, onBack }: Props) {
   const { data: loaded, error: loadError } = useAsync(() => loadReview(encounterUuid), [encounterUuid]);
+  // PE-96: the Data Quality card exists only for an org that carries the concept.
+  const { data: qualityGate } = useAsync(() => hasScreeningQualityGate(), []);
   // In-progress form state is persisted to sessionStorage keyed by the
   // encounter uuid so it survives HMR, accidental refreshes, and tab
   // switches mid-review. Cleared on successful submit.
@@ -596,10 +598,13 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
           <SymptomsCard screening={loaded.screening} />
         </Grid>
         {/* PE-96: fourth cell of a two-column grid, so on md+ it renders directly
-            under Habit History (row 2, right), as in the approved prototype. */}
-        <Grid size={{ xs: 12, md: 6 }}>
-          <DataQualityCard screening={loaded.screening} />
-        </Grid>
+            under Habit History (row 2, right), as in the approved prototype. Only
+            for an org that carries the Data Quality concept. */}
+        {qualityGate && (
+          <Grid size={{ xs: 12, md: 6 }}>
+            <DataQualityCard screening={loaded.screening} />
+          </Grid>
+        )}
         {/* Shown only for the limited-mouth-opening path for now — whether it
             should appear on every review is pending a decision with Tanuh. */}
         {mouthNotOpen && (

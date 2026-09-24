@@ -8,7 +8,7 @@ import {
   readDataQuality,
   readObs,
 } from "@/constants/tanuhConcepts";
-import { getConcept } from "./concepts";
+import { getConcept, resetConceptCache } from "./concepts";
 import { idbDel, idbGet, idbSet } from "./idbStore";
 import type { EncounterApiResponse, PagedResponse } from "./types";
 import type { MeResponse } from "@/auth/authContext";
@@ -243,13 +243,17 @@ export function bindEncounterCacheScope(
   user: Pick<MeResponse, "organisationId" | "organisationName" | "userUUID" | "username">,
 ): void {
   const scope = `${user.organisationId ?? user.organisationName ?? "org"}:${user.userUUID ?? user.username}`;
-  if (scope !== cacheScope) invalidateEncounterSweeps();
+  if (scope !== cacheScope) {
+    invalidateEncounterSweeps();
+    resetConceptCache(); // concept answers and the PE-96 gate probe are org-scoped too
+  }
   cacheScope = scope;
 }
 
 export function clearEncounterCacheScope(): void {
   cacheScope = null;
   invalidateEncounterSweeps();
+  resetConceptCache();
 }
 
 interface CachedEncounters {

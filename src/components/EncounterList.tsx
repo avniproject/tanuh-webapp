@@ -32,6 +32,7 @@ import {
   getLatestScreeningInfoBySubject,
   getReviewScreeningPairing,
 } from "@/api/encounters";
+import { hasScreeningQualityGate } from "@/api/concepts";
 import {
   DATA_QUALITY_VALUES,
   ENCOUNTER_TYPE,
@@ -168,15 +169,22 @@ export function EncounterList({ mode }: Props) {
     [reviewPairing, screeningInfo],
   );
 
-  // PE-96 (client decision, 2026-09-24): only reviews whose paired screening
-  // carries Data Quality = "Pass" are listed, on both tabs. Fail rows AND rows
-  // with no Data Quality observation are hidden — so a new field screening stays
-  // out of the list until the backend stamps it. null until the screening sweep
-  // and the pairing have landed, so the ungated list never flashes.
+  // PE-96: does the signed-in org carry the Data Quality concept? true on UAT
+  // 1071; false on staging 1187 / prod 1113, where the list must behave exactly as
+  // before (every review shown, no AI Risk column). null while probing.
+  const { data: qualityGate, error: gateError } = useAsync(() => hasScreeningQualityGate(), [mode]);
+
+  // PE-96 (client decision, 2026-09-24): where the gate applies, only reviews
+  // whose paired screening carries Data Quality = "Pass" are listed, on both
+  // tabs. Fail rows AND rows with no Data Quality observation are hidden — so a
+  // new field screening stays out of the list until the backend stamps it. null
+  // until the probe, the screening sweep and the pairing have landed, so the
+  // ungated list never flashes.
   const passRows = useMemo(() => {
-    if (!pageData || !reviewPairing || !screeningInfo) return null;
+    if (!pageData || !reviewPairing || !screeningInfo || qualityGate === null) return null;
+    if (!qualityGate) return pageData.content;
     return pageData.content.filter((e) => infoFor(e)?.dataQuality === DATA_QUALITY_VALUES.pass);
-  }, [pageData, reviewPairing, screeningInfo, infoFor]);
+  }, [pageData, reviewPairing, screeningInfo, infoFor, qualityGate]);
 
   const filtered = useMemo(() => {
     if (!passRows) return null;
@@ -226,7 +234,7 @@ export function EncounterList({ mode }: Props) {
     });
   }, [passRows, mode, from, to, search, infoFor, riskOnly, highRiskUuids]);
 
-  const loadError = error ?? pairingError ?? screeningError;
+  const loadError = error ?? pairingError ?? screeningError ?? gateError;
   if (loadError) return <Box sx={{ p: 3, color: "error.main" }}>Failed to load: {loadError}</Box>;
   if (!pageData || !passRows || !filtered)
     return (
@@ -257,6 +265,17 @@ export function EncounterList({ mode }: Props) {
     mode === "completed" && highRiskUuids
       ? passRows.filter((e) => highRiskUuids.has(e.encounterUuid)).length
       : null;
+
+  // Column widths (percent of the fixed-layout table). The AI Risk Assessment column
+  // exists only where the org has the PE-96 gate; without it the v1.12.2 widths apply.
+  const widths =
+    mode === "pending"
+      ? qualityGate
+        ? { sno: "5%", caseId: "15%", date: "20%", village: "16%", hw: "16%", ai: "16%", on: "0", by: "0", action: "12%" }
+        : { sno: "6%", caseId: "16%", date: "22%", village: "18%", hw: "16%", ai: "0", on: "0", by: "0", action: "14%" }
+      : qualityGate
+        ? { sno: "4%", caseId: "12%", date: "13%", village: "10%", hw: "13%", ai: "16%", on: "11%", by: "13%", action: "8%" }
+        : { sno: "6%", caseId: "12%", date: "16%", village: "13%", hw: "13%", ai: "0", on: "13%", by: "14%", action: "7%" };
 
   const handleRiskOnlyChange = (checked: boolean) => {
     setParams(
@@ -316,9 +335,9 @@ export function EncounterList({ mode }: Props) {
         spacing={1.5}
         sx={{ p: { xs: 1.5, sm: 2 }, borderBottom: "1px solid #e5e7eb" }}
       >
-        {/* KPI row. Totals = the Pass-gated rows across all pages (PE-96) —
-            display filters (High Risk, date range, search) narrow the rows
-            below, not these numbers. */}
+        {/* KPI row. Totals = all rows across all pages, Pass-gated where the org
+            has the PE-96 gate — display filters (High Risk, date range, search)
+            narrow the rows below, not these numbers. */}
         <Stack direction="row" spacing={1.5} sx={{ flexWrap: "wrap", rowGap: 1.5 }}>
           <StatTile
             testId="stat-total"
@@ -484,7 +503,7 @@ export function EncounterList({ mode }: Props) {
           ) : (
             <>
               No {riskOnly ? "High Risk " : ""}
-              {mode === "pending" ? "pending" : "completed"} reviews with Data Quality Pass
+              {mode === "pending" ? "pending" : "completed"} reviews{qualityGate ? " with Data Quality Pass" : ""}
               {referralUuid ? " for the selected referral facility." : " in your catchment."}
             </>
           )}
@@ -554,12 +573,14 @@ export function EncounterList({ mode }: Props) {
                         {healthWorker || "—"}
                       </Typography>
                       {/* A badge is a span, not text — its own row keeps the markup valid. */}
-                      <Stack direction="row" alignItems="center" spacing={0.75}>
-                        <Typography variant="body2" sx={{ color: "text.secondary", fontWeight: 500 }}>
-                          AI Risk Assessment:
-                        </Typography>
-                        <AiRiskBadge dataQuality={info?.dataQuality} aiRisk={info?.aiRisk} />
-                      </Stack>
+                      {qualityGate && (
+                        <Stack direction="row" alignItems="center" spacing={0.75}>
+                          <Typography variant="body2" sx={{ color: "text.secondary", fontWeight: 500 }}>
+                            AI Risk Assessment:
+                          </Typography>
+                          <AiRiskBadge dataQuality={info?.dataQuality} aiRisk={info?.aiRisk} />
+                        </Stack>
+                      )}
                       {mode === "completed" && (
                         <Typography variant="body2" sx={{ color: "text.primary" }}>
                           <Box component="span" sx={{ color: "text.secondary", fontWeight: 500 }}>
@@ -585,23 +606,19 @@ export function EncounterList({ mode }: Props) {
             <Table size="small" sx={{ tableLayout: "fixed" }}>
               <TableHead>
                 <TableRow sx={{ "& th": { fontWeight: 700, color: "text.primary", fontSize: "0.95rem", backgroundColor: "grey.100" } }}>
-                  <TableCell sx={{ width: mode === "pending" ? "5%" : "4%" }}>S.No</TableCell>
-                  <TableCell sx={{ width: mode === "pending" ? "15%" : "12%" }}>Case ID</TableCell>
-                  <TableCell sx={{ width: mode === "pending" ? "20%" : "13%" }}>
-                    Screening date
-                  </TableCell>
-                  <TableCell sx={{ width: mode === "pending" ? "16%" : "10%" }}>
-                    Village
-                  </TableCell>
-                  <TableCell sx={{ width: mode === "pending" ? "16%" : "13%" }}>Health worker</TableCell>
+                  <TableCell sx={{ width: widths.sno }}>S.No</TableCell>
+                  <TableCell sx={{ width: widths.caseId }}>Case ID</TableCell>
+                  <TableCell sx={{ width: widths.date }}>Screening date</TableCell>
+                  <TableCell sx={{ width: widths.village }}>Village</TableCell>
+                  <TableCell sx={{ width: widths.hw }}>Health worker</TableCell>
                   {/* Widest value is "Non Suspicious" + the AI mark; the badge never wraps,
                       so the column must fit it (fixed table layout clips nothing). */}
-                  <TableCell sx={{ width: mode === "pending" ? "16%" : "16%", whiteSpace: "nowrap" }}>
-                    AI Risk Assessment
-                  </TableCell>
-                  {mode === "completed" && <TableCell sx={{ width: "11%" }}>Reviewed on</TableCell>}
-                  {mode === "completed" && <TableCell sx={{ width: "13%" }}>Reviewed by</TableCell>}
-                  <TableCell sx={{ width: mode === "pending" ? "12%" : "8%" }} aria-hidden />
+                  {qualityGate && (
+                    <TableCell sx={{ width: widths.ai, whiteSpace: "nowrap" }}>AI Risk Assessment</TableCell>
+                  )}
+                  {mode === "completed" && <TableCell sx={{ width: widths.on }}>Reviewed on</TableCell>}
+                  {mode === "completed" && <TableCell sx={{ width: widths.by }}>Reviewed by</TableCell>}
+                  <TableCell sx={{ width: widths.action }} aria-hidden />
                 </TableRow>
               </TableHead>
               <TableBody>
@@ -633,9 +650,11 @@ export function EncounterList({ mode }: Props) {
                       <TableCell sx={{ color: "text.primary", overflowWrap: "anywhere" }}>
                         {healthWorker || "—"}
                       </TableCell>
-                      <TableCell sx={{ whiteSpace: "nowrap" }}>
-                        <AiRiskBadge dataQuality={info?.dataQuality} aiRisk={info?.aiRisk} />
-                      </TableCell>
+                      {qualityGate && (
+                        <TableCell sx={{ whiteSpace: "nowrap" }}>
+                          <AiRiskBadge dataQuality={info?.dataQuality} aiRisk={info?.aiRisk} />
+                        </TableCell>
+                      )}
                       {mode === "completed" && (
                         <TableCell sx={{ color: "text.primary" }}>
                           {date ? format(parseISO(date), "dd MMM yyyy") : "—"}
