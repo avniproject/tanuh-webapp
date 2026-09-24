@@ -587,18 +587,20 @@ export function EncounterList({ mode }: Props) {
                 <TableRow sx={{ "& th": { fontWeight: 700, color: "text.primary", fontSize: "0.95rem", backgroundColor: "grey.100" } }}>
                   <TableCell sx={{ width: mode === "pending" ? "5%" : "4%" }}>S.No</TableCell>
                   <TableCell sx={{ width: mode === "pending" ? "15%" : "12%" }}>Case ID</TableCell>
-                  <TableCell sx={{ width: mode === "pending" ? "20%" : "14%" }}>
+                  <TableCell sx={{ width: mode === "pending" ? "20%" : "13%" }}>
                     Screening date
                   </TableCell>
-                  <TableCell sx={{ width: mode === "pending" ? "16%" : "11%" }}>
+                  <TableCell sx={{ width: mode === "pending" ? "16%" : "10%" }}>
                     Village
                   </TableCell>
-                  <TableCell sx={{ width: mode === "pending" ? "16%" : "11%" }}>Health worker</TableCell>
-                  <TableCell sx={{ width: mode === "pending" ? "16%" : "14%", whiteSpace: "nowrap" }}>
+                  <TableCell sx={{ width: mode === "pending" ? "16%" : "13%" }}>Health worker</TableCell>
+                  {/* Widest value is "Non Suspicious" + the AI mark; the badge never wraps,
+                      so the column must fit it (fixed table layout clips nothing). */}
+                  <TableCell sx={{ width: mode === "pending" ? "16%" : "16%", whiteSpace: "nowrap" }}>
                     AI Risk Assessment
                   </TableCell>
-                  {mode === "completed" && <TableCell sx={{ width: "12%" }}>Reviewed on</TableCell>}
-                  {mode === "completed" && <TableCell sx={{ width: "14%" }}>Reviewed by</TableCell>}
+                  {mode === "completed" && <TableCell sx={{ width: "11%" }}>Reviewed on</TableCell>}
+                  {mode === "completed" && <TableCell sx={{ width: "13%" }}>Reviewed by</TableCell>}
                   <TableCell sx={{ width: mode === "pending" ? "12%" : "8%" }} aria-hidden />
                 </TableRow>
               </TableHead>
@@ -626,7 +628,11 @@ export function EncounterList({ mode }: Props) {
                       <TableCell sx={{ color: "text.primary" }}>
                         {village || "—"}
                       </TableCell>
-                      <TableCell sx={{ color: "text.primary" }}>{healthWorker || "—"}</TableCell>
+                      {/* Usernames (anmuser@tanuh_uat) have no break point; without this they
+                          overflow the fixed-width cell into the badge column. */}
+                      <TableCell sx={{ color: "text.primary", overflowWrap: "anywhere" }}>
+                        {healthWorker || "—"}
+                      </TableCell>
                       <TableCell sx={{ whiteSpace: "nowrap" }}>
                         <AiRiskBadge dataQuality={info?.dataQuality} aiRisk={info?.aiRisk} />
                       </TableCell>
