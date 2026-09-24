@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   Alert,
   Box,
@@ -54,9 +54,12 @@ import {
   REVIEW_IMAGE_GROUP_CHILD,
   VERDICT_VALUES,
   VISUAL_EXAM_CONCEPTS,
+  readAiRisk,
+  readDataQuality,
   readObs,
   type PhotoSlot,
 } from "@/constants/tanuhConcepts";
+import { AiRiskBadge, DataQualityBadge } from "@/components/StatusBadge";
 import {
   classificationOf,
   LIMITED_MOUTH_REVIEW,
@@ -592,6 +595,11 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
         <Grid size={{ xs: 12, md: 6 }}>
           <SymptomsCard screening={loaded.screening} />
         </Grid>
+        {/* PE-96: fourth cell of a two-column grid, so on md+ it renders directly
+            under Habit History (row 2, right), as in the approved prototype. */}
+        <Grid size={{ xs: 12, md: 6 }}>
+          <DataQualityCard screening={loaded.screening} />
+        </Grid>
         {/* Shown only for the limited-mouth-opening path for now — whether it
             should appear on every review is pending a decision with Tanuh. */}
         {mouthNotOpen && (
@@ -909,6 +917,51 @@ function SymptomsCard({ screening }: { screening: EncounterApiResponse }) {
   );
 }
 
+// PE-96: the backend-stamped Data Quality gate and AI risk label on the screening.
+// Read-only, always rendered: an unstamped screening shows "—" on both rows so
+// the card is discoverable on old cases too. A Fail screening opened by URL still
+// renders (the list hides it; the detail page never redirects).
+function DataQualityCard({ screening }: { screening: EncounterApiResponse }) {
+  const obs = screening.observations ?? {};
+  const dataQuality = readDataQuality(obs);
+  const aiRisk = readAiRisk(obs);
+  return (
+    <Card variant="outlined" data-testid="data-quality-card" sx={{ height: "100%" }}>
+      <CardContent>
+        <Typography variant="overline" color="text.secondary">
+          Data Quality
+        </Typography>
+        <DetailRow label="Data Quality" value={<DataQualityBadge value={dataQuality} />} />
+        <DetailRow label="AI Risk Assessment" value={<AiRiskBadge dataQuality={dataQuality} aiRisk={aiRisk} />} />
+        <Typography variant="caption" component="p" color="text.secondary" sx={{ mt: 1.5 }}>
+          <Box component="strong" sx={{ fontWeight: 700 }}>
+            AI-assisted pre-screening — decision support only, not a diagnosis.
+          </Box>{" "}
+          The final clinical assessment rests with the reviewing clinician. Risk is generated only when
+          data quality passes.
+        </Typography>
+        <Typography
+          variant="caption"
+          component="p"
+          data-testid="demo-flag"
+          sx={{
+            mt: 1,
+            display: "inline-block",
+            px: 1,
+            py: 0.25,
+            border: "1px dashed",
+            borderColor: "grey.400",
+            borderRadius: 1,
+            color: "text.secondary",
+          }}
+        >
+          Simulated values for demonstration — no production model is running.
+        </Typography>
+      </CardContent>
+    </Card>
+  );
+}
+
 // Visual-exam findings from the screening — the review's only clinical context
 // when limited mouth opening prevented photo capture. "Do you see any lesions?"
 // and the referral acknowledgment are mutually exclusive paths in the bundle,
@@ -936,11 +989,14 @@ function OralVisualExamCard({ screening }: { screening: EncounterApiResponse }) 
   );
 }
 
-function DetailRow({ label, value }: { label: string; value: string }) {
+// `value` may be a badge (an inline span), not just text.
+function DetailRow({ label, value }: { label: string; value: ReactNode }) {
   return (
-    <Stack direction="row" sx={{ py: 0.5 }}>
+    <Stack direction="row" alignItems="center" sx={{ py: 0.5 }}>
       <Typography sx={{ minWidth: 180, fontWeight: 500 }}>{label}</Typography>
-      <Typography>: {value}</Typography>
+      <Typography component="div" sx={{ display: "inline-flex", alignItems: "center", gap: 0.5 }}>
+        : {value}
+      </Typography>
     </Stack>
   );
 }
