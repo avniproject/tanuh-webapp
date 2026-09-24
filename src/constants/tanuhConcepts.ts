@@ -365,3 +365,65 @@ export const PLACE_OF_REFERRAL_CONCEPT = {
   name: "Place of referral",
   uuid: "4a43f83e-26db-40c8-83d8-4317dcfda913",
 } as const;
+
+// ---------------------------------------------------------------------------
+// PE-95 / PE-96 — Data Quality gate and AI risk stratification (UAT MVP).
+// Two CONCEPT-ONLY Coded questions stamped onto the Oral Screening encounter by
+// a backend job (today: the PE-97 demo backfill). No form element: the server
+// still serialises them by name, and the mobile app keeps observations whose
+// concept is not on the form, so a CHO re-edit does not wipe them.
+// Distinct from QUALITY_VALUES (the per-photo "Acceptable Quality of the photo?"
+// Yes/No the clinician answers) and from diagnosisMapping's RISK / CLASSIFICATION
+// (the clinician's own "High Risk" / "Low-risk" and "Non-Suspicious" — note the
+// hyphens). The AI answers are "Low Risk" and "Non Suspicious", no hyphen:
+// separate answer concepts in the bundle, so do not unify the literals.
+// uuids minted by tanuh-implementation rounds/uat15_data_quality_ai_risk.
+export const SCREENING_DATA_QUALITY_CONCEPT = {
+  name: "Data Quality",
+  uuid: "e9ba6422-4b82-5f47-a829-98968845f190",
+} as const;
+export const SCREENING_AI_RISK_CONCEPT = {
+  name: "AI Risk Assessment",
+  uuid: "3a4316aa-ce13-50b8-becc-14a06c94cb2f",
+} as const;
+
+export const DATA_QUALITY_VALUES = { pass: "Pass", fail: "Fail" } as const;
+export const AI_RISK_VALUES = {
+  highRisk: "High Risk",
+  lowRisk: "Low Risk",
+  nonSuspicious: "Non Suspicious",
+} as const;
+export type AiRiskValue = (typeof AI_RISK_VALUES)[keyof typeof AI_RISK_VALUES];
+
+// A Coded single-select serialises as the answer name; tolerate a one-element array.
+function codedAnswerName(v: unknown): string | undefined {
+  const s = Array.isArray(v) ? v[0] : v;
+  return typeof s === "string" && s !== "" ? s : undefined;
+}
+export function readDataQuality(obs: Record<string, unknown>): string | undefined {
+  return codedAnswerName(readObs(obs, SCREENING_DATA_QUALITY_CONCEPT));
+}
+export function readAiRisk(obs: Record<string, unknown>): string | undefined {
+  return codedAnswerName(readObs(obs, SCREENING_AI_RISK_CONCEPT));
+}
+
+// What the AI risk badge shows for a screening:
+//   absent       — no Data Quality observation at all (pre-PE-95 screening): plain "—"
+//   not-assessed — Data Quality present but no risk value (Fail, or Pass awaiting the job)
+//   value        — one of AI_RISK_VALUES
+//   unknown      — an answer spelling this build does not know: shown raw, never hidden
+export type AiRiskDisplayState =
+  | { kind: "absent" }
+  | { kind: "not-assessed" }
+  | { kind: "value"; value: AiRiskValue }
+  | { kind: "unknown"; value: string };
+export function aiRiskDisplayState(
+  dataQuality: string | undefined,
+  aiRisk: string | undefined,
+): AiRiskDisplayState {
+  if (aiRisk !== undefined) {
+    const known = (Object.values(AI_RISK_VALUES) as string[]).includes(aiRisk);
+    return known ? { kind: "value", value: aiRisk as AiRiskValue } : { kind: "unknown", value: aiRisk };
+  }
+  return dataQuality === undefined ? { kind: "absent" } : { kind: "not-assessed" };
+}
