@@ -919,7 +919,7 @@ function SymptomsCard({ screening }: { screening: EncounterApiResponse }) {
 
 // PE-96: the backend-stamped Data Quality gate and AI risk label on the screening.
 // Read-only, always rendered: an unstamped screening shows "—" on both rows so
-// the card is discoverable on old cases too. A Fail screening opened by URL still
+// the card is discoverable on old cases too. The caption is the client's text. A Fail screening opened by URL still
 // renders (the list hides it; the detail page never redirects).
 function DataQualityCard({ screening }: { screening: EncounterApiResponse }) {
   const obs = screening.observations ?? {};
@@ -933,29 +933,15 @@ function DataQualityCard({ screening }: { screening: EncounterApiResponse }) {
         </Typography>
         <DetailRow label="Data Quality" value={<DataQualityBadge value={dataQuality} />} />
         <DetailRow label="AI Risk Assessment" value={<AiRiskBadge dataQuality={dataQuality} aiRisk={aiRisk} />} />
+        {/* Wording from Fathima (Discord, 2026-09-24); the earlier "Simulated values"
+            demo flag was dropped on her instruction. */}
         <Typography variant="caption" component="p" color="text.secondary" sx={{ mt: 1.5 }}>
           <Box component="strong" sx={{ fontWeight: 700 }}>
-            AI-assisted pre-screening — decision support only, not a diagnosis.
+            AI-assisted pre-screening only.
           </Box>{" "}
-          The final clinical assessment rests with the reviewing clinician. Risk is generated only when
-          data quality passes.
-        </Typography>
-        <Typography
-          variant="caption"
-          component="p"
-          data-testid="demo-flag"
-          sx={{
-            mt: 1,
-            display: "inline-block",
-            px: 1,
-            py: 0.25,
-            border: "1px dashed",
-            borderColor: "grey.400",
-            borderRadius: 1,
-            color: "text.secondary",
-          }}
-        >
-          Simulated values for demonstration — no production model is running.
+          Not a diagnosis. Final clinical assessment remains with the clinician.
+          <br />
+          Risk scores are generated only after required data quality checks pass.
         </Typography>
       </CardContent>
     </Card>
