@@ -1,3 +1,4 @@
+import axios from "axios";
 import { http } from "@/auth/httpClient";
 import {
   ENCOUNTER_ID_CONCEPT,
@@ -50,9 +51,85 @@ export async function listEncounters(params: ListParams): Promise<PagedResponse<
   return response.data;
 }
 
+interface ProgramListParams {
+  encounterType: string;
+  programEnrolmentId?: string;
+  concepts?: Record<string, string>;
+  lastModifiedDateTime?: string;
+  page?: number;
+  size?: number;
+}
+
+/**
+ * The PROGRAM-encounter twin of listEncounters (GET /api/programEncounters) —
+ * an org can record the same encounter types inside a program (Tanuh Staging:
+ * NCD, PE-83). It has no subjectId filter; a subject's program visits are found
+ * through their enrolment. The server silently DROPS an encounterType or
+ * programEnrolmentId it cannot resolve and answers with org-wide rows, so the
+ * page is re-filtered here. totalPages still counts the server's pages, which is
+ * what the callers page by. An org with no program visits gets an empty page —
+ * the ViewVisit check only runs on the types a page actually returns.
+ */
+export async function listProgramEncounters(
+  params: ProgramListParams,
+): Promise<PagedResponse<EncounterApiResponse>> {
+  const now = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+  const response = await http.get<PagedResponse<EncounterApiResponse>>("/api/programEncounters", {
+    params: {
+      lastModifiedDateTime: params.lastModifiedDateTime ?? EPOCH,
+      now,
+      encounterType: params.encounterType,
+      programEnrolmentId: params.programEnrolmentId,
+      concepts: params.concepts ? JSON.stringify(params.concepts) : undefined,
+      page: params.page ?? 0,
+      size: params.size ?? 50,
+    },
+  });
+  const data = response.data;
+  return {
+    ...data,
+    content: data.content.filter(
+      (e) =>
+        e["Encounter type"] === params.encounterType &&
+        (!params.programEnrolmentId || e["Enrolment ID"] === params.programEnrolmentId),
+    ),
+  };
+}
+
+export function isProgramEncounter(encounter: EncounterApiResponse): boolean {
+  return !!encounter["Enrolment ID"];
+}
+
 export async function getEncounter(uuid: string): Promise<EncounterApiResponse> {
-  const response = await http.get<EncounterApiResponse>(`/api/encounter/${uuid}`);
+  try {
+    const response = await http.get<EncounterApiResponse>(`/api/encounter/${uuid}`);
+    return response.data;
+  } catch (err) {
+    // A program visit is not in the standalone table: the standalone endpoint
+    // answers 404, and the same uuid is read from the program endpoint.
+    if (!(axios.isAxiosError(err) && err.response?.status === 404)) throw err;
+  }
+  const response = await http.get<EncounterApiResponse>(`/api/programEncounter/${uuid}`);
   return response.data;
+}
+
+/**
+ * The visits of one type that belong with `anchor` (a review): for a standalone
+ * anchor its subject's standalone visits; for a program anchor the visits of
+ * its own enrolment, which is also the set the mobile rules count in.
+ */
+export async function listVisitsFor(
+  anchor: EncounterApiResponse,
+  encounterType: string,
+): Promise<EncounterApiResponse[]> {
+  // size must comfortably exceed any real per-subject count: the API pages by
+  // lastModified, so a small page can miss encounters.
+  if (isProgramEncounter(anchor)) {
+    const res = await listProgramEncounters({ encounterType, programEnrolmentId: anchor["Enrolment ID"], size: 50 });
+    return res.content;
+  }
+  const res = await listEncounters({ encounterType, subjectId: anchor["Subject ID"], size: 50 });
+  return res.content;
 }
 
 export interface UpsertEncounterBody {
@@ -72,12 +149,21 @@ export interface UpsertEncounterBody {
 export async function submitEncounter(
   uuid: string | null,
   body: UpsertEncounterBody,
+  options: { program?: boolean } = {},
 ): Promise<EncounterApiResponse> {
   // The avni-server PUT/POST handler always calls
   // `createObservations(request.getCancelObservations())` and NPEs if the
   // field is null. Always send an empty cancelObservations so we never hit
   // that path — we're never cancelling here, only completing.
   const payload = { cancelObservations: {}, ...body };
+  if (uuid && options.program) {
+    // A program visit is completed on the program endpoint. It needs no
+    // enrolment on PUT and has no "Subject ID" field.
+    const { "Subject ID": _subject, ...programPayload } = payload;
+    void _subject;
+    const response = await http.put<EncounterApiResponse>(`/api/programEncounter/${uuid}`, programPayload);
+    return response.data;
+  }
   if (uuid) {
     const response = await http.put<EncounterApiResponse>(`/api/encounter/${uuid}`, payload);
     return response.data;
@@ -91,6 +177,9 @@ export interface ScheduleEncounterBody {
   "Subject ID": string;
   "Earliest scheduled date": string;
   "Max scheduled date": string;
+  // Set to schedule a PROGRAM visit inside that enrolment (POST
+  // /api/programEncounter needs it); absent = a standalone visit.
+  "Enrolment ID"?: string;
 }
 
 /**
@@ -102,6 +191,12 @@ export interface ScheduleEncounterBody {
 export async function scheduleEncounter(body: ScheduleEncounterBody): Promise<EncounterApiResponse> {
   // observations/cancelObservations must be present (server NPEs on null).
   const payload = { observations: {}, cancelObservations: {}, ...body };
+  if (body["Enrolment ID"]) {
+    const { "Subject ID": _subject, ...programPayload } = payload;
+    void _subject;
+    const response = await http.post<EncounterApiResponse>("/api/programEncounter", programPayload);
+    return response.data;
+  }
   const response = await http.post<EncounterApiResponse>("/api/encounter", payload);
   return response.data;
 }
@@ -172,6 +267,33 @@ export function invalidateEncounterSweeps(): void {
   invalidateCachedEncounters();
 }
 
+// Where an encounter lives: the standalone table (/api/encounters) or inside a
+// program enrolment (/api/programEncounters). Both hold the same encounter types
+// on an org that records them in a program; every org-wide read takes both.
+type EncounterSource = "standalone" | "program";
+const SOURCES: EncounterSource[] = ["standalone", "program"];
+
+function listFromSource(
+  source: EncounterSource,
+  params: Pick<ListParams, "encounterType" | "concepts" | "lastModifiedDateTime" | "page" | "size">,
+): Promise<PagedResponse<EncounterApiResponse>> {
+  return source === "program" ? listProgramEncounters(params) : listEncounters(params);
+}
+
+async function sweepSource(
+  source: EncounterSource,
+  encounterType: string,
+  concepts?: Record<string, string>,
+): Promise<EncounterApiResponse[]> {
+  const all: EncounterApiResponse[] = [];
+  for (let page = 0; page < SWEEP_PAGE_CAP; page++) {
+    const res = await listFromSource(source, { encounterType, concepts, page, size: SWEEP_PAGE_SIZE });
+    all.push(...res.content);
+    if (page + 1 >= res.totalPages) break;
+  }
+  return all;
+}
+
 export function sweepEncounters(
   encounterType: string,
   concepts?: Record<string, string>,
@@ -180,14 +302,22 @@ export function sweepEncounters(
   const cached = sweepCache.get(key);
   if (cached && Date.now() - cached.at < SWEEP_TTL_MS) return cached.promise;
   const promise = (async () => {
-    const all: EncounterApiResponse[] = [];
-    for (let page = 0; page < SWEEP_PAGE_CAP; page++) {
-      const res = await listEncounters({ encounterType, concepts, page, size: SWEEP_PAGE_SIZE });
-      all.push(...res.content);
-      if (page + 1 >= res.totalPages) break;
-    }
-    return all;
+    const parts = await Promise.all(SOURCES.map((source) => sweepSource(source, encounterType, concepts)));
+    return parts.flat();
   })();
+  sweepCache.set(key, { at: Date.now(), promise });
+  promise.catch(() => sweepCache.delete(key));
+  return promise;
+}
+
+// Every PROGRAM encounter of a type with full observations (the list tabs'
+// program rows read the screening's Place of referral), memoised in the same
+// sweep cache so a review submit or a sign-in change clears it too.
+export function sweepProgramEncounters(encounterType: string): Promise<EncounterApiResponse[]> {
+  const key = `program|${encounterType}`;
+  const cached = sweepCache.get(key);
+  if (cached && Date.now() - cached.at < SWEEP_TTL_MS) return cached.promise;
+  const promise = sweepSource("program", encounterType);
   sweepCache.set(key, { at: Date.now(), promise });
   promise.catch(() => sweepCache.delete(key));
   return promise;
@@ -282,6 +412,7 @@ function trimForCache(e: EncounterApiResponse): EncounterApiResponse {
     "Earliest scheduled date": e["Earliest scheduled date"],
     "Max scheduled date": e["Max scheduled date"],
     "Cancel date time": e["Cancel date time"],
+    ...(e["Enrolment ID"] ? { "Enrolment ID": e["Enrolment ID"] } : {}),
     observations: obs,
     audit: {
       "Created at": e.audit?.["Created at"],
@@ -292,12 +423,13 @@ function trimForCache(e: EncounterApiResponse): EncounterApiResponse {
 }
 
 async function fetchEncountersSince(
+  source: EncounterSource,
   encounterType: string,
   since: string,
 ): Promise<EncounterApiResponse[]> {
   const all: EncounterApiResponse[] = [];
   for (let page = 0; page < CACHE_COLD_PAGE_CAP; page++) {
-    const res = await listEncounters({
+    const res = await listFromSource(source, {
       encounterType,
       lastModifiedDateTime: since,
       page,
@@ -321,39 +453,48 @@ const cachedLayerMemo = new Map<string, { at: number; promise: Promise<Encounter
 export function getCachedEncounters(encounterType: string): Promise<EncounterApiResponse[]> {
   const memo = cachedLayerMemo.get(encounterType);
   if (memo && Date.now() - memo.at < SWEEP_TTL_MS) return memo.promise;
-  // No scope yet (list mounted before /me answered): full fetch, persist nothing.
-  const key = cacheScope ? `${CACHE_KEY_PREFIX}:${cacheScope}:${encounterType}` : null;
-  const promise = (async () => {
-    let cached = key ? await idbGet<CachedEncounters>(key) : undefined;
-    if (!cached || cached.schema !== CACHE_SCHEMA) {
-      cached = { schema: CACHE_SCHEMA, watermark: EPOCH, records: [] };
-      // first scoped load in this browser: retire the unscoped v1 store
-      if (key) void idbDel(`${LEGACY_CACHE_KEY_PREFIX}:${encounterType}`);
-    }
-    const since =
-      cached.watermark === EPOCH
-        ? EPOCH
-        : new Date(Date.parse(cached.watermark) - CACHE_OVERLAP_MS).toISOString();
-    const fresh = await fetchEncountersSince(encounterType, since);
-    const byId = new Map(cached.records.map((r) => [r.ID, r]));
-    let maxLm = Date.parse(cached.watermark);
-    for (const e of fresh) {
-      byId.set(e.ID, trimForCache(e));
-      const lm = Date.parse(e.audit?.["Last modified at"] ?? "");
-      if (!Number.isNaN(lm) && lm > maxLm) maxLm = lm;
-    }
-    const records = [...byId.values()];
-    const next: CachedEncounters = {
-      schema: CACHE_SCHEMA,
-      watermark: Number.isNaN(maxLm) ? EPOCH : new Date(maxLm).toISOString(),
-      records,
-    };
-    if (key) void idbSet(key, next);
-    return records;
-  })();
+  const promise = Promise.all(SOURCES.map((source) => cachedFromSource(source, encounterType))).then((parts) =>
+    parts.flat(),
+  );
   cachedLayerMemo.set(encounterType, { at: Date.now(), promise });
   promise.catch(() => cachedLayerMemo.delete(encounterType));
   return promise;
+}
+
+// One source's persisted set + delta. The two sources are separate tables with
+// their own lastModified order, so each keeps its own key and watermark. The
+// standalone key is the one every existing browser already has (no schema bump,
+// no cold reload); the program key is new and simply starts cold.
+async function cachedFromSource(source: EncounterSource, encounterType: string): Promise<EncounterApiResponse[]> {
+  // No scope yet (list mounted before /me answered): full fetch, persist nothing.
+  const typeKey = source === "program" ? `program:${encounterType}` : encounterType;
+  const key = cacheScope ? `${CACHE_KEY_PREFIX}:${cacheScope}:${typeKey}` : null;
+  let cached = key ? await idbGet<CachedEncounters>(key) : undefined;
+  if (!cached || cached.schema !== CACHE_SCHEMA) {
+    cached = { schema: CACHE_SCHEMA, watermark: EPOCH, records: [] };
+    // first scoped load in this browser: retire the unscoped v1 store
+    if (key && source === "standalone") void idbDel(`${LEGACY_CACHE_KEY_PREFIX}:${encounterType}`);
+  }
+  const since =
+    cached.watermark === EPOCH
+      ? EPOCH
+      : new Date(Date.parse(cached.watermark) - CACHE_OVERLAP_MS).toISOString();
+  const fresh = await fetchEncountersSince(source, encounterType, since);
+  const byId = new Map(cached.records.map((r) => [r.ID, r]));
+  let maxLm = Date.parse(cached.watermark);
+  for (const e of fresh) {
+    byId.set(e.ID, trimForCache(e));
+    const lm = Date.parse(e.audit?.["Last modified at"] ?? "");
+    if (!Number.isNaN(lm) && lm > maxLm) maxLm = lm;
+  }
+  const records = [...byId.values()];
+  const next: CachedEncounters = {
+    schema: CACHE_SCHEMA,
+    watermark: Number.isNaN(maxLm) ? EPOCH : new Date(maxLm).toISOString(),
+    records,
+  };
+  if (key) void idbSet(key, next);
+  return records;
 }
 
 // Drop the in-memory memo so the next getCachedEncounters call issues a fresh
@@ -414,10 +555,14 @@ function toScreeningInfo(screening: EncounterApiResponse): LatestScreeningInfo {
   };
 }
 
-function groupBySubject(encounters: EncounterApiResponse[]): Record<string, EncounterApiResponse[]> {
-  const bySubject: Record<string, EncounterApiResponse[]> = {};
-  for (const e of encounters) (bySubject[e["Subject ID"]] ??= []).push(e);
-  return bySubject;
+// Pairing scope: a standalone review pairs with the subject's standalone
+// screenings, a program review with the screenings of its own enrolment — the
+// same scope loadReview and the mobile rules use. Without it an unstamped
+// program review could take a subject's older standalone screening.
+function groupBySubjectAndEnrolment(encounters: EncounterApiResponse[]): Record<string, EncounterApiResponse[]> {
+  const byScope: Record<string, EncounterApiResponse[]> = {};
+  for (const e of encounters) (byScope[`${e["Subject ID"]}|${e["Enrolment ID"] ?? ""}`] ??= []).push(e);
+  return byScope;
 }
 
 /**
@@ -472,11 +617,11 @@ export async function getReviewScreeningPairing(
     getCachedEncounters(reviewEncounterType),
     getCachedEncounters(screeningEncounterType),
   ]);
-  const reviewsBySubject = groupBySubject(reviewsAll.filter((r) => !r.Voided));
-  const screeningsBySubject = groupBySubject(screeningsAll);
+  const reviewsByScope = groupBySubjectAndEnrolment(reviewsAll.filter((r) => !r.Voided));
+  const screeningsByScope = groupBySubjectAndEnrolment(screeningsAll);
   const pairing: Record<string, LatestScreeningInfo> = {};
-  for (const [subjectId, reviews] of Object.entries(reviewsBySubject)) {
-    const paired = pairReviewsToScreenings(reviews, screeningsBySubject[subjectId] ?? []);
+  for (const [scope, reviews] of Object.entries(reviewsByScope)) {
+    const paired = pairReviewsToScreenings(reviews, screeningsByScope[scope] ?? []);
     for (const [reviewUuid, screening] of paired) pairing[reviewUuid] = toScreeningInfo(screening);
   }
   return pairing;

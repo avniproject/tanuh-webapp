@@ -27,6 +27,7 @@ import ClearIcon from "@mui/icons-material/Clear";
 import { useNavigate, useSearchParams } from "react-router-dom";
 import { endOfDay, format, parseISO } from "date-fns";
 import { getAllEncountersWithLocation, type EncounterWithLocation } from "@/api/impl";
+import { getProgramEncountersWithLocation } from "@/api/programList";
 import {
   findCompletedEncounterUuidsWithCodedValue,
   getLatestScreeningInfoBySubject,
@@ -112,14 +113,17 @@ export function EncounterList({ mode }: Props) {
     linkedObservationConceptUuid: referralUuid ? PLACE_OF_REFERRAL_CONCEPT.uuid : null,
     linkedLocationUuid: referralUuid,
   };
-  const { data: pageData, error } = useAsync(
-    () =>
-      getAllEncountersWithLocation({
-        ...listParams,
-        status: mode === "pending" ? "scheduled" : "completed",
-      }),
-    [mode, referralUuid, patientLocationUuid],
-  );
+  // Standalone reviews come from the impl endpoint; reviews recorded inside a
+  // program (Tanuh Staging's NCD) are built from the program API with the same
+  // filters. An org without program visits adds nothing here.
+  const { data: pageData, error } = useAsync(async () => {
+    const params = { ...listParams, status: mode === "pending" ? "scheduled" : "completed" } as const;
+    const [standalone, program] = await Promise.all([
+      getAllEncountersWithLocation(params),
+      getProgramEncountersWithLocation(params),
+    ]);
+    return { content: [...standalone.content, ...program], totalElements: standalone.totalElements + program.length };
+  }, [mode, referralUuid, patientLocationUuid]);
 
   // subjectUuid -> latest Oral Screening info (screening date, Case ID,
   // health worker) from ONE cached org-wide sweep — replaces the previous

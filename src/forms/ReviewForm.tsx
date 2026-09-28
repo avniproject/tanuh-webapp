@@ -26,8 +26,9 @@ import {
   getEncounter,
   invalidateEncounterSweeps,
   isCompleted,
+  isProgramEncounter,
   isScheduled,
-  listEncounters,
+  listVisitsFor,
   pairReviewsToScreenings,
   scheduleEncounter,
   submitEncounter,
@@ -163,18 +164,17 @@ function deriveClassification(
 // Schedules the High Risk Referral visit unless the subject already has one
 // open — re-reviews and double-submits must not pile up duplicate visits.
 // Window: due immediately, overdue after 7 days (the scoping doc's follow-up
-// convention; the sheet itself doesn't specify dates).
-async function ensureHighRiskFollowUp(subjectId: string): Promise<void> {
-  const existing = await listEncounters({
-    encounterType: ENCOUNTER_TYPE.highRiskFollowUp.name,
-    subjectId,
-    size: 50,
-  });
-  if (existing.content.some(isScheduled)) return;
+// convention; the sheet itself doesn't specify dates). A review recorded inside
+// a program schedules it in the same enrolment, so it lands under that program
+// on the phone.
+async function ensureHighRiskFollowUp(review: EncounterApiResponse): Promise<void> {
+  const existing = await listVisitsFor(review, ENCOUNTER_TYPE.highRiskFollowUp.name);
+  if (existing.some(isScheduled)) return;
   const now = new Date();
   await scheduleEncounter({
     "Encounter type": ENCOUNTER_TYPE.highRiskFollowUp.name,
-    "Subject ID": subjectId,
+    "Subject ID": review["Subject ID"],
+    ...(review["Enrolment ID"] ? { "Enrolment ID": review["Enrolment ID"] } : {}),
     "Earliest scheduled date": now.toISOString(),
     "Max scheduled date": addDays(now, 7).toISOString(),
   });
@@ -184,17 +184,14 @@ async function ensureHighRiskFollowUp(subjectId: string): Promise<void> {
 // dashboard. Same shape and window as the High Risk Referral above; the guard
 // keeps re-reviews and double-submits from stacking up slips, and the encounter
 // type's eligibility rule suppresses the unplanned entry while one is pending.
-async function ensureReferralSlip(subjectId: string): Promise<void> {
-  const existing = await listEncounters({
-    encounterType: ENCOUNTER_TYPE.referralSlip.name,
-    subjectId,
-    size: 50,
-  });
-  if (existing.content.some(isScheduled)) return;
+async function ensureReferralSlip(review: EncounterApiResponse): Promise<void> {
+  const existing = await listVisitsFor(review, ENCOUNTER_TYPE.referralSlip.name);
+  if (existing.some(isScheduled)) return;
   const now = new Date();
   await scheduleEncounter({
     "Encounter type": ENCOUNTER_TYPE.referralSlip.name,
-    "Subject ID": subjectId,
+    "Subject ID": review["Subject ID"],
+    ...(review["Enrolment ID"] ? { "Enrolment ID": review["Enrolment ID"] } : {}),
     "Earliest scheduled date": now.toISOString(),
     "Max scheduled date": addDays(now, 7).toISOString(),
   });
@@ -203,13 +200,13 @@ async function ensureReferralSlip(subjectId: string): Promise<void> {
 async function loadReview(encounterUuid: string): Promise<LoadedState> {
   const review = await getEncounter(encounterUuid);
   const subjectId = review["Subject ID"];
-  const [subject, screeningPage, reviewPage, verdictConcept, diagnosisConcept, subTypeConcept] =
+  // A standalone review pairs with the subject's standalone screenings; a review
+  // recorded inside a program with the screenings of its own enrolment.
+  const [subject, screenings, reviews, verdictConcept, diagnosisConcept, subTypeConcept] =
     await Promise.all([
       getSubject(subjectId),
-      // size must comfortably exceed any real screening/review count per subject:
-      // the API pages by lastModified, so a small page can miss encounters.
-      listEncounters({ encounterType: ENCOUNTER_TYPE.oralScreening.name, subjectId, size: 50 }),
-      listEncounters({ encounterType: ENCOUNTER_TYPE.physicianReviewForm.name, subjectId, size: 50 }),
+      listVisitsFor(review, ENCOUNTER_TYPE.oralScreening.name),
+      listVisitsFor(review, ENCOUNTER_TYPE.physicianReviewForm.name),
       getConcept(REVIEW_IMAGE_GROUP_CHILD.physicianVerdict.uuid),
       getConcept(REVIEW_CONCEPTS.provisionalDiagnosis.uuid),
       getConcept(REVIEW_CONCEPTS.provisionalSubType.uuid),
@@ -217,10 +214,10 @@ async function loadReview(encounterUuid: string): Promise<LoadedState> {
   // Load the specific screening THIS review covers (its stamped source, or the
   // created-order paired one), not just the subject's latest — otherwise a
   // multi-screening subject's reviews would all bind to the newest screening.
-  const paired = pairReviewsToScreenings(reviewPage.content, screeningPage.content);
+  const paired = pairReviewsToScreenings(reviews, screenings);
   const screening =
     paired.get(review.ID) ??
-    screeningPage.content
+    screenings
       .filter((e) => !e.Voided && e["Encounter date time"] != null)
       .sort((a, b) => (b["Encounter date time"] || "").localeCompare(a["Encounter date time"] || ""))[0];
   if (!screening) throw new Error("No completed Oral Screening encounter for this subject");
@@ -395,11 +392,7 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
       // so the Encounter ID sequence below is computed on current data.
       const [current, reviewsNow] = await Promise.all([
         getEncounter(loaded.review.ID),
-        listEncounters({
-          encounterType: ENCOUNTER_TYPE.physicianReviewForm.name,
-          subjectId: loaded.review["Subject ID"],
-          size: 50,
-        }),
+        listVisitsFor(loaded.review, ENCOUNTER_TYPE.physicianReviewForm.name),
       ]);
       if (isCompleted(current)) {
         setSubmitError(
@@ -460,17 +453,21 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
         computeNextEncounterId(
           readObs<string>(loaded.subject.observations ?? {}, PATIENT_ID_CONCEPT),
           "CLR",
-          reviewsNow.content,
+          reviewsNow,
           loaded.review.ID,
         );
       if (encounterId) observations[ENCOUNTER_ID_CONCEPT.name] = encounterId;
 
-      await submitEncounter(loaded.review.ID, {
-        "Encounter type": ENCOUNTER_TYPE.physicianReviewForm.name,
-        "Subject ID": loaded.review["Subject ID"],
-        "Encounter date time": new Date().toISOString(),
-        observations,
-      });
+      await submitEncounter(
+        loaded.review.ID,
+        {
+          "Encounter type": ENCOUNTER_TYPE.physicianReviewForm.name,
+          "Subject ID": loaded.review["Subject ID"],
+          "Encounter date time": new Date().toISOString(),
+          observations,
+        },
+        { program: isProgramEncounter(loaded.review) },
+      );
       // The list tabs cache their org-wide sweeps — drop them so the review
       // just completed shows up in the counts and High Risk set immediately.
       invalidateEncounterSweeps();
@@ -483,7 +480,7 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
       // High Risk pairs with the dentist-visit action, not the biopsy flow.
       if (!mouthNotOpen && mapping?.risk === RISK.high) {
         try {
-          await ensureHighRiskFollowUp(loaded.review["Subject ID"]);
+          await ensureHighRiskFollowUp(loaded.review);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           setSubmitError(
@@ -493,7 +490,7 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
           return;
         }
         try {
-          await ensureReferralSlip(loaded.review["Subject ID"]);
+          await ensureReferralSlip(loaded.review);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           setSubmitError(

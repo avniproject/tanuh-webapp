@@ -14,6 +14,11 @@ export interface EncounterApiResponse {
   "Cancel date time": string | null;
   observations: Record<string, unknown>;
   cancelObservations?: Record<string, unknown>;
+  // Present only on a PROGRAM encounter (GET /api/programEncounter[s]): the
+  // enrolment it belongs to and that enrolment's program. A standalone
+  // encounter carries neither — see isProgramEncounter.
+  "Enrolment ID"?: string;
+  Program?: string;
   audit?: {
     "Created at"?: string;
     "Last modified at"?: string;

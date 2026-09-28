@@ -35,6 +35,7 @@ The Tanuh org instance must have:
 - A visit-schedule rule on the Oral Screening encounter that schedules a "Physician Review Form" encounter on completion.
 - A "Physician" user group with privileges on the Physician Review Form encounter type.
 - Each Physician user assigned the catchment locations they review.
+- Optional: the same encounter types recorded inside a program (Tanuh Staging's NCD program, PE-83). The app reads program visits through the stock `/api/programEncounters` API alongside the standalone ones, completes a program review on `/api/programEncounter/{id}`, and schedules its High Risk Referral / Referral Slip in the review's own enrolment. The Physician group then needs program-scoped ViewVisit on the review and screening types. Program list rows are assembled in the browser (one subject request per patient), which suits a small org; at scale `/api/impl/encountersWithLocation` should return program visits too.
 
 ## Releases & promotion (prod ⇄ UAT)
 
