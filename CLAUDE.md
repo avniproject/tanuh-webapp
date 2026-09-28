@@ -18,7 +18,7 @@ npm run lint         # ESLint, zero-warnings policy (--max-warnings 0)
 npm run typecheck    # tsc -b --noEmit
 ```
 
-There is no test runner configured. Verify changes with `lint` + `typecheck` and by exercising the flow in the browser.
+`npm test` runs the unit suite (Vitest, pinned to 2.x — 5.x requires Vite 6+). It covers the pure review logic in `src/forms/reviewPhotos.ts` only; there is no component or browser-level testing. So `lint` + `typecheck` + `test` together still do not tell you the screen renders correctly — exercise the flow in the browser as well.
 
 ## Release Workflow
 
@@ -44,7 +44,7 @@ Two server NPE workarounds live in `src/api/encounters.ts` and must be preserved
 A **High Risk** diagnosis additionally schedules a "High Risk Follow-up" encounter for the field worker (`ensureHighRiskFollowUp`), guarded against duplicates.
 
 ### Photos: two capture models + two special paths
-Oral Screening photos arrive in one of two repeatable QuestionGroups (`ORAL_IMAGE_GROUP` or `ORAL_SCREENING_GROUP`, chosen by the "Do you see any lesions?" branch), each an array of `{ "Oral Image": <url>, … }`. `collectPhotos` normalises both into slots 1..8, falling back to the legacy flat `Photo N (image)` keys. Two paths bypass the normal photo-review UI:
+Oral Screening photos arrive in one of two repeatable QuestionGroups (`ORAL_IMAGE_GROUP` or `ORAL_SCREENING_GROUP`, chosen by the "Do you see any lesions?" branch), each an array of `{ "Oral Image": <url>, … }`. `collectPhotos` normalises both into slots 1..N — **uncapped**, because an encounter carries as many photos as were taken (the 14 protocol sites, plus any beyond them) and every one must reach the physician. It falls back to the legacy flat `Photo N (image)` keys, which the bundle does bound at 8. That logic, along with `deriveClassification` and `prefillFromCompleted`, lives in `src/forms/reviewPhotos.ts` rather than in `ReviewForm.tsx` — Fast Refresh requires a component file to export only components, and keeping it separate makes it testable without rendering. Two paths bypass the normal photo-review UI:
 - **Legacy flat-layout screenings** (`isLegacyOralScreening`) are shown read-only with a warning — not reviewable.
 - **Limited mouth opening** (`Able to Open Mouth? === "No"`) carries no photos by design; the whole Diagnosis section is pre-populated with the fixed `LIMITED_MOUTH_REVIEW` values and the clinician only writes Notes.
 
