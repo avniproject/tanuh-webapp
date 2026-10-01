@@ -39,15 +39,17 @@ The Tanuh org instance must have:
 ## Releases & promotion (prod ⇄ UAT)
 
 Two instances of this app run on the **same** Tanuh reporting node, deployed from
-`avni-infra` (`configure/`):
+`avni-infra` (`configure/`). Branching and releases follow Avni's model, one `X.Y` branch per
+minor release with fixes merged forward. See [`RELEASE_WORKFLOW.md`](RELEASE_WORKFLOW.md).
 
-- **UAT** — `https://uat-tanuh.avniproject.org`, tracks **`main`**. Deploy: `make tanuh-webapp-uat`.
-- **Prod** — `https://tanuh.avniproject.org`, pinned to a **release tag** (never `main`). Currently **`v1.5.0`** (avni-infra prod role var `tanuh_webapp_git_ref`). Deploy: `make tanuh-webapp-prod`.
+- **UAT**: `https://uat-tanuh.avniproject.org` serves the head of the open minor branch.
+  Deploy: `make tanuh-webapp-uat`.
+- **Prod**: `https://tanuh.avniproject.org` serves a **release tag**, never a branch head
+  (avni-infra prod role var `tanuh_webapp_git_ref`). Deploy only on sign-off:
+  `EXTRA_ARGS='-e tanuh_webapp_git_ref=vX.Y.Z' make tanuh-webapp-prod`.
 
-**Promotion flow:**
-1. Merge the change to `main` → `make tanuh-webapp-uat`.
-2. Validate on `uat-tanuh.avniproject.org` — log in with a **`Tanuh_UAT`-org** account (both instances proxy the *same* prod Avni; the only data boundary is your org, so a prod-org login would show prod data).
-3. On sign-off, tag the approved commit: `git tag -a vX.Y.Z <sha> -m "…" && git push origin vX.Y.Z`.
-4. Bump `tanuh_webapp_git_ref` to that tag in `avni-infra/configure/prod_tanuh_metabase_servers.yml`, then `make tanuh-webapp-prod`.
+Validate on UAT with a **`Tanuh_UAT`-org** account. Both instances proxy the *same* prod Avni, so
+the only data boundary is your org, and a prod-org login would show prod data.
 
-The prod pin means a bare prod deploy never drifts to `main`.
+Which version runs where today, and what is pending, is tracked in the org repo:
+`avniproject/tanuh-implementation` → `docs/physician-webapp.md`.
