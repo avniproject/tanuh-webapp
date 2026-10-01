@@ -22,7 +22,7 @@ npm run typecheck    # tsc -b --noEmit
 
 ## Release Workflow
 
-See `RELEASE_WORKFLOW.md`: make changes on `develop`, test there, merge to `main`, then tag the release `vX.Y.Z` (semver, `v` prefix).
+See `RELEASE_WORKFLOW.md`: Avni's release-branch model, as in avni-webapp. One `X.Y` branch per minor release (`1.12` = prod line, `1.13` = UAT line); patches are committed and tagged `vX.Y.Z` on their branch, then merged forward into newer release branches and `main`. No `develop`, no hotfix branches.
 
 ## What this app is
 
