@@ -11,6 +11,7 @@ import {
 } from "@/constants/tanuhConcepts";
 import { getConcept, resetConceptCache } from "./concepts";
 import { idbDel, idbGet, idbSet } from "./idbStore";
+import { buildScheduledVisitRequest, type ScheduleEncounterBody } from "./scheduledVisit";
 import type { EncounterApiResponse, PagedResponse } from "./types";
 import type { MeResponse } from "@/auth/authContext";
 
@@ -136,6 +137,10 @@ export interface UpsertEncounterBody {
   "Encounter type": string;
   "Subject ID": string;
   "Encounter date time": string;
+  // The PUT overwrites the schedule window with whatever is sent, null
+  // included — completing a scheduled visit must send its dates back.
+  "Earliest scheduled date"?: string | null;
+  "Max scheduled date"?: string | null;
   observations: Record<string, unknown>;
 }
 
@@ -172,33 +177,26 @@ export async function submitEncounter(
   return response.data;
 }
 
-export interface ScheduleEncounterBody {
-  "Encounter type": string;
-  "Subject ID": string;
-  "Earliest scheduled date": string;
-  "Max scheduled date": string;
-  // Set to schedule a PROGRAM visit inside that enrolment (POST
-  // /api/programEncounter needs it); absent = a standalone visit.
-  "Enrolment ID"?: string;
+interface AvniEntityResponse {
+  success: boolean;
+  errorMessage?: string;
 }
 
 /**
- * Creates a *scheduled* (not yet performed) visit: POST /api/encounter with
- * scheduled dates and no "Encounter date time". Workers in the subject's
- * catchment see it on mobile as a due visit under the encounter type's list
- * and complete it there.
+ * Creates a *scheduled* (not yet performed) visit on the web save endpoint
+ * avni-webapp uses — POST /web/encounters, or /web/programEncounters inside an
+ * enrolment — because the external /api/encounter request has no `name` and
+ * leaves the visit nameless (PE-125). Workers in the subject's catchment see
+ * it on mobile as a planned visit and complete it there.
  */
-export async function scheduleEncounter(body: ScheduleEncounterBody): Promise<EncounterApiResponse> {
-  // observations/cancelObservations must be present (server NPEs on null).
-  const payload = { observations: {}, cancelObservations: {}, ...body };
-  if (body["Enrolment ID"]) {
-    const { "Subject ID": _subject, ...programPayload } = payload;
-    void _subject;
-    const response = await http.post<EncounterApiResponse>("/api/programEncounter", programPayload);
-    return response.data;
+export async function scheduleEncounter(visit: ScheduleEncounterBody): Promise<void> {
+  const { url, body } = buildScheduledVisitRequest(visit, crypto.randomUUID());
+  // The web save answers 200 with success=false on a refusal (e.g. the subject
+  // is outside the user's catchment), so the flag is the outcome, not the status.
+  const response = await http.post<AvniEntityResponse>(url, body);
+  if (!response.data.success) {
+    throw new Error(response.data.errorMessage || `${url} refused the visit`);
   }
-  const response = await http.post<EncounterApiResponse>("/api/encounter", payload);
-  return response.data;
 }
 
 /**

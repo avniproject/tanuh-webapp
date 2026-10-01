@@ -99,11 +99,11 @@ async function ensureHighRiskFollowUp(review: EncounterApiResponse): Promise<voi
   if (existing.some(isScheduled)) return;
   const now = new Date();
   await scheduleEncounter({
-    "Encounter type": ENCOUNTER_TYPE.highRiskFollowUp.name,
-    "Subject ID": review["Subject ID"],
-    ...(review["Enrolment ID"] ? { "Enrolment ID": review["Enrolment ID"] } : {}),
-    "Earliest scheduled date": now.toISOString(),
-    "Max scheduled date": addDays(now, 7).toISOString(),
+    encounterType: ENCOUNTER_TYPE.highRiskFollowUp,
+    subjectId: review["Subject ID"],
+    enrolmentId: review["Enrolment ID"],
+    earliestVisitDateTime: now.toISOString(),
+    maxVisitDateTime: addDays(now, 7).toISOString(),
   });
 }
 
@@ -116,11 +116,11 @@ async function ensureReferralSlip(review: EncounterApiResponse): Promise<void> {
   if (existing.some(isScheduled)) return;
   const now = new Date();
   await scheduleEncounter({
-    "Encounter type": ENCOUNTER_TYPE.referralSlip.name,
-    "Subject ID": review["Subject ID"],
-    ...(review["Enrolment ID"] ? { "Enrolment ID": review["Enrolment ID"] } : {}),
-    "Earliest scheduled date": now.toISOString(),
-    "Max scheduled date": addDays(now, 7).toISOString(),
+    encounterType: ENCOUNTER_TYPE.referralSlip,
+    subjectId: review["Subject ID"],
+    enrolmentId: review["Enrolment ID"],
+    earliestVisitDateTime: now.toISOString(),
+    maxVisitDateTime: addDays(now, 7).toISOString(),
   });
 }
 
@@ -391,6 +391,10 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
           "Encounter type": ENCOUNTER_TYPE.physicianReviewForm.name,
           "Subject ID": loaded.review["Subject ID"],
           "Encounter date time": new Date().toISOString(),
+          // Sent back unchanged: the PUT would otherwise null the window the
+          // Oral Screening rule scheduled this review in.
+          "Earliest scheduled date": current["Earliest scheduled date"],
+          "Max scheduled date": current["Max scheduled date"],
           observations,
         },
         { program: isProgramEncounter(loaded.review) },
