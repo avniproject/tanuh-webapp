@@ -97,10 +97,10 @@ async function ensureHighRiskFollowUp(subjectId: string): Promise<void> {
   if (existing.content.some(isScheduled)) return;
   const now = new Date();
   await scheduleEncounter({
-    "Encounter type": ENCOUNTER_TYPE.highRiskFollowUp.name,
-    "Subject ID": subjectId,
-    "Earliest scheduled date": now.toISOString(),
-    "Max scheduled date": addDays(now, 7).toISOString(),
+    encounterType: ENCOUNTER_TYPE.highRiskFollowUp,
+    subjectId,
+    earliestVisitDateTime: now.toISOString(),
+    maxVisitDateTime: addDays(now, 7).toISOString(),
   });
 }
 
@@ -117,10 +117,10 @@ async function ensureReferralSlip(subjectId: string): Promise<void> {
   if (existing.content.some(isScheduled)) return;
   const now = new Date();
   await scheduleEncounter({
-    "Encounter type": ENCOUNTER_TYPE.referralSlip.name,
-    "Subject ID": subjectId,
-    "Earliest scheduled date": now.toISOString(),
-    "Max scheduled date": addDays(now, 7).toISOString(),
+    encounterType: ENCOUNTER_TYPE.referralSlip,
+    subjectId,
+    earliestVisitDateTime: now.toISOString(),
+    maxVisitDateTime: addDays(now, 7).toISOString(),
   });
 }
 
@@ -391,6 +391,10 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
         "Encounter type": ENCOUNTER_TYPE.physicianReviewForm.name,
         "Subject ID": loaded.review["Subject ID"],
         "Encounter date time": new Date().toISOString(),
+        // Sent back unchanged: the PUT would otherwise null the window the
+        // Oral Screening rule scheduled this review in.
+        "Earliest scheduled date": current["Earliest scheduled date"],
+        "Max scheduled date": current["Max scheduled date"],
         observations,
       });
       // The list tabs cache their org-wide sweeps — drop them so the review

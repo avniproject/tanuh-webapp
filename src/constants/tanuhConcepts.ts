@@ -21,11 +21,11 @@ export const ENCOUNTER_TYPE = {
   // ~/Desktop/Avni/tools/build_high_risk_followup_bundle.py.
   //
   // RENAMED 2026-08-06: "High Risk Follow-up" -> "High Risk Referral" on UAT.
-  // scheduleEncounter/listEncounters address this type by NAME, so this constant
-  // and the org's encounter type must agree or ensureHighRiskFollowUp throws and
-  // the clinician sees "Review saved, but scheduling ... failed". At the time of
-  // writing prod (org 1113) still carries the OLD name: rename it there before
-  // this build reaches tanuh.avniproject.org.
+  // listEncounters addresses this type by NAME (ensureHighRiskFollowUp's
+  // duplicate check reads through it) and scheduleEncounter names the visit
+  // with it, so this constant and the org's encounter type must agree. At the
+  // time of writing prod (org 1113) still carries the OLD name: rename it there
+  // before this build reaches tanuh.avniproject.org.
   highRiskFollowUp: {
     name: "High Risk Referral",
     uuid: "805a9993-627e-5c65-bd18-6913a0936a65",
