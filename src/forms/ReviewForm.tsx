@@ -59,6 +59,7 @@ import {
   collectPhotos,
   deriveClassification,
   emptyForm,
+  isLimitedMouthAutoReview,
   prefillFromCompleted,
   type FormState,
   type ReviewPhoto,
@@ -222,13 +223,19 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
   // Legacy flat-layout screenings are not supported for review: render their data
   // but disable all inputs and the Complete button (same plumbing as completed).
   const isLegacy = isLegacyOralScreening(loaded.screening.observations as Record<string, unknown>);
-  // Limited-mouth-opening screenings capture no images by design (the bundle
-  // forces the referral instead) — the review then rests on the visual-exam
-  // findings, not photos.
+  // Limited mouth opening: the worker may still photograph what is visible
+  // (PE-126). Without photos the review rests on the visual-exam findings and
+  // takes the spec's fixed values; with photos it is an ordinary photo review.
+  // mouthNotOpen alone only decides what is shown (visual-exam card, the
+  // no-images notice); limitedMouthFixed decides the fixed values.
   const mouthNotOpen =
     (loaded.screening.observations as Record<string, unknown>)[
       VISUAL_EXAM_CONCEPTS.ableToOpenMouth.name
     ] === "No";
+  const limitedMouthFixed = isLimitedMouthAutoReview(
+    loaded.screening.observations as Record<string, unknown>,
+    presentPhotos.length,
+  );
   const completed = isCompleted(loaded.review);
   const readOnly = completed || isLegacy;
   // A completed review shows what was RECORDED. Re-deriving from the current
@@ -242,7 +249,7 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
   // the spec's fixed values — the clinician only writes Notes.
   const classification = completed
     ? (storedClassification ?? "")
-    : mouthNotOpen
+    : limitedMouthFixed
       ? LIMITED_MOUTH_REVIEW.classification
       : deriveClassification(presentPhotos, effectiveForm.photoVerdicts, effectiveForm.photoQuality);
   const mapping = lookupDiagnosis(effectiveForm.provisionalDiagnosis, effectiveForm.provisionalSubType);
@@ -254,18 +261,18 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
   // deliberately maps to nothing (Oral submucosal fibrosis) — a bare dash there
   // reads like a bug to physicians.
   const derivationPending =
-    !mouthNotOpen &&
+    !limitedMouthFixed &&
     (!effectiveForm.provisionalDiagnosis || (needsSubType && !effectiveForm.provisionalSubType));
   const riskDisplay = completed
     ? (storedRisk ?? "—")
-    : mouthNotOpen
+    : limitedMouthFixed
       ? LIMITED_MOUTH_REVIEW.risk
       : derivationPending
         ? "—"
         : (mapping?.risk ?? "Not applicable");
   const actionDisplay = completed
     ? (storedAction ?? "—")
-    : mouthNotOpen
+    : limitedMouthFixed
       ? LIMITED_MOUTH_REVIEW.action
       : derivationPending
         ? "—"
@@ -297,12 +304,12 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
       (effectiveForm.photoQuality[slot] ?? QUALITY_VALUES.yes) !== QUALITY_VALUES.no &&
       !effectiveForm.photoVerdicts[slot],
   );
-  const diagnosisMissing = !mouthNotOpen && !effectiveForm.provisionalDiagnosis;
-  const subTypeMissing = !mouthNotOpen && needsSubType && !effectiveForm.provisionalSubType;
+  const diagnosisMissing = !limitedMouthFixed && !effectiveForm.provisionalDiagnosis;
+  const subTypeMissing = !limitedMouthFixed && needsSubType && !effectiveForm.provisionalSubType;
   // Highest-risk photo is mandatory once any photo is Suspicious (the only case
   // where the checkbox is offered): exactly one must be flagged. Never on the
   // limited-mouth path — its classification is Suspicious with zero photos.
-  const highestRiskRequired = !mouthNotOpen && classification === VERDICT_VALUES.suspicious;
+  const highestRiskRequired = !limitedMouthFixed && classification === VERDICT_VALUES.suspicious;
   const highestRiskMissing = highestRiskRequired && effectiveForm.highestRiskSlot == null;
   const canSubmit =
     missingPhotoVerdicts.length === 0 && !diagnosisMissing && !subTypeMissing && !highestRiskMissing;
@@ -354,7 +361,7 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
         });
       }
       if (classification) observations[REVIEW_CONCEPTS.classification.name] = classification;
-      observations[REVIEW_CONCEPTS.provisionalDiagnosis.name] = mouthNotOpen
+      observations[REVIEW_CONCEPTS.provisionalDiagnosis.name] = limitedMouthFixed
         ? LIMITED_MOUTH_REVIEW.diagnosis
         : effectiveForm.provisionalDiagnosis;
       if (needsSubType && effectiveForm.provisionalSubType) {
@@ -362,8 +369,8 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
       }
       // Risk band + recommended action are auto-derived (read-only in the UI);
       // the limited-mouth path writes the spec's fixed values instead.
-      const risk = mouthNotOpen ? LIMITED_MOUTH_REVIEW.risk : mapping?.risk;
-      const action = mouthNotOpen ? LIMITED_MOUTH_REVIEW.action : mapping?.action;
+      const risk = limitedMouthFixed ? LIMITED_MOUTH_REVIEW.risk : mapping?.risk;
+      const action = limitedMouthFixed ? LIMITED_MOUTH_REVIEW.action : mapping?.action;
       if (risk) observations[REVIEW_CONCEPTS.highLowRisk.name] = risk;
       if (action) observations[REVIEW_CONCEPTS.recommendedAction.name] = action;
       if (effectiveForm.notes.trim()) observations[REVIEW_CONCEPTS.notes.name] = effectiveForm.notes;
@@ -409,7 +416,7 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
       // reported without retrying the review.
       // Deliberately NOT triggered by the limited-mouth path: its pre-set
       // High Risk pairs with the dentist-visit action, not the biopsy flow.
-      if (!mouthNotOpen && mapping?.risk === RISK.high) {
+      if (!limitedMouthFixed && mapping?.risk === RISK.high) {
         try {
           await ensureHighRiskFollowUp(loaded.review);
         } catch (err) {
@@ -634,7 +641,7 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
                 {classification || "—"}
               </Typography>
               <Typography variant="caption" color="text.secondary">
-                {mouthNotOpen
+                {limitedMouthFixed
                   ? "Pre-populated — patient unable to open mouth."
                   : "Auto-computed from photo verdicts above."}
               </Typography>
@@ -642,7 +649,7 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
 
             {/* Provisional diagnosis — single-select, filtered by classification.
                 Limited-mouth reviews fix it to N/A (read-only). */}
-            {mouthNotOpen ? (
+            {limitedMouthFixed ? (
               <Box>
                 <Typography variant="body2" sx={{ mb: 0.5 }}>
                   Provisional diagnosis
@@ -717,7 +724,7 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
                 {riskDisplay}
               </Typography>
               <Typography variant="caption" color="text.secondary">
-                {mouthNotOpen
+                {limitedMouthFixed
                   ? "Pre-populated — patient unable to open mouth."
                   : "Auto-derived from the diagnosis."}
               </Typography>
@@ -730,7 +737,7 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
               </Typography>
               <Typography variant="h6">{actionDisplay}</Typography>
               <Typography variant="caption" color="text.secondary">
-                {mouthNotOpen
+                {limitedMouthFixed
                   ? "Pre-populated — patient unable to open mouth."
                   : "Auto-derived from the diagnosis."}
               </Typography>

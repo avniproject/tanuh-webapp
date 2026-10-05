@@ -8,9 +8,10 @@ import {
   REVIEW_IMAGE_GROUP,
   REVIEW_IMAGE_GROUP_CHILD,
   VERDICT_VALUES,
+  VISUAL_EXAM_CONCEPTS,
 } from "@/constants/tanuhConcepts";
 import type { EncounterApiResponse } from "@/api/types";
-import { collectPhotos, deriveClassification, prefillFromCompleted } from "./reviewPhotos";
+import { collectPhotos, deriveClassification, isLimitedMouthAutoReview, prefillFromCompleted } from "./reviewPhotos";
 
 // An Oral Screening's repeatable capture group: one row per photo.
 function screeningWithPhotos(count: number, groupName: string = ORAL_IMAGE_GROUP.name) {
@@ -134,5 +135,23 @@ describe("prefillFromCompleted", () => {
     rows[13][REVIEW_IMAGE_GROUP_CHILD.highestRiskPhoto.name] = QUALITY_VALUES.yes;
 
     expect(prefillFromCompleted(review).highestRiskSlot).toBe(14);
+  });
+});
+
+describe("isLimitedMouthAutoReview", () => {
+  const mouth = (answer: string) => ({ [VISUAL_EXAM_CONCEPTS.ableToOpenMouth.name]: answer });
+
+  it("fixes the review when the mouth cannot be opened and no photo was taken", () => {
+    expect(isLimitedMouthAutoReview(mouth("No"), 0)).toBe(true);
+  });
+
+  it("is an ordinary photo review when the mouth cannot be opened but photos were taken (PE-126)", () => {
+    const obs = { ...mouth("No"), ...screeningWithPhotos(2) };
+    expect(isLimitedMouthAutoReview(obs, collectPhotos(obs).length)).toBe(false);
+  });
+
+  it("never applies when the mouth opens", () => {
+    expect(isLimitedMouthAutoReview(mouth("Yes"), 0)).toBe(false);
+    expect(isLimitedMouthAutoReview({}, 0)).toBe(false);
   });
 });
