@@ -7,6 +7,7 @@ import type { IdpClient } from "./IdpClient";
 import { AuthContext, type AuthState, type MeResponse } from "./authContext";
 import { clearCatchmentCache } from "@/api/impl";
 import { bindEncounterCacheScope, clearEncounterCacheScope } from "@/api/encounters";
+import { clearListStates } from "@/api/listState";
 
 async function loadMe(): Promise<MeResponse> {
   const response = await http.get<MeResponse>("/me");
@@ -94,6 +95,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
     if (state.status === "ready") {
       clearCatchmentCache();
       clearEncounterCacheScope();
+      clearListStates(window.sessionStorage); // sessionStorage survives the reload below
       await state.idp.signOut();
       setState({ status: "loading" });
       window.location.reload();

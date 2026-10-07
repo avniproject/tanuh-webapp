@@ -405,6 +405,11 @@ export function bindEncounterCacheScope(
   cacheScope = scope;
 }
 
+// The signed-in scope (organisation and user), for state kept per sign-in such as the list's session state.
+export function getEncounterCacheScope(): string | null {
+  return cacheScope;
+}
+
 export function clearEncounterCacheScope(): void {
   cacheScope = null;
   invalidateEncounterSweeps();
