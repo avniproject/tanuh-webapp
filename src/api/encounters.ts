@@ -731,14 +731,22 @@ export function pairBookedReviewToScreening(
   return best;
 }
 
-// A physician has reviewed this screening: a live completed review stamped with it, or created from its page.
-export function isScreeningReviewed(screening: EncounterApiResponse, reviews: EncounterApiResponse[]): boolean {
-  return reviews.some(
+// The review a physician recorded for this screening: a live completed review stamped with it, or created from its
+// page.
+export function findScreeningReview(
+  screening: EncounterApiResponse,
+  reviews: EncounterApiResponse[],
+): EncounterApiResponse | undefined {
+  return reviews.find(
     (r) =>
       isCompleted(r) &&
       (readObs<string>(r.observations ?? {}, REVIEWED_ORAL_SCREENING_CONCEPT) === screening.ID ||
         r["External ID"] === REVIEW_EXTERNAL_ID_PREFIX + screening.ID),
   );
+}
+
+export function isScreeningReviewed(screening: EncounterApiResponse, reviews: EncounterApiResponse[]): boolean {
+  return findScreeningReview(screening, reviews) !== undefined;
 }
 
 /**

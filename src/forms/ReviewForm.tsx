@@ -93,10 +93,10 @@ interface Props {
 interface LoadedState {
   // Absent on a screening's page until a review exists: its submit creates one.
   review?: EncounterApiResponse;
-  // The patient's reviews, as loaded.
-  reviews: EncounterApiResponse[];
   // Set when a screening's page belongs to a booked review: the page moves there.
   redirect?: string;
+  // Set when a screening's page cannot take a review: the page is read-only and says why.
+  unavailable?: string;
   screening: EncounterApiResponse;
   subject: SubjectApiResponse;
   physicianVerdictAnswers: ConceptAnswer[];
@@ -131,7 +131,6 @@ async function loadReview(encounterUuid: string): Promise<LoadedState> {
   if (!screening) throw new Error("No completed Oral Screening encounter for this subject");
   return {
     review,
-    reviews,
     screening,
     subject,
     physicianVerdictAnswers: verdictConcept.answers,
@@ -153,11 +152,11 @@ async function loadCase(screeningUuid: string): Promise<LoadedState> {
     getConcept(REVIEW_CONCEPTS.provisionalDiagnosis.uuid),
     getConcept(REVIEW_CONCEPTS.provisionalSubType.uuid),
   ]);
-  const route = decideCaseRoute(screening, reviews, screenings);
+  const route = decideCaseRoute(screening, subject, reviews, screenings);
   return {
     review: route.kind === "reviewed" ? route.review : undefined,
     redirect: route.kind === "booked" ? route.reviewUuid : undefined,
-    reviews,
+    unavailable: route.kind === "unavailable" ? route.reason : undefined,
     screening,
     subject,
     physicianVerdictAnswers: verdictConcept.answers,
@@ -256,7 +255,7 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
     presentPhotos.length,
   );
   const completed = !!loaded.review && isCompleted(loaded.review);
-  const readOnly = completed || isLegacy || saved !== null;
+  const readOnly = completed || isLegacy || saved !== null || !!loaded.unavailable;
   // A completed review shows what was RECORDED. Re-deriving from the current
   // diagnosisMapping would silently rewrite how past reviews read whenever the
   // mapping table changes (it already changed once — the OSMF row).
@@ -335,13 +334,9 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
 
   const submit = async () => {
     if (readOnly || !canSubmit) return;
+    // tanuh-webapp#5: without a booked review the submit creates one. A program screening never gets here: its page
+    // is either its booked review's or read-only.
     const review = loaded.review;
-    // tanuh-webapp#5: without a booked review the submit creates one, for a standalone screening only (there is no
-    // programme POST).
-    if (!review && isProgramEncounter(loaded.screening)) {
-      setSubmitError("This case is recorded inside a program and can be reviewed only from its booked review.");
-      return;
-    }
     setSubmitting(true);
     setSubmitError(null);
     try {
@@ -541,6 +536,8 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
         </Typography>
         <Box sx={{ flexGrow: 1 }} />
       </Stack>
+
+      {loaded.unavailable && <Alert severity="warning">{loaded.unavailable}</Alert>}
 
       {isLegacy && (
         <Alert severity="warning">
@@ -925,10 +922,10 @@ function SymptomsCard({ screening }: { screening: EncounterApiResponse }) {
   );
 }
 
-// PE-96: the backend-stamped Data Quality gate and AI risk label on the screening.
-// Read-only, always rendered: an unstamped screening shows "—" on both rows so
-// the card is discoverable on old cases too. The caption is the client's text. A Fail screening opened by URL still
-// renders (the list hides it; the detail page never redirects).
+// PE-96: the backend-stamped Data Quality gate on the screening. Read-only, always rendered: an unstamped screening
+// shows "—" so the card is discoverable on old cases too. The model's values moved to its own panel (tanuh-webapp#5).
+// The caption is the client's text. A Fail screening opened by URL still renders (the list hides it; the detail page
+// never redirects).
 function DataQualityCard({ screening }: { screening: EncounterApiResponse }) {
   const obs = screening.observations ?? {};
   const dataQuality = readDataQuality(obs);
