@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   Box,
   Button,
@@ -24,27 +24,45 @@ import RateReviewIcon from "@mui/icons-material/RateReview";
 import VisibilityIcon from "@mui/icons-material/Visibility";
 import SearchIcon from "@mui/icons-material/Search";
 import ClearIcon from "@mui/icons-material/Clear";
-import { useNavigate, useSearchParams } from "react-router-dom";
+import { useNavigate } from "react-router-dom";
 import { endOfDay, format, parseISO } from "date-fns";
 import { getAllEncountersWithLocation, type EncounterWithLocation } from "@/api/impl";
-import { getProgramEncountersWithLocation } from "@/api/programList";
+import { getProgramEncountersWithLocation, readSubjects } from "@/api/programList";
 import {
   findCompletedEncounterUuidsWithCodedValue,
+  getCachedEncounters,
+  getEncounterCacheScope,
   getLatestScreeningInfoBySubject,
   getReviewScreeningPairing,
+  type LatestScreeningInfo,
 } from "@/api/encounters";
-import { hasScreeningQualityGate } from "@/api/concepts";
+import { hasHighRiskModel, hasScreeningQualityGate } from "@/api/concepts";
+import { addressChain, inSubtree } from "@/api/address";
+import {
+  filterPendingRows,
+  pendingRowSubjectId,
+  selectPendingRows,
+  sortPendingRows,
+  withSubjects,
+  type GroupFilter,
+  type PendingRow,
+  type PendingSort,
+} from "@/api/pendingRows";
+import { loadListState, saveListState, type ListState } from "@/api/listState";
 import {
   DATA_QUALITY_VALUES,
+  ENCOUNTER_ID_CONCEPT,
   ENCOUNTER_TYPE,
   PLACE_OF_REFERRAL_CONCEPT,
   REVIEW_CONCEPTS,
+  readModelResult,
+  readObs,
 } from "@/constants/tanuhConcepts";
 import { RISK } from "@/forms/diagnosisMapping";
 import { useAsync } from "@/hooks/useAsync";
 import { LocationFilter } from "./LocationFilter";
 import { FacilityFilter } from "./FacilityFilter";
-import { AiRiskBadge } from "./StatusBadge";
+import { AiRiskBadge, CategoryBadge, ModelResultBadge } from "./StatusBadge";
 
 interface Props {
   mode: "pending" | "completed";
@@ -85,19 +103,105 @@ const PATIENT_LOCATION_TYPES = ["State", "District", "Taluka", "Village"] as con
 // type (parallel to the patient chain, not a level within it).
 const REFERRAL_FACILITY_TYPE = "Taluka Hospital";
 
+// tanuh-webapp#4: the pending tab's group filter and sorts, where the organisation has the high-risk model.
+const GROUP_FILTERS: { value: GroupFilter; label: string }[] = [
+  { value: "all", label: "All" },
+  { value: "high-risk", label: "High Risk" },
+  { value: "low-risk", label: "Low Risk" },
+  { value: "flw-override", label: "FLW override" },
+  { value: "safety-sample", label: "Safety sample" },
+  { value: "not-scored", label: "Not scored" },
+];
+const SORTS: { value: PendingSort; label: string }[] = [
+  { value: "group", label: "By group" },
+  { value: "date", label: "By date" },
+  { value: "opinion", label: "By opinion" },
+];
+
+// One row as both render paths show it, whether it came from a review or a screening.
+interface RowView {
+  key: string;
+  href: string;
+  caseId?: string | null;
+  screeningDate?: string | null;
+  village?: string | null;
+  healthWorker?: string | null;
+  opinion?: string;
+  modelResult?: string;
+  group?: string;
+  dataQuality?: string;
+  aiRisk?: string;
+  reviewedOn?: string | null;
+  reviewedBy?: string | null;
+}
+
+function reviewRowView(e: EncounterWithLocation, info: LatestScreeningInfo | undefined): RowView {
+  return {
+    key: e.encounterUuid,
+    href: `/review/${e.encounterUuid}`,
+    caseId: info?.encounterId || info?.caseId || e.subject.externalId,
+    screeningDate: info?.screeningDate,
+    village: e.subject.location?.["Village"],
+    healthWorker: info?.healthWorker,
+    opinion: info?.workerOpinion,
+    modelResult: info?.modelResult,
+    group: info?.reviewCategory,
+    dataQuality: info?.dataQuality,
+    aiRisk: info?.aiRisk,
+    reviewedOn: e.encounterDateTime,
+    reviewedBy: e.lastModifiedBy,
+  };
+}
+
+// A screening row opens the case page (tanuh-webapp#5); a booked review opens its review, as before.
+function pendingRowView(row: PendingRow): RowView {
+  const screening = row.screening;
+  const obs = screening?.observations ?? {};
+  const fromScreening = {
+    caseId:
+      (screening ? readObs<string>(obs, ENCOUNTER_ID_CONCEPT) : undefined) ||
+      row.subject?.["External ID"] ||
+      screening?.["Subject external ID"],
+    screeningDate: screening?.["Encounter date time"],
+    healthWorker: screening?.audit?.["Created by"],
+    opinion: screening?.workerOpinion,
+    modelResult: screening ? readModelResult(obs) : undefined,
+    group: row.group,
+  };
+  if (row.kind === "screening") {
+    return {
+      key: row.screening.ID,
+      href: `/case/${row.screening.ID}`,
+      village: row.subject?.location?.["Village"],
+      ...fromScreening,
+    };
+  }
+  return {
+    key: row.review.encounterUuid,
+    href: `/review/${row.review.encounterUuid}`,
+    ...fromScreening,
+    caseId: fromScreening.caseId || row.review.subject.externalId,
+    village: row.review.subject.location?.["Village"] ?? row.subject?.location?.["Village"],
+  };
+}
+
 export function EncounterList({ mode }: Props) {
-  const [params, setParams] = useSearchParams();
-  const referralUuid = params.get("referral");
-  const patientLocationUuid = params.get("loc");
-  const riskOnly = mode === "completed" && params.get("risk") === "high";
-  const pageIndex = Math.max(0, parseInt(params.get("page") ?? "0", 10) || 0);
   const navigate = useNavigate();
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
 
-  const [from, setFrom] = useState<string>("");
-  const [to, setTo] = useState<string>("");
-  const [search, setSearch] = useState<string>("");
+  // tanuh-webapp#4: the sort, filters, date range, Case ID search and page are kept for the session, per sign-in, so
+  // they survive opening a case and coming back; sign-out clears them.
+  const [state, setState] = useState<ListState>(() =>
+    loadListState(window.sessionStorage, getEncounterCacheScope(), mode),
+  );
+  useEffect(() => saveListState(window.sessionStorage, getEncounterCacheScope(), mode, state), [mode, state]);
+  const update = useCallback((patch: Partial<ListState>) => setState((s) => ({ ...s, ...patch })), []);
+  const referralUuid = state.referral;
+  const patientLocationUuid = state.loc;
+  const riskOnly = mode === "completed" && state.riskOnly;
+  const pageIndex = Math.max(0, state.page);
+  const { from, to, search } = state;
 
   // Both tabs fetch ALL pages up front so sorting (pending: newest screening
   // first, ACROSS pages) and the display filters + counts (completed: High
@@ -124,6 +228,37 @@ export function EncounterList({ mode }: Props) {
     ]);
     return { content: [...standalone.content, ...program], totalElements: standalone.totalElements + program.length };
   }, [mode, referralUuid, patientLocationUuid]);
+
+  // tanuh-webapp#4: does the signed-in org have the high-risk model's values? Where it does, the pending tab adds the
+  // screenings the model sent for review and both tabs show the model's columns; where it does not (Staging, production
+  // before promotion), both tabs are as before. null while probing.
+  const { data: modelOn, error: modelError } = useAsync(() => hasHighRiskModel(), [mode]);
+  const pendingFromScreenings = mode === "pending" && modelOn === true;
+
+  // The pending rows: every booked review still waiting, with the screening that booked it, and every screening the
+  // model sent for review that nobody has reviewed. Booked rows are narrowed by the server as before; screening rows are
+  // matched here by the patient's address and by the screening's own referral place, and one without a referral drops
+  // out while that filter is set.
+  const { data: pendingRows, error: rowsError } = useAsync(async () => {
+    if (!pendingFromScreenings || !pageData) return null;
+    const [screenings, reviews] = await Promise.all([
+      getCachedEncounters(ENCOUNTER_TYPE.oralScreening.name),
+      getCachedEncounters(ENCOUNTER_TYPE.physicianReviewForm.name),
+    ]);
+    let rows = selectPendingRows(pageData.content, screenings, reviews);
+    rows = withSubjects(rows, await readSubjects(rows.map(pendingRowSubjectId)));
+    if (patientLocationUuid) {
+      const chain = await addressChain(patientLocationUuid);
+      rows = rows.filter((r) => r.kind === "booked" || inSubtree(r.subject?.location, chain));
+    }
+    if (referralUuid) {
+      const chain = await addressChain(referralUuid);
+      rows = rows.filter(
+        (r) => r.kind === "booked" || inSubtree(r.screening.observations?.[PLACE_OF_REFERRAL_CONCEPT.name], chain),
+      );
+    }
+    return rows;
+  }, [pendingFromScreenings, pageData]);
 
   // subjectUuid -> latest Oral Screening info (screening date, Case ID,
   // health worker) from ONE cached org-wide sweep — replaces the previous
@@ -183,16 +318,19 @@ export function EncounterList({ mode }: Props) {
   // tabs. Fail rows AND rows with no Data Quality observation are hidden — so a
   // new field screening stays out of the list until the backend stamps it. null
   // until the probe, the screening sweep and the pairing have landed, so the
-  // ungated list never flashes.
+  // ungated list never flashes. tanuh-webapp#4: a review of a screening the model
+  // routed is never hidden, and the pending tab from screenings skips the gate.
   const passRows = useMemo(() => {
     if (!pageData || !reviewPairing || !screeningInfo || qualityGate === null) return null;
     if (!qualityGate) return pageData.content;
-    return pageData.content.filter((e) => infoFor(e)?.dataQuality === DATA_QUALITY_VALUES.pass);
+    return pageData.content.filter((e) => {
+      const info = infoFor(e);
+      return info?.modelStatus !== undefined || info?.dataQuality === DATA_QUALITY_VALUES.pass;
+    });
   }, [pageData, reviewPairing, screeningInfo, infoFor, qualityGate]);
 
-  const filtered = useMemo(() => {
-    if (!passRows) return null;
-    let rows = passRows;
+  const views = useMemo<RowView[] | null>(() => {
+    if (modelOn === null) return null;
 
     // Case ID search — applied to both tabs. Matches the Case ID actually shown
     // in the row (Encounter ID, falling back to legacy Case ID / external ID).
@@ -203,23 +341,25 @@ export function EncounterList({ mode }: Props) {
     // zeros of the Patient ID itself (P0102) are significant.
     const unpad = (id: string) => id.toLowerCase().replace(/([a-z]{3})0*(\d+)$/, "$1$2");
     const query = unpad(search.trim());
-    const matchesSearch = (e: EncounterWithLocation) => {
-      if (!query) return true;
-      const info = infoFor(e);
-      const caseId = info?.encounterId || info?.caseId || e.subject.externalId || "";
-      return unpad(caseId).includes(query);
-    };
+    const matchesSearch = (v: RowView) => !query || unpad(v.caseId || "").includes(query);
 
+    if (pendingFromScreenings) {
+      if (!pendingRows) return null;
+      return filterPendingRows(sortPendingRows(pendingRows, state.sort), state.group)
+        .map(pendingRowView)
+        .filter(matchesSearch);
+    }
+    if (!passRows) return null;
     if (mode !== "completed") {
       // Pending: show the most recently screened patient first — across the
       // WHOLE list (all pages were fetched). Rows whose screening date hasn't
       // loaded yet (or is missing) sort to the bottom.
-      return [...rows]
-        .filter(matchesSearch)
-        .sort((a, b) =>
-          (infoFor(b)?.screeningDate || "").localeCompare(infoFor(a)?.screeningDate || ""),
-        );
+      return [...passRows]
+        .sort((a, b) => (infoFor(b)?.screeningDate || "").localeCompare(infoFor(a)?.screeningDate || ""))
+        .map((e) => reviewRowView(e, infoFor(e)))
+        .filter(matchesSearch);
     }
+    let rows = passRows;
     if (riskOnly && highRiskUuids) {
       rows = rows.filter((e) => highRiskUuids.has(e.encounterUuid));
     }
@@ -227,20 +367,36 @@ export function EncounterList({ mode }: Props) {
     // Inclusive of the To day: a bare date parses to midnight, which would
     // silently drop everything reviewed ON that day.
     const toDate = to ? endOfDay(parseISO(to)) : null;
-    return rows.filter((e) => {
-      if (!matchesSearch(e)) return false;
-      if (!fromDate && !toDate) return true;
-      if (!e.encounterDateTime) return false;
-      const d = parseISO(e.encounterDateTime);
-      if (fromDate && d < fromDate) return false;
-      if (toDate && d > toDate) return false;
-      return true;
-    });
-  }, [passRows, mode, from, to, search, infoFor, riskOnly, highRiskUuids]);
+    return rows
+      .filter((e) => {
+        if (!fromDate && !toDate) return true;
+        if (!e.encounterDateTime) return false;
+        const d = parseISO(e.encounterDateTime);
+        if (fromDate && d < fromDate) return false;
+        if (toDate && d > toDate) return false;
+        return true;
+      })
+      .map((e) => reviewRowView(e, infoFor(e)))
+      .filter(matchesSearch);
+  }, [
+    modelOn,
+    pendingFromScreenings,
+    pendingRows,
+    passRows,
+    mode,
+    state.sort,
+    state.group,
+    from,
+    to,
+    search,
+    infoFor,
+    riskOnly,
+    highRiskUuids,
+  ]);
 
-  const loadError = error ?? pairingError ?? screeningError ?? gateError;
+  const loadError = error ?? pairingError ?? screeningError ?? gateError ?? modelError ?? rowsError;
   if (loadError) return <Box sx={{ p: 3, color: "error.main" }}>Failed to load: {loadError}</Box>;
-  if (!pageData || !passRows || !filtered)
+  if (!pageData || !views)
     return (
       <Box sx={{ p: { xs: 1.5, sm: 2 } }}>
         <Stack spacing={1.5}>
@@ -254,83 +410,48 @@ export function EncounterList({ mode }: Props) {
   // Both tabs paginate client-side over the (sorted, filtered) full fetch.
   // Clamp the page so a filter that shrinks the list can't strand the user on
   // an out-of-range page.
-  const totalRows = filtered.length;
+  const totalRows = views.length;
   const effectivePageIndex = Math.min(
     pageIndex,
     Math.max(0, Math.ceil(totalRows / PAGE_SIZE) - 1),
   );
-  const visibleRows = filtered.slice(
+  const visibleRows = views.slice(
     effectivePageIndex * PAGE_SIZE,
     (effectivePageIndex + 1) * PAGE_SIZE,
   );
+  // The headline count: every row the location/referral filters allow, before the display filters (group, High Risk,
+  // date range, search).
+  const listedCount = (pendingFromScreenings ? pendingRows?.length : passRows?.length) ?? 0;
   // High Risk count over every Pass-gated row the current location/referral
   // filters allow — deliberately not narrowed by the date or High Risk display filters.
   const highRiskCount =
-    mode === "completed" && highRiskUuids
+    mode === "completed" && highRiskUuids && passRows
       ? passRows.filter((e) => highRiskUuids.has(e.encounterUuid)).length
       : null;
 
-  // Column widths (percent of the fixed-layout table). The AI Risk Assessment column
-  // exists only where the org has the PE-96 gate; without it the v1.12.2 widths apply.
+  // The model's three columns replace the demo AI Risk Assessment column wherever the org has the model; without it the
+  // v1.12.2 / PE-96 columns apply unchanged.
+  const showModel = modelOn === true;
+  const showAi = !showModel && !!qualityGate;
+  const none = { opinion: "0", model: "0", group: "0", ai: "0" };
   const widths =
     mode === "pending"
-      ? qualityGate
-        ? { sno: "5%", caseId: "15%", date: "20%", village: "16%", hw: "16%", ai: "16%", on: "0", by: "0", action: "12%" }
-        : { sno: "6%", caseId: "16%", date: "22%", village: "18%", hw: "16%", ai: "0", on: "0", by: "0", action: "14%" }
-      : qualityGate
-        ? { sno: "4%", caseId: "12%", date: "13%", village: "10%", hw: "13%", ai: "16%", on: "11%", by: "13%", action: "8%" }
-        : { sno: "6%", caseId: "12%", date: "16%", village: "13%", hw: "13%", ai: "0", on: "13%", by: "14%", action: "7%" };
+      ? showModel
+        ? { sno: "5%", caseId: "13%", date: "16%", village: "12%", hw: "12%", opinion: "10%", model: "13%", group: "11%", ai: "0", on: "0", by: "0", action: "8%" }
+        : showAi
+          ? { ...none, sno: "5%", caseId: "15%", date: "20%", village: "16%", hw: "16%", ai: "16%", on: "0", by: "0", action: "12%" }
+          : { ...none, sno: "6%", caseId: "16%", date: "22%", village: "18%", hw: "16%", on: "0", by: "0", action: "14%" }
+      : showModel
+        ? { sno: "4%", caseId: "10%", date: "11%", village: "9%", hw: "10%", opinion: "8%", model: "11%", group: "10%", ai: "0", on: "9%", by: "10%", action: "8%" }
+        : showAi
+          ? { ...none, sno: "4%", caseId: "12%", date: "13%", village: "10%", hw: "13%", ai: "16%", on: "11%", by: "13%", action: "8%" }
+          : { ...none, sno: "6%", caseId: "12%", date: "16%", village: "13%", hw: "13%", on: "13%", by: "14%", action: "7%" };
 
-  const handleRiskOnlyChange = (checked: boolean) => {
-    setParams(
-      (sp) => {
-        if (checked) sp.set("risk", "high");
-        else sp.delete("risk");
-        sp.delete("page");
-        return sp;
-      },
-      { replace: false },
-    );
-  };
-
-  const handleReferralChange = (uuid: string | null) => {
-    setParams(
-      (sp) => {
-        if (uuid) sp.set("referral", uuid);
-        else sp.delete("referral");
-        sp.delete("page");
-        return sp;
-      },
-      { replace: false },
-    );
-  };
-
-  const handlePatientLocationChange = (uuid: string | null) => {
-    setParams(
-      (sp) => {
-        if (uuid) sp.set("loc", uuid);
-        else sp.delete("loc");
-        sp.delete("page");
-        return sp;
-      },
-      { replace: false },
-    );
-  };
-
-  const handleSearchChange = (value: string) => {
-    setSearch(value);
-    // Narrowing the list can leave the user on an out-of-range page; jump back
-    // to the first page of results.
-    if (pageIndex !== 0) {
-      setParams(
-        (sp) => {
-          sp.delete("page");
-          return sp;
-        },
-        { replace: true },
-      );
-    }
-  };
+  const handleRiskOnlyChange = (checked: boolean) => update({ riskOnly: checked, page: 0 });
+  const handleReferralChange = (uuid: string | null) => update({ referral: uuid, page: 0 });
+  const handlePatientLocationChange = (uuid: string | null) => update({ loc: uuid, page: 0 });
+  // Narrowing the list can leave the user on an out-of-range page; jump back to the first page of results.
+  const handleSearchChange = (value: string) => update({ search: value, page: 0 });
 
   return (
     <Box>
@@ -340,13 +461,13 @@ export function EncounterList({ mode }: Props) {
         sx={{ p: { xs: 1.5, sm: 2 }, borderBottom: "1px solid #e5e7eb" }}
       >
         {/* KPI row. Totals = all rows across all pages, Pass-gated where the org
-            has the PE-96 gate — display filters (High Risk, date range, search)
+            has the PE-96 gate — display filters (group, High Risk, date range, search)
             narrow the rows below, not these numbers. */}
         <Stack direction="row" spacing={1.5} sx={{ flexWrap: "wrap", rowGap: 1.5 }}>
           <StatTile
             testId="stat-total"
             label={mode === "pending" ? "Pending reviews" : "Completed reviews"}
-            value={passRows.length}
+            value={listedCount}
           />
           {mode === "completed" && (
             <StatTile testId="stat-high-risk" label="High risk" value={highRiskCount ?? "…"} />
@@ -432,6 +553,63 @@ export function EncounterList({ mode }: Props) {
             }}
           />
         </Stack>
+        {pendingFromScreenings && (
+          <>
+            <Stack
+              direction={{ xs: "column", sm: "row" }}
+              alignItems={{ xs: "stretch", sm: "center" }}
+              spacing={{ xs: 1, sm: 2 }}
+            >
+              <Typography
+                variant="body1"
+                sx={{ minWidth: { xs: 0, sm: 140 }, fontWeight: 600, color: "text.primary" }}
+              >
+                Group
+              </Typography>
+              <ToggleButtonGroup
+                exclusive
+                size="small"
+                value={state.group}
+                onChange={(_, v: GroupFilter | null) => {
+                  if (v) update({ group: v, page: 0 });
+                }}
+                sx={{ flexWrap: "wrap" }}
+              >
+                {GROUP_FILTERS.map((g) => (
+                  <ToggleButton key={g.value} value={g.value} sx={{ px: 1.5, textTransform: "none", fontWeight: 600 }}>
+                    {g.label}
+                  </ToggleButton>
+                ))}
+              </ToggleButtonGroup>
+            </Stack>
+            <Stack
+              direction={{ xs: "column", sm: "row" }}
+              alignItems={{ xs: "stretch", sm: "center" }}
+              spacing={{ xs: 1, sm: 2 }}
+            >
+              <Typography
+                variant="body1"
+                sx={{ minWidth: { xs: 0, sm: 140 }, fontWeight: 600, color: "text.primary" }}
+              >
+                Sort
+              </Typography>
+              <ToggleButtonGroup
+                exclusive
+                size="small"
+                value={state.sort}
+                onChange={(_, v: PendingSort | null) => {
+                  if (v) update({ sort: v, page: 0 });
+                }}
+              >
+                {SORTS.map((s) => (
+                  <ToggleButton key={s.value} value={s.value} sx={{ px: 2, textTransform: "none", fontWeight: 600 }}>
+                    {s.label}
+                  </ToggleButton>
+                ))}
+              </ToggleButtonGroup>
+            </Stack>
+          </>
+        )}
         {mode === "completed" && (
           <>
             <Stack
@@ -481,7 +659,7 @@ export function EncounterList({ mode }: Props) {
                   type="date"
                   size="small"
                   value={from}
-                  onChange={(e) => setFrom(e.target.value)}
+                  onChange={(e) => update({ from: e.target.value })}
                   InputLabelProps={{ shrink: true }}
                   sx={{ flex: { xs: 1, sm: "0 1 auto" } }}
                 />
@@ -490,7 +668,7 @@ export function EncounterList({ mode }: Props) {
                   type="date"
                   size="small"
                   value={to}
-                  onChange={(e) => setTo(e.target.value)}
+                  onChange={(e) => update({ to: e.target.value })}
                   InputLabelProps={{ shrink: true }}
                   sx={{ flex: { xs: 1, sm: "0 1 auto" } }}
                 />
@@ -500,14 +678,14 @@ export function EncounterList({ mode }: Props) {
         )}
       </Stack>
 
-      {filtered.length === 0 ? (
+      {views.length === 0 ? (
         <Typography color="text.secondary" sx={{ p: 4, textAlign: "center" }}>
           {search.trim() ? (
             <>No {mode === "pending" ? "pending" : "completed"} reviews match Case ID “{search.trim()}”.</>
           ) : (
             <>
               No {riskOnly ? "High Risk " : ""}
-              {mode === "pending" ? "pending" : "completed"} reviews{qualityGate ? " with Data Quality Pass" : ""}
+              {mode === "pending" ? "pending" : "completed"} reviews{showAi ? " with Data Quality Pass" : ""}
               {referralUuid ? " for the selected referral facility." : " in your catchment."}
             </>
           )}
@@ -516,19 +694,13 @@ export function EncounterList({ mode }: Props) {
         <>
           {isMobile ? (
             <Stack spacing={1.5} sx={{ p: 1.5 }}>
-              {visibleRows.map((e: EncounterWithLocation, index: number) => {
+              {visibleRows.map((v: RowView, index: number) => {
                 const serialNumber = effectivePageIndex * PAGE_SIZE + index + 1;
-                const info = infoFor(e);
-                const date = mode === "pending" ? info?.screeningDate : e.encounterDateTime;
-                const screeningTs = info?.screeningDate;
-                const village = e.subject.location?.["Village"];
-                const caseId = info?.encounterId || info?.caseId || e.subject.externalId;
-                const healthWorker = info?.healthWorker;
                 return (
                   <Paper
-                    key={e.encounterUuid}
+                    key={v.key}
                     variant="outlined"
-                    onClick={() => navigate(`/review/${e.encounterUuid}`)}
+                    onClick={() => navigate(v.href)}
                     sx={{
                       p: 1.5,
                       cursor: "pointer",
@@ -545,7 +717,7 @@ export function EncounterList({ mode }: Props) {
                           startIcon={mode === "pending" ? <RateReviewIcon /> : <VisibilityIcon />}
                           onClick={(event) => {
                             event.stopPropagation();
-                            navigate(`/review/${e.encounterUuid}`);
+                            navigate(v.href);
                           }}
                           sx={{ flexShrink: 0 }}
                         >
@@ -556,33 +728,57 @@ export function EncounterList({ mode }: Props) {
                         <Box component="span" sx={{ color: "text.secondary", fontWeight: 500 }}>
                           Case ID:{" "}
                         </Box>
-                        {caseId || "—"}
+                        {v.caseId || "—"}
                       </Typography>
                       <Typography variant="body2" sx={{ color: "text.primary" }}>
                         <Box component="span" sx={{ color: "text.secondary", fontWeight: 500 }}>
                           Screening date:{" "}
                         </Box>
-                        {screeningTs ? format(parseISO(screeningTs), "dd MMM yyyy, h:mm a") : "—"}
+                        {v.screeningDate ? format(parseISO(v.screeningDate), "dd MMM yyyy, h:mm a") : "—"}
                       </Typography>
                       <Typography variant="body2" sx={{ color: "text.primary" }}>
                         <Box component="span" sx={{ color: "text.secondary", fontWeight: 500 }}>
                           Village:{" "}
                         </Box>
-                        {village || "—"}
+                        {v.village || "—"}
                       </Typography>
                       <Typography variant="body2" sx={{ color: "text.primary" }}>
                         <Box component="span" sx={{ color: "text.secondary", fontWeight: 500 }}>
                           Health worker:{" "}
                         </Box>
-                        {healthWorker || "—"}
+                        {v.healthWorker || "—"}
                       </Typography>
+                      {showModel && (
+                        <Typography variant="body2" sx={{ color: "text.primary" }}>
+                          <Box component="span" sx={{ color: "text.secondary", fontWeight: 500 }}>
+                            Worker's opinion:{" "}
+                          </Box>
+                          {v.opinion || "—"}
+                        </Typography>
+                      )}
                       {/* A badge is a span, not text — its own row keeps the markup valid. */}
-                      {qualityGate && (
+                      {showModel && (
+                        <Stack direction="row" alignItems="center" spacing={0.75}>
+                          <Typography variant="body2" sx={{ color: "text.secondary", fontWeight: 500 }}>
+                            Model:
+                          </Typography>
+                          <ModelResultBadge value={v.modelResult} />
+                        </Stack>
+                      )}
+                      {showModel && (
+                        <Stack direction="row" alignItems="center" spacing={0.75}>
+                          <Typography variant="body2" sx={{ color: "text.secondary", fontWeight: 500 }}>
+                            Group:
+                          </Typography>
+                          <CategoryBadge value={v.group} />
+                        </Stack>
+                      )}
+                      {showAi && (
                         <Stack direction="row" alignItems="center" spacing={0.75}>
                           <Typography variant="body2" sx={{ color: "text.secondary", fontWeight: 500 }}>
                             AI Risk Assessment:
                           </Typography>
-                          <AiRiskBadge dataQuality={info?.dataQuality} aiRisk={info?.aiRisk} />
+                          <AiRiskBadge dataQuality={v.dataQuality} aiRisk={v.aiRisk} />
                         </Stack>
                       )}
                       {mode === "completed" && (
@@ -590,7 +786,7 @@ export function EncounterList({ mode }: Props) {
                           <Box component="span" sx={{ color: "text.secondary", fontWeight: 500 }}>
                             Reviewed on:{" "}
                           </Box>
-                          {date ? format(parseISO(date), "dd MMM yyyy") : "—"}
+                          {v.reviewedOn ? format(parseISO(v.reviewedOn), "dd MMM yyyy") : "—"}
                         </Typography>
                       )}
                       {mode === "completed" && (
@@ -598,7 +794,7 @@ export function EncounterList({ mode }: Props) {
                           <Box component="span" sx={{ color: "text.secondary", fontWeight: 500 }}>
                             Reviewed by:{" "}
                           </Box>
-                          {e.lastModifiedBy || "—"}
+                          {v.reviewedBy || "—"}
                         </Typography>
                       )}
                     </Stack>
@@ -615,9 +811,13 @@ export function EncounterList({ mode }: Props) {
                   <TableCell sx={{ width: widths.date }}>Screening date</TableCell>
                   <TableCell sx={{ width: widths.village }}>Village</TableCell>
                   <TableCell sx={{ width: widths.hw }}>Health worker</TableCell>
+                  {showModel && <TableCell sx={{ width: widths.opinion }}>Worker's opinion</TableCell>}
+                  {/* Badges never wrap, so their columns must fit them (fixed table layout clips nothing). */}
+                  {showModel && <TableCell sx={{ width: widths.model, whiteSpace: "nowrap" }}>Model</TableCell>}
+                  {showModel && <TableCell sx={{ width: widths.group, whiteSpace: "nowrap" }}>Group</TableCell>}
                   {/* Widest value is "Non Suspicious" + the AI mark; the badge never wraps,
                       so the column must fit it (fixed table layout clips nothing). */}
-                  {qualityGate && (
+                  {showAi && (
                     <TableCell sx={{ width: widths.ai, whiteSpace: "nowrap" }}>AI Risk Assessment</TableCell>
                   )}
                   {mode === "completed" && <TableCell sx={{ width: widths.on }}>Reviewed on</TableCell>}
@@ -626,46 +826,51 @@ export function EncounterList({ mode }: Props) {
                 </TableRow>
               </TableHead>
               <TableBody>
-                {visibleRows.map((e: EncounterWithLocation, index: number) => {
+                {visibleRows.map((v: RowView, index: number) => {
                   const serialNumber = effectivePageIndex * PAGE_SIZE + index + 1;
-                  const info = infoFor(e);
-                  const date = mode === "pending" ? info?.screeningDate : e.encounterDateTime;
-                  const screeningTs = info?.screeningDate;
-                  const village = e.subject.location?.["Village"];
-                  const caseId = info?.encounterId || info?.caseId || e.subject.externalId;
-                  const healthWorker = info?.healthWorker;
                   return (
                     <TableRow
-                      key={e.encounterUuid}
+                      key={v.key}
                       hover
-                      onClick={() => navigate(`/review/${e.encounterUuid}`)}
+                      onClick={() => navigate(v.href)}
                       sx={{ cursor: "pointer" }}
                     >
                       <TableCell sx={{ color: "text.secondary" }}>{serialNumber}</TableCell>
-                      <TableCell sx={{ color: "text.primary" }}>{caseId || "—"}</TableCell>
+                      <TableCell sx={{ color: "text.primary" }}>{v.caseId || "—"}</TableCell>
                       <TableCell sx={{ color: "text.primary" }}>
-                        {screeningTs ? format(parseISO(screeningTs), "dd MMM yyyy, h:mm a") : "—"}
+                        {v.screeningDate ? format(parseISO(v.screeningDate), "dd MMM yyyy, h:mm a") : "—"}
                       </TableCell>
                       <TableCell sx={{ color: "text.primary" }}>
-                        {village || "—"}
+                        {v.village || "—"}
                       </TableCell>
                       {/* Usernames (anmuser@tanuh_uat) have no break point; without this they
                           overflow the fixed-width cell into the badge column. */}
                       <TableCell sx={{ color: "text.primary", overflowWrap: "anywhere" }}>
-                        {healthWorker || "—"}
+                        {v.healthWorker || "—"}
                       </TableCell>
-                      {qualityGate && (
+                      {showModel && <TableCell sx={{ color: "text.primary" }}>{v.opinion || "—"}</TableCell>}
+                      {showModel && (
                         <TableCell sx={{ whiteSpace: "nowrap" }}>
-                          <AiRiskBadge dataQuality={info?.dataQuality} aiRisk={info?.aiRisk} />
+                          <ModelResultBadge value={v.modelResult} />
+                        </TableCell>
+                      )}
+                      {showModel && (
+                        <TableCell sx={{ whiteSpace: "nowrap" }}>
+                          <CategoryBadge value={v.group} />
+                        </TableCell>
+                      )}
+                      {showAi && (
+                        <TableCell sx={{ whiteSpace: "nowrap" }}>
+                          <AiRiskBadge dataQuality={v.dataQuality} aiRisk={v.aiRisk} />
                         </TableCell>
                       )}
                       {mode === "completed" && (
                         <TableCell sx={{ color: "text.primary" }}>
-                          {date ? format(parseISO(date), "dd MMM yyyy") : "—"}
+                          {v.reviewedOn ? format(parseISO(v.reviewedOn), "dd MMM yyyy") : "—"}
                         </TableCell>
                       )}
                       {mode === "completed" && (
-                        <TableCell sx={{ color: "text.primary" }}>{e.lastModifiedBy || "—"}</TableCell>
+                        <TableCell sx={{ color: "text.primary" }}>{v.reviewedBy || "—"}</TableCell>
                       )}
                       <TableCell>
                         <Button
@@ -673,7 +878,7 @@ export function EncounterList({ mode }: Props) {
                           startIcon={mode === "pending" ? <RateReviewIcon /> : <VisibilityIcon />}
                           onClick={(event) => {
                             event.stopPropagation();
-                            navigate(`/review/${e.encounterUuid}`);
+                            navigate(v.href);
                           }}
                         >
                           {mode === "pending" ? "Review" : "View"}
@@ -692,12 +897,7 @@ export function EncounterList({ mode }: Props) {
               page={effectivePageIndex}
               rowsPerPage={PAGE_SIZE}
               rowsPerPageOptions={[PAGE_SIZE]}
-              onPageChange={(_, next) =>
-                setParams((sp) => {
-                  sp.set("page", String(next));
-                  return sp;
-                })
-              }
+              onPageChange={(_, next) => update({ page: next })}
               sx={{
                 "& .MuiTablePagination-toolbar": {
                   flexWrap: "wrap",
