@@ -85,6 +85,19 @@ describe("fetchEncountersSince", () => {
     expect(new Set(fetched.map((e) => e.ID))).toEqual(new Set(rows.map((r) => r.ID)));
   });
 
+  // The write lands after the millisecond's first page is read: the row it moves out shifts the next page's first row
+  // back onto a page already read, and only a further pass finds it.
+  it("loses no row when a write between two pages of a shared millisecond shifts one back", async () => {
+    const rows = Array.from({ length: 23 }, (_, i) => ({ ID: `b${String(i).padStart(2, "0")}`, at: at(5) }));
+    const server = serverWith(rows, (n) => {
+      if (n === 4) rows[2].at = at(40); // after the millisecond's first page (request 3), before its second
+    });
+
+    const fetched = await fetchEncountersSince(server.list, "2000-01-01T00:00:00.000Z", 10);
+
+    expect(new Set(fetched.map((e) => e.ID))).toEqual(new Set(rows.map((r) => r.ID)));
+  });
+
   // Review finding: reading a bulk-stamped millisecond counted against the load's cap, which cut it off inside that
   // millisecond; the watermark then stayed on it and every later load stopped at the same place.
   it("reads past a millisecond too large for the load's request cap, at the real page size", async () => {
