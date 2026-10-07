@@ -45,6 +45,8 @@ interface ListParams {
   // EPOCH (everything). The delta cache passes its watermark here to fetch only
   // rows changed since the last sweep.
   lastModifiedDateTime?: string;
+  // Upper bound of the window (exclusive on the server). Defaults to the padded now below.
+  now?: string;
   page?: number;
   size?: number;
 }
@@ -53,7 +55,7 @@ export async function listEncounters(params: ListParams): Promise<PagedResponse<
   // `now` is the required upper bound of the server's lastModified window.
   // Pad it forward so a physician machine with a slow clock cannot hide
   // recently-synced encounters.
-  const now = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+  const now = params.now ?? new Date(Date.now() + 60 * 60 * 1000).toISOString();
   const response = await http.get<PagedResponse<EncounterApiResponse>>("/api/encounters", {
     params: {
       lastModifiedDateTime: params.lastModifiedDateTime ?? EPOCH,
@@ -73,6 +75,7 @@ interface ProgramListParams {
   programEnrolmentId?: string;
   concepts?: Record<string, string>;
   lastModifiedDateTime?: string;
+  now?: string;
   page?: number;
   size?: number;
 }
@@ -90,7 +93,7 @@ interface ProgramListParams {
 export async function listProgramEncounters(
   params: ProgramListParams,
 ): Promise<PagedResponse<EncounterApiResponse>> {
-  const now = new Date(Date.now() + 60 * 60 * 1000).toISOString();
+  const now = params.now ?? new Date(Date.now() + 60 * 60 * 1000).toISOString();
   const response = await http.get<PagedResponse<EncounterApiResponse>>("/api/programEncounters", {
     params: {
       lastModifiedDateTime: params.lastModifiedDateTime ?? EPOCH,
@@ -289,7 +292,7 @@ const SOURCES: EncounterSource[] = ["standalone", "program"];
 
 function listFromSource(
   source: EncounterSource,
-  params: Pick<ListParams, "encounterType" | "concepts" | "lastModifiedDateTime" | "page" | "size">,
+  params: Pick<ListParams, "encounterType" | "concepts" | "lastModifiedDateTime" | "now" | "page" | "size">,
 ): Promise<PagedResponse<EncounterApiResponse>> {
   return source === "program" ? listProgramEncounters(params) : listEncounters(params);
 }
@@ -445,23 +448,64 @@ export function trimForCache(e: EncounterApiResponse): CachedEncounter {
   };
 }
 
-async function fetchEncountersSince(
-  source: EncounterSource,
-  encounterType: string,
+export type EncounterLister = (p: {
+  lastModifiedDateTime: string;
+  now?: string;
+  page: number;
+  size: number;
+}) => Promise<PagedResponse<EncounterApiResponse>>;
+
+/**
+ * Every row changed after `since`, read by time rather than by offset: offset pages over (last modified, id) shift
+ * when the job writes a row the load has already read, one row is skipped, and the watermark then moves past it for
+ * good (tanuh-webapp#4). Each full page moves `since` to its last row's time less 1 ms, so the next read repeats that
+ * millisecond (duplicates merge by ID). When a whole page shares one millisecond, that millisecond is read on its own
+ * by offset, re-reading a page while it still yields an unseen row, until a pass finds nothing new. `requestCap`
+ * bounds the requests; past it the rows read so far are returned, and the watermark keeps the rest for the next load.
+ */
+export async function fetchEncountersSince(
+  list: EncounterLister,
   since: string,
+  pageSize: number = CACHE_PAGE_SIZE,
+  requestCap: number = CACHE_COLD_PAGE_CAP,
 ): Promise<EncounterApiResponse[]> {
-  const all: EncounterApiResponse[] = [];
-  for (let page = 0; page < CACHE_COLD_PAGE_CAP; page++) {
-    const res = await listFromSource(source, {
-      encounterType,
-      lastModifiedDateTime: since,
-      page,
-      size: CACHE_PAGE_SIZE,
-    });
-    all.push(...res.content);
-    if (page + 1 >= res.totalPages) break;
+  const fetched = new Map<string, EncounterApiResponse>();
+  let requests = 0;
+  const read = async (p: { lastModifiedDateTime: string; now?: string; page: number }) => {
+    requests++;
+    const content = (await list({ ...p, size: pageSize })).content;
+    for (const e of content) fetched.set(e.ID, e);
+    return content;
+  };
+  let from = since;
+  while (requests < requestCap) {
+    const page = await read({ lastModifiedDateTime: from, page: 0 });
+    if (page.length < pageSize) break;
+    const lastMs = Date.parse(page[page.length - 1].audit?.["Last modified at"] ?? "");
+    if (Number.isNaN(lastMs)) break;
+    const next = new Date(lastMs - 1).toISOString();
+    if (next !== from) {
+      from = next;
+      continue;
+    }
+    // The whole page shares one millisecond: read it on its own, by offset, until a pass finds nothing new.
+    const window = { lastModifiedDateTime: next, now: new Date(lastMs + 1).toISOString() };
+    let foundInPass = true;
+    while (foundInPass && requests < requestCap) {
+      foundInPass = false;
+      for (let pageNumber = 0; requests < requestCap; ) {
+        const before = fetched.size;
+        const rows = await read({ ...window, page: pageNumber });
+        const found = fetched.size > before; // the page held a row not read before
+        foundInPass ||= found;
+        if (found) continue; // writes move rows out of the window and shift the rest back: read the page again
+        if (rows.length < pageSize) break;
+        pageNumber++;
+      }
+    }
+    from = new Date(lastMs).toISOString();
   }
-  return all;
+  return [...fetched.values()];
 }
 
 const cachedLayerMemo = new Map<string, { at: number; promise: Promise<CachedEncounter[]> }>();
@@ -502,7 +546,7 @@ async function cachedFromSource(source: EncounterSource, encounterType: string):
     cached.watermark === EPOCH
       ? EPOCH
       : new Date(Date.parse(cached.watermark) - CACHE_OVERLAP_MS).toISOString();
-  const fresh = await fetchEncountersSince(source, encounterType, since);
+  const fresh = await fetchEncountersSince((p) => listFromSource(source, { encounterType, ...p }), since);
   const byId = new Map(cached.records.map((r) => [r.ID, r]));
   let maxLm = Date.parse(cached.watermark);
   for (const e of fresh) {

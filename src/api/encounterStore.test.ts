@@ -28,3 +28,70 @@ describe("trimForCache", () => {
     expect(trimmed.workerOpinion).toBe(WORKER_OPINION.suspicious);
   });
 });
+
+import { fetchEncountersSince, type EncounterLister } from "./encounters";
+
+// The server's list, in memory: changed strictly after lastModifiedDateTime and strictly before now,
+// ordered by (time, id), offset pages counted from 0.
+function serverWith(rows: { ID: string; at: string }[], onRequest?: (n: number) => void) {
+  let requests = 0;
+  const list: EncounterLister = async ({ lastModifiedDateTime, now, page, size }) => {
+    requests++;
+    onRequest?.(requests);
+    const after = Date.parse(lastModifiedDateTime);
+    const before = now ? Date.parse(now) : Infinity;
+    const matching = rows
+      .filter((r) => Date.parse(r.at) > after && Date.parse(r.at) < before)
+      .sort((a, b) => Date.parse(a.at) - Date.parse(b.at) || a.ID.localeCompare(b.ID));
+    const content = matching.slice(page * size, page * size + size)
+      .map((r) => ({ ID: r.ID, audit: { "Last modified at": r.at } }) as unknown as EncounterApiResponse);
+    return { content, totalElements: matching.length, totalPages: Math.ceil(matching.length / size), pageSize: size };
+  };
+  return { list, requests: () => requests };
+}
+
+const at = (second: number) => new Date(Date.UTC(2026, 9, 7, 10, 0, second)).toISOString();
+
+describe("fetchEncountersSince", () => {
+  it("loses no row when the job changes one it has already read", async () => {
+    const rows = Array.from({ length: 25 }, (_, i) => ({ ID: `s${String(i).padStart(2, "0")}`, at: at(i) }));
+    const server = serverWith(rows, (n) => {
+      if (n === 2) rows[3].at = at(59); // the job scores s03 after the first page was read
+    });
+
+    const fetched = await fetchEncountersSince(server.list, "2000-01-01T00:00:00.000Z", 10);
+
+    expect(new Set(fetched.map((e) => e.ID))).toEqual(new Set(rows.map((r) => r.ID)));
+  });
+
+  it("reads every row of a millisecond that holds more rows than a page", async () => {
+    const rows = [
+      ...Array.from({ length: 23 }, (_, i) => ({ ID: `b${String(i).padStart(2, "0")}`, at: at(5) })),
+      { ID: "later", at: at(9) },
+    ];
+    const fetched = await fetchEncountersSince(serverWith(rows).list, "2000-01-01T00:00:00.000Z", 10);
+
+    expect(fetched.map((e) => e.ID).sort()).toEqual(rows.map((r) => r.ID).sort());
+  });
+
+  it("loses no row when the job changes one inside a shared millisecond mid-read", async () => {
+    const rows = Array.from({ length: 23 }, (_, i) => ({ ID: `b${String(i).padStart(2, "0")}`, at: at(5) }));
+    const server = serverWith(rows, (n) => {
+      if (n === 3) rows[2].at = at(40); // written while that millisecond is being read by offset
+    });
+
+    const fetched = await fetchEncountersSince(server.list, "2000-01-01T00:00:00.000Z", 10);
+
+    expect(new Set(fetched.map((e) => e.ID))).toEqual(new Set(rows.map((r) => r.ID)));
+  });
+
+  it("stops at the request cap and returns what it read", async () => {
+    const rows = Array.from({ length: 100 }, (_, i) => ({ ID: `s${String(i).padStart(3, "0")}`, at: at(i % 60) }));
+    const server = serverWith(rows);
+
+    const fetched = await fetchEncountersSince(server.list, "2000-01-01T00:00:00.000Z", 10, 3);
+
+    expect(server.requests()).toBe(3);
+    expect(fetched.length).toBeGreaterThan(0);
+  });
+});
