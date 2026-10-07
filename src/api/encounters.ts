@@ -683,6 +683,52 @@ export function pairReviewsToScreenings(
   return result;
 }
 
+// A review created from a screening's page (tanuh-webapp#5) carries this External ID, never the bare screening UUID:
+// encounter reads match uuid OR legacy id, so the bare UUID would make the screening's own reads hit two rows.
+export const REVIEW_EXTERNAL_ID_PREFIX = "review-";
+
+function scopeOf(e: EncounterApiResponse): string {
+  return `${e["Subject ID"]}|${e["Enrolment ID"] ?? ""}`;
+}
+
+/**
+ * The screening a booked (scheduled) review was booked for: the newest completed screening in the same patient and
+ * enrolment whose server "Created at" is no later than the review's plus 60 seconds. The phone books the review in
+ * the screening's own save and both reach the server in one sync. A stamp, if present, decides.
+ */
+export function pairBookedReviewToScreening(
+  review: EncounterApiResponse,
+  screenings: EncounterApiResponse[],
+): EncounterApiResponse | undefined {
+  const stamp = readObs<string>(review.observations ?? {}, REVIEWED_ORAL_SCREENING_CONCEPT);
+  if (stamp) {
+    const stamped = screenings.find((s) => s.ID === stamp && isCompleted(s));
+    if (stamped) return stamped;
+  }
+  const limit = Date.parse(review.audit?.["Created at"] ?? "") + 60_000;
+  if (Number.isNaN(limit)) return undefined;
+  let best: EncounterApiResponse | undefined;
+  let bestAt = -Infinity;
+  for (const s of screenings) {
+    if (scopeOf(s) !== scopeOf(review) || !isCompleted(s)) continue;
+    const created = Date.parse(s.audit?.["Created at"] ?? "");
+    if (Number.isNaN(created) || created > limit || created <= bestAt) continue;
+    best = s;
+    bestAt = created;
+  }
+  return best;
+}
+
+// A physician has reviewed this screening: a live completed review stamped with it, or created from its page.
+export function isScreeningReviewed(screening: EncounterApiResponse, reviews: EncounterApiResponse[]): boolean {
+  return reviews.some(
+    (r) =>
+      isCompleted(r) &&
+      (readObs<string>(r.observations ?? {}, REVIEWED_ORAL_SCREENING_CONCEPT) === screening.ID ||
+        r["External ID"] === REVIEW_EXTERNAL_ID_PREFIX + screening.ID),
+  );
+}
+
 /**
  * reviewUuid -> the screening info its row should show. Built from two cached
  * org-wide sweeps (reviews with obs for the stamp, screenings for Case IDs), so
