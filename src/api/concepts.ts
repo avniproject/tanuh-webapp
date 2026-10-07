@@ -1,6 +1,6 @@
 import axios from "axios";
 import { http } from "@/auth/httpClient";
-import { SCREENING_DATA_QUALITY_CONCEPT } from "@/constants/tanuhConcepts";
+import { REVIEW_CATEGORY_CONCEPT, SCREENING_DATA_QUALITY_CONCEPT } from "@/constants/tanuhConcepts";
 
 export interface ConceptAnswer {
   uuid: string;
@@ -45,6 +45,7 @@ export function getConcept(uuid: string): Promise<ConceptResponse> {
 export function resetConceptCache(): void {
   cache.clear();
   gateProbe = null;
+  modelProbe = null;
 }
 
 // PE-96: the Data Quality gate (Pass-only list, AI Risk column, Data Quality card)
@@ -76,6 +77,25 @@ export function hasScreeningQualityGate(): Promise<boolean> {
       });
   }
   return gateProbe;
+}
+
+// tanuh-webapp#4: the pending list from screenings applies only where the organisation has the high-risk model's
+// "Review category" concept (Tanuh's configuration). Staging, and production before promotion, keep today's list.
+// Any HTTP error answer means "not here"; only a request that never reached the server propagates.
+let modelProbe: Promise<boolean> | null = null;
+export function hasHighRiskModel(): Promise<boolean> {
+  if (!modelProbe) {
+    const uuid = REVIEW_CATEGORY_CONCEPT.uuid;
+    modelProbe = getConcept(uuid)
+      .then((c) => c.name === REVIEW_CATEGORY_CONCEPT.name)
+      .catch((e: unknown) => {
+        cache.delete(uuid);
+        if (axios.isAxiosError(e) && e.response) return false;
+        modelProbe = null;
+        throw e;
+      });
+  }
+  return modelProbe;
 }
 
 function normalise(raw: RawConceptProjection): ConceptResponse {
