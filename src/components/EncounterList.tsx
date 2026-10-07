@@ -430,19 +430,20 @@ export function EncounterList({ mode }: Props) {
       : null;
 
   // The model's three columns replace the demo AI Risk Assessment column wherever the org has the model; without it the
-  // v1.12.2 / PE-96 columns apply unchanged.
+  // v1.12.2 / PE-96 columns apply unchanged. Badges never wrap: "Non Suspicious" with its AI mark needs about 17% and
+  // "Safety sample" about 14% of a desktop table, or they run into the next column.
   const showModel = modelOn === true;
   const showAi = !showModel && !!qualityGate;
   const none = { opinion: "0", model: "0", group: "0", ai: "0" };
   const widths =
     mode === "pending"
       ? showModel
-        ? { sno: "5%", caseId: "13%", date: "16%", village: "12%", hw: "12%", opinion: "10%", model: "13%", group: "11%", ai: "0", on: "0", by: "0", action: "8%" }
+        ? { sno: "4%", caseId: "11%", date: "14%", village: "10%", hw: "11%", opinion: "10%", model: "17%", group: "14%", ai: "0", on: "0", by: "0", action: "9%" }
         : showAi
           ? { ...none, sno: "5%", caseId: "15%", date: "20%", village: "16%", hw: "16%", ai: "16%", on: "0", by: "0", action: "12%" }
           : { ...none, sno: "6%", caseId: "16%", date: "22%", village: "18%", hw: "16%", on: "0", by: "0", action: "14%" }
       : showModel
-        ? { sno: "4%", caseId: "10%", date: "11%", village: "9%", hw: "10%", opinion: "8%", model: "11%", group: "10%", ai: "0", on: "9%", by: "10%", action: "8%" }
+        ? { sno: "3%", caseId: "8%", date: "10%", village: "7%", hw: "8%", opinion: "7%", model: "17%", group: "14%", ai: "0", on: "8%", by: "10%", action: "8%" }
         : showAi
           ? { ...none, sno: "4%", caseId: "12%", date: "13%", village: "10%", hw: "13%", ai: "16%", on: "11%", by: "13%", action: "8%" }
           : { ...none, sno: "6%", caseId: "12%", date: "16%", village: "13%", hw: "13%", on: "13%", by: "14%", action: "7%" };
