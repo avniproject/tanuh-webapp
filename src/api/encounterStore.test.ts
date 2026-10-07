@@ -85,6 +85,20 @@ describe("fetchEncountersSince", () => {
     expect(new Set(fetched.map((e) => e.ID))).toEqual(new Set(rows.map((r) => r.ID)));
   });
 
+  // Review finding: reading a bulk-stamped millisecond counted against the load's cap, which cut it off inside that
+  // millisecond; the watermark then stayed on it and every later load stopped at the same place.
+  it("reads past a millisecond too large for the load's request cap, at the real page size", async () => {
+    const rows = [
+      ...Array.from({ length: 6700 }, (_, i) => ({ ID: `b${String(i).padStart(4, "0")}`, at: at(5) })),
+      { ID: "later", at: at(9) },
+    ];
+
+    const fetched = await fetchEncountersSince(serverWith(rows).list, "2000-01-01T00:00:00.000Z");
+
+    expect(fetched.length).toBe(6701);
+    expect(fetched.some((e) => e.ID === "later")).toBe(true);
+  });
+
   it("stops at the request cap and returns what it read", async () => {
     const rows = Array.from({ length: 100 }, (_, i) => ({ ID: `s${String(i).padStart(3, "0")}`, at: at(i % 60) }));
     const server = serverWith(rows);

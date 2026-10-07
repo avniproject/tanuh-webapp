@@ -465,8 +465,11 @@ export type EncounterLister = (p: {
  * when the job writes a row the load has already read, one row is skipped, and the watermark then moves past it for
  * good (tanuh-webapp#4). Each full page moves `since` to its last row's time less 1 ms, so the next read repeats that
  * millisecond (duplicates merge by ID). When a whole page shares one millisecond, that millisecond is read on its own
- * by offset, re-reading a page while it still yields an unseen row, until a pass finds nothing new. `requestCap`
- * bounds the requests; past it the rows read so far are returned, and the watermark keeps the rest for the next load.
+ * by offset, in passes from the first page, until a pass finds nothing new: a write moves its row out and shifts the
+ * rest back, and the next pass picks up whatever moved. That read has its own bound, three reads per page of the
+ * millisecond plus two, so a bulk-stamped millisecond is never cut off by `requestCap`; were it cut off, the watermark
+ * would stay on that millisecond and every later load would stop at the same place. `requestCap` bounds the time
+ * pages; past it the rows read so far are returned and the next load continues from their watermark.
  */
 export async function fetchEncountersSince(
   list: EncounterLister,
@@ -475,16 +478,31 @@ export async function fetchEncountersSince(
   requestCap: number = CACHE_COLD_PAGE_CAP,
 ): Promise<EncounterApiResponse[]> {
   const fetched = new Map<string, EncounterApiResponse>();
-  let requests = 0;
   const read = async (p: { lastModifiedDateTime: string; now?: string; page: number }) => {
-    requests++;
-    const content = (await list({ ...p, size: pageSize })).content;
-    for (const e of content) fetched.set(e.ID, e);
-    return content;
+    const res = await list({ ...p, size: pageSize });
+    for (const e of res.content) fetched.set(e.ID, e);
+    return res;
+  };
+  const readMillisecond = async (ms: number) => {
+    const window = { lastModifiedDateTime: new Date(ms - 1).toISOString(), now: new Date(ms + 1).toISOString() };
+    let budget = 2;
+    let used = 0;
+    let foundInPass = true;
+    while (foundInPass && used < budget) {
+      foundInPass = false;
+      for (let pageNumber = 0; used < budget; pageNumber++) {
+        const before = fetched.size;
+        const res = await read({ ...window, page: pageNumber });
+        used++;
+        budget = Math.max(budget, 3 * res.totalPages + 2);
+        if (fetched.size > before) foundInPass = true;
+        if (res.content.length < pageSize) break;
+      }
+    }
   };
   let from = since;
-  while (requests < requestCap) {
-    const page = await read({ lastModifiedDateTime: from, page: 0 });
+  for (let requests = 0; requests < requestCap; requests++) {
+    const page = (await read({ lastModifiedDateTime: from, page: 0 })).content;
     if (page.length < pageSize) break;
     const lastMs = Date.parse(page[page.length - 1].audit?.["Last modified at"] ?? "");
     if (Number.isNaN(lastMs)) break;
@@ -493,21 +511,8 @@ export async function fetchEncountersSince(
       from = next;
       continue;
     }
-    // The whole page shares one millisecond: read it on its own, by offset, until a pass finds nothing new.
-    const window = { lastModifiedDateTime: next, now: new Date(lastMs + 1).toISOString() };
-    let foundInPass = true;
-    while (foundInPass && requests < requestCap) {
-      foundInPass = false;
-      for (let pageNumber = 0; requests < requestCap; ) {
-        const before = fetched.size;
-        const rows = await read({ ...window, page: pageNumber });
-        const found = fetched.size > before; // the page held a row not read before
-        foundInPass ||= found;
-        if (found) continue; // writes move rows out of the window and shift the rest back: read the page again
-        if (rows.length < pageSize) break;
-        pageNumber++;
-      }
-    }
+    // The whole page shares one millisecond: read all of it on its own, then move past it.
+    await readMillisecond(lastMs);
     from = new Date(lastMs).toISOString();
   }
   return [...fetched.values()];
