@@ -427,3 +427,67 @@ export function aiRiskDisplayState(
   }
   return dataQuality === undefined ? { kind: "absent" } : { kind: "not-assessed" };
 }
+
+// ---------------------------------------------------------------------------
+// The high-risk model (avni-product#1910). Hidden Oral Screening questions from Tanuh's configuration
+// (slug high-risk-model), written by the integration service's job (integration-service#131) and, for
+// agreement, by this app's review submit (tanuh-webapp#5). The UUIDs are the epic's expected values; the
+// implementation team confirms them when it builds the configuration.
+export const MODEL_RESULT_CONCEPT = { name: "High risk model result", uuid: "d1e27373-cd86-5392-94cb-2b5aaf1e682b" } as const;
+export const MODEL_STATUS_CONCEPT = { name: "High risk model status", uuid: "87166790-2add-5256-b60c-26f3e01fccb4" } as const;
+export const MODEL_VERSION_CONCEPT = { name: "High risk model version", uuid: "4559b846-6c8c-5fe2-b188-1460a3811f12" } as const;
+export const MODEL_RUN_TIME_CONCEPT = { name: "High risk model run time", uuid: "a292623b-eac4-565d-86c6-3e2882a452f9" } as const;
+export const REVIEW_CATEGORY_CONCEPT = { name: "Review category", uuid: "127df30d-e577-537a-bdcf-5e756e116926" } as const;
+export const MODEL_AGREEMENT_CONCEPT = { name: "High risk model agreement", uuid: "19ceb856-b2db-53bd-ba9c-37124940f3dc" } as const;
+
+// The model's result answers are AI_RISK_VALUES (the same answer concepts).
+export const MODEL_STATUS_VALUES = { scored: "Scored", notScored: "Not scored" } as const;
+export const REVIEW_CATEGORY_VALUES = {
+  highRisk: "High Risk",
+  lowRisk: "Low Risk",
+  flwOverride: "FLW override",
+  notScored: "Not scored",
+  safetySample: "Safety sample",
+  closed: "Closed",
+} as const;
+export type ReviewCategoryValue = (typeof REVIEW_CATEGORY_VALUES)[keyof typeof REVIEW_CATEGORY_VALUES];
+
+function textValue(v: unknown): string | undefined {
+  return typeof v === "string" && v !== "" ? v : undefined;
+}
+export function readModelResult(obs: Record<string, unknown>): string | undefined {
+  return codedAnswerName(readObs(obs, MODEL_RESULT_CONCEPT));
+}
+export function readModelStatus(obs: Record<string, unknown>): string | undefined {
+  return codedAnswerName(readObs(obs, MODEL_STATUS_CONCEPT));
+}
+export function readModelVersion(obs: Record<string, unknown>): string | undefined {
+  return textValue(readObs(obs, MODEL_VERSION_CONCEPT));
+}
+export function readModelRunTime(obs: Record<string, unknown>): string | undefined {
+  return textValue(readObs(obs, MODEL_RUN_TIME_CONCEPT));
+}
+export function readReviewCategory(obs: Record<string, unknown>): string | undefined {
+  return codedAnswerName(readObs(obs, REVIEW_CATEGORY_CONCEPT));
+}
+
+export const WORKER_OPINION = { suspicious: "Suspicious", notSuspicious: "Not suspicious" } as const;
+export type WorkerOpinion = (typeof WORKER_OPINION)[keyof typeof WORKER_OPINION];
+
+// integration-service#131's rule, so the list shows the opinion the job routed on: the take-photos group's rows
+// when it has any, otherwise the "ORAL SCREENING" group's; Suspicious when any row's "Suspicious Lesion?" is Yes.
+// The "do you still want to refer" answer does not count. A screening without photo rows has no opinion.
+export function deriveWorkerOpinion(obs: Record<string, unknown>): WorkerOpinion | undefined {
+  const rowsOf = (name: string): unknown[] => {
+    const v = obs[name];
+    if (Array.isArray(v)) return v;
+    return v && typeof v === "object" ? [v] : [];
+  };
+  const taken = rowsOf(ORAL_IMAGE_GROUP.name);
+  const rows = taken.length > 0 ? taken : rowsOf(ORAL_SCREENING_GROUP.name);
+  if (rows.length === 0) return undefined;
+  const suspicious = rows.some(
+    (r) => !!r && typeof r === "object" && codedAnswerName((r as Record<string, unknown>)[ANY_SUSPICIOUS_LESION_CONCEPT.name]) === "Yes",
+  );
+  return suspicious ? WORKER_OPINION.suspicious : WORKER_OPINION.notSuspicious;
+}
