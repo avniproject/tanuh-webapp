@@ -81,7 +81,10 @@ export function hasScreeningQualityGate(): Promise<boolean> {
 
 // tanuh-webapp#4: the pending list from screenings applies only where the organisation has the high-risk model's
 // "Review category" concept (Tanuh's configuration). Staging, and production before promotion, keep today's list.
-// Any HTTP error answer means "not here"; only a request that never reached the server propagates.
+// Only a 404 means "not here": avni-server answers a missing concept, or another organisation's, with 404 on every
+// release line from 16.15 to 18.1. Any other failure (a 503 during a restart, a 500) fails the load and is asked
+// again next time; treating it as "not here", as the Data Quality probe safely can, would hide every case the model
+// sent for review for the rest of the session.
 let modelProbe: Promise<boolean> | null = null;
 export function hasHighRiskModel(): Promise<boolean> {
   if (!modelProbe) {
@@ -90,7 +93,7 @@ export function hasHighRiskModel(): Promise<boolean> {
       .then((c) => c.name === REVIEW_CATEGORY_CONCEPT.name)
       .catch((e: unknown) => {
         cache.delete(uuid);
-        if (axios.isAxiosError(e) && e.response) return false;
+        if (axios.isAxiosError(e) && e.response?.status === 404) return false;
         modelProbe = null;
         throw e;
       });
