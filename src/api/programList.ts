@@ -1,6 +1,7 @@
 import { getConcept } from "./concepts";
 import { isCompleted, isScheduled, sweepProgramEncounters } from "./encounters";
-import { getCatchmentLocations, type EncounterListParams, type EncounterWithLocation } from "./impl";
+import { addressChain, inSubtree } from "./address";
+import { type EncounterListParams, type EncounterWithLocation } from "./impl";
 import { getSubject } from "./subjects";
 import type { SubjectApiResponse } from "./types";
 
@@ -25,7 +26,7 @@ import type { SubjectApiResponse } from "./types";
 // orgs, so a sign-in change cannot serve another org's row from here.
 const subjectMemo = new Map<string, Promise<SubjectApiResponse>>();
 
-function subjectOnce(uuid: string): Promise<SubjectApiResponse> {
+export function subjectOnce(uuid: string): Promise<SubjectApiResponse> {
   let cached = subjectMemo.get(uuid);
   if (!cached) {
     cached = getSubject(uuid);
@@ -35,24 +36,14 @@ function subjectOnce(uuid: string): Promise<SubjectApiResponse> {
   return cached;
 }
 
-// {address type: name} for a catchment node and its ancestors — the shape the
-// server uses for a subject's `location` and for a Location observation.
-async function addressChain(nodeUuid: string): Promise<Record<string, string>> {
-  const { nodes } = await getCatchmentLocations();
-  const byUuid = new Map(nodes.map((n) => [n.uuid, n]));
-  const chain: Record<string, string> = {};
-  for (let node = byUuid.get(nodeUuid); node; node = node.parentUuid ? byUuid.get(node.parentUuid) : undefined) {
-    chain[node.type] = node.name;
-  }
-  return chain;
-}
-
-// An address (subject location / Location observation) lies in the subtree of
-// the selected node when it carries every level of the node's own chain.
-function inSubtree(address: unknown, chain: Record<string, string>): boolean {
-  if (!address || typeof address !== "object") return false;
-  const levels = address as Record<string, unknown>;
-  return Object.entries(chain).every(([type, name]) => levels[type] === name);
+// Every patient once; a failed read is null so its row stays, without the patient's details (tanuh-webapp#4).
+export async function readSubjects(ids: Iterable<string>): Promise<Map<string, SubjectApiResponse | null>> {
+  const unique = [...new Set(ids)];
+  const settled = await Promise.allSettled(unique.map((id) => subjectOnce(id)));
+  return new Map(unique.map((id, i) => {
+    const result = settled[i];
+    return [id, result.status === "fulfilled" ? result.value : null];
+  }));
 }
 
 export async function getProgramEncountersWithLocation(
@@ -64,9 +55,7 @@ export async function getProgramEncountersWithLocation(
   if (encounters.length === 0) return [];
 
   let subjectIds = [...new Set(encounters.map((e) => e["Subject ID"]))];
-  const subjects = new Map(
-    await Promise.all(subjectIds.map(async (id) => [id, await subjectOnce(id)] as const)),
-  );
+  const subjects = await readSubjects(subjectIds);
 
   if (p.locationUuid) {
     const chain = await addressChain(p.locationUuid);
