@@ -63,7 +63,7 @@ import {
 } from "@/constants/tanuhConcepts";
 import { CategoryBadge, DataQualityBadge, ModelResultBadge } from "@/components/StatusBadge";
 import { computeAgreement } from "./agreement";
-import { bookHighRiskFollowUps } from "./followUps";
+import { bookHighRiskFollowUps, type FollowUp } from "./followUps";
 import {
   collectPhotos,
   deriveClassification,
@@ -201,6 +201,8 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
   // The review this page saved. From then on the page is read-only: a second submit would be refused as already
   // reviewed, and only the follow-ups can still be missing.
   const [saved, setSaved] = useState<EncounterApiResponse | null>(null);
+  // The follow-ups that failed to book for the saved review; "Book the follow-ups again" retries only these.
+  const [unbooked, setUnbooked] = useState<FollowUp[]>([]);
   const navigate = useNavigate();
   useEffect(() => {
     if (loaded?.redirect) navigate(`/review/${loaded.redirect}`, { replace: true });
@@ -465,9 +467,10 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
       // Deliberately NOT triggered by the limited-mouth path: its pre-set
       // High Risk pairs with the dentist-visit action, not the biopsy flow.
       if (!limitedMouthFixed && mapping?.risk === RISK.high) {
-        const problem = await bookHighRiskFollowUps(anchor);
-        if (problem) {
-          setSubmitError(problem);
+        const outcome = await bookHighRiskFollowUps(anchor);
+        if (outcome.problem) {
+          setUnbooked(outcome.failed);
+          setSubmitError(outcome.problem);
           return;
         }
       }
@@ -480,15 +483,15 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
     }
   };
 
-  // After a saved review whose follow-ups failed. The message stays up while this runs; a booking already made is
-  // skipped, so only what is missing is booked.
+  // After a saved review whose follow-ups failed. The message stays up while this runs.
   const bookFollowUpsAgain = async () => {
     if (!saved) return;
     setSubmitting(true);
     try {
-      const problem = await bookHighRiskFollowUps(saved);
-      setSubmitError(problem);
-      if (!problem) navigate("/pending");
+      const outcome = await bookHighRiskFollowUps(saved, unbooked);
+      setUnbooked(outcome.failed);
+      setSubmitError(outcome.problem);
+      if (!outcome.problem) navigate("/pending");
     } finally {
       setSubmitting(false);
     }
@@ -813,7 +816,7 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
           justifyContent={{ xs: "stretch", sm: "flex-end" }}
           sx={{ pt: 1, pb: 4 }}
         >
-          {saved && submitError ? (
+          {saved && unbooked.length > 0 ? (
             <Button
               variant="contained"
               size="large"

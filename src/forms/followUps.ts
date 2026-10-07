@@ -39,39 +39,60 @@ export async function ensureReferralSlip(review: EncounterApiResponse): Promise<
   });
 }
 
+export type FollowUp = "referral" | "slip";
+
 export interface FollowUpBookings {
   referral: (review: EncounterApiResponse) => Promise<void>;
   slip: (review: EncounterApiResponse) => Promise<void>;
 }
 
+export interface FollowUpOutcome {
+  // The bookings to try again; empty when every one asked for is booked.
+  failed: FollowUp[];
+  // What to tell the physician; null when every one asked for is booked.
+  problem: string | null;
+}
+
+const BOOKINGS: FollowUpBookings = { referral: ensureHighRiskFollowUp, slip: ensureReferralSlip };
+
 // Requirements 2.0 Case Updates: a High Risk diagnosis schedules a "High Risk
 // Referral" visit for the screening worker (inform patient, pick biopsy
 // hospital), and a "Referral Slip" for them to hand over. The review is already
-// saved when this runs. Both are attempted even when the first fails, and the
-// answer names each one that failed; null when both are booked. Each skips a
-// visit already open, so running it again books only what is missing.
+// saved when this runs. Each booking asked for is attempted even when an earlier
+// one fails, and the outcome names each one that failed. A retry asks only for
+// those: checking again for a visit just booked can itself be refused, since the
+// server refuses a physician the list of a visit type they cannot view once the
+// patient has one.
 export async function bookHighRiskFollowUps(
   review: EncounterApiResponse,
-  book: FollowUpBookings = { referral: ensureHighRiskFollowUp, slip: ensureReferralSlip },
-): Promise<string | null> {
+  which: readonly FollowUp[] = ["referral", "slip"],
+  book: FollowUpBookings = BOOKINGS,
+): Promise<FollowUpOutcome> {
+  const failed: FollowUp[] = [];
   const problems: string[] = [];
-  try {
-    await book.referral(review);
-  } catch (err) {
-    problems.push(
-      `scheduling the High Risk Referral visit failed: ${messageOf(err)}. ` +
-        "Please raise it with the field team so the worker is informed.",
-    );
+  if (which.includes("referral")) {
+    try {
+      await book.referral(review);
+    } catch (err) {
+      failed.push("referral");
+      problems.push(
+        `scheduling the High Risk Referral visit failed: ${messageOf(err)}. ` +
+          "Please raise it with the field team so the worker is informed.",
+      );
+    }
   }
-  try {
-    await book.slip(review);
-  } catch (err) {
-    problems.push(
-      `scheduling the Referral Slip failed: ${messageOf(err)}. ` +
-        "The worker can still raise the slip from the patient's New Form list.",
-    );
+  if (which.includes("slip")) {
+    try {
+      await book.slip(review);
+    } catch (err) {
+      failed.push("slip");
+      problems.push(
+        `scheduling the Referral Slip failed: ${messageOf(err)}. ` +
+          "The worker can still raise the slip from the patient's New Form list.",
+      );
+    }
   }
-  return problems.length === 0 ? null : `Review saved, but ${problems.join(" Also, ")}`;
+  return { failed, problem: problems.length === 0 ? null : `Review saved, but ${problems.join(" Also, ")}` };
 }
 
 function messageOf(err: unknown): string {
