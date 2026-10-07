@@ -7,6 +7,7 @@ import { AppShell } from "@/components/AppShell";
 import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { ReviewListPage } from "@/pages/ReviewListPage";
 import { ReviewDetail } from "@/pages/ReviewDetail";
+import { CaseDetail } from "@/pages/CaseDetail";
 import { NotAuthorized } from "@/pages/NotAuthorized";
 import { LoginPage } from "@/pages/LoginPage";
 import { isPhysician } from "@/auth/roles";
@@ -103,6 +104,18 @@ function GatedRoutes() {
               action={<Button href="/pending">Back to reviews</Button>}
             >
               <ReviewDetail />
+            </ErrorBoundary>
+          }
+        />
+        <Route
+          path="/case/:screeningUuid"
+          element={
+            <ErrorBoundary
+              title="This case can't be displayed."
+              description="The rest of the app still works. Reload to try again, or go back to the review list and report this case to your administrator."
+              action={<Button href="/pending">Back to reviews</Button>}
+            >
+              <CaseDetail />
             </ErrorBoundary>
           }
         />

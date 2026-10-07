@@ -34,6 +34,7 @@ import {
   submitEncounter,
 } from "@/api/encounters";
 import { getSubject } from "@/api/subjects";
+import { decideCaseRoute } from "@/api/caseRoute";
 import { getConcept, hasScreeningQualityGate, type ConceptAnswer } from "@/api/concepts";
 import type { EncounterApiResponse, SubjectApiResponse } from "@/api/types";
 import {
@@ -74,13 +75,20 @@ import {
 import { MediaImg } from "@/components/MediaImg";
 import { useAsync } from "@/hooks/useAsync";
 
+// One of the two: a review's page (/review/:encounterUuid) or a screening's (/case/:screeningUuid, tanuh-webapp#5).
 interface Props {
-  encounterUuid: string;
+  encounterUuid?: string;
+  screeningUuid?: string;
   onBack?: () => void;
 }
 
 interface LoadedState {
-  review: EncounterApiResponse;
+  // Absent on a screening's page until a review exists: its submit creates one.
+  review?: EncounterApiResponse;
+  // The patient's reviews, as loaded.
+  reviews: EncounterApiResponse[];
+  // Set when a screening's page belongs to a booked review: the page moves there.
+  redirect?: string;
   screening: EncounterApiResponse;
   subject: SubjectApiResponse;
   physicianVerdictAnswers: ConceptAnswer[];
@@ -151,6 +159,7 @@ async function loadReview(encounterUuid: string): Promise<LoadedState> {
   if (!screening) throw new Error("No completed Oral Screening encounter for this subject");
   return {
     review,
+    reviews,
     screening,
     subject,
     physicianVerdictAnswers: verdictConcept.answers,
@@ -159,14 +168,43 @@ async function loadReview(encounterUuid: string): Promise<LoadedState> {
   };
 }
 
-export function ReviewForm({ encounterUuid, onBack }: Props) {
-  const { data: loaded, error: loadError } = useAsync(() => loadReview(encounterUuid), [encounterUuid]);
+// tanuh-webapp#5: a screening's page. A booked review takes it to that review's page (drafts are keyed by the route,
+// so one case reachable from two routes would get two drafts); a reviewed screening opens read-only on its review;
+// any other screening opens without a review, and its submit creates one.
+async function loadCase(screeningUuid: string): Promise<LoadedState> {
+  const screening = await getEncounter(screeningUuid);
+  const [subject, reviews, screenings, verdictConcept, diagnosisConcept, subTypeConcept] = await Promise.all([
+    getSubject(screening["Subject ID"]),
+    listVisitsFor(screening, ENCOUNTER_TYPE.physicianReviewForm.name),
+    listVisitsFor(screening, ENCOUNTER_TYPE.oralScreening.name),
+    getConcept(REVIEW_IMAGE_GROUP_CHILD.physicianVerdict.uuid),
+    getConcept(REVIEW_CONCEPTS.provisionalDiagnosis.uuid),
+    getConcept(REVIEW_CONCEPTS.provisionalSubType.uuid),
+  ]);
+  const route = decideCaseRoute(screening, reviews, screenings);
+  return {
+    review: route.kind === "reviewed" ? route.review : undefined,
+    redirect: route.kind === "booked" ? route.reviewUuid : undefined,
+    reviews,
+    screening,
+    subject,
+    physicianVerdictAnswers: verdictConcept.answers,
+    provisionalDiagnosisAnswers: diagnosisConcept.answers,
+    subTypeAnswers: subTypeConcept.answers,
+  };
+}
+
+export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
+  const { data: loaded, error: loadError } = useAsync(
+    () => (screeningUuid ? loadCase(screeningUuid) : loadReview(encounterUuid ?? "")),
+    [encounterUuid, screeningUuid],
+  );
   // PE-96: the Data Quality card exists only for an org that carries the concept.
   const { data: qualityGate } = useAsync(() => hasScreeningQualityGate(), []);
   // In-progress form state is persisted to sessionStorage keyed by the
   // encounter uuid so it survives HMR, accidental refreshes, and tab
   // switches mid-review. Cleared on successful submit.
-  const storageKey = `review-form:${encounterUuid}`;
+  const storageKey = screeningUuid ? `review-form:case:${screeningUuid}` : `review-form:${encounterUuid}`;
   const [form, setForm] = useState<FormState | null>(() => {
     try {
       const raw = sessionStorage.getItem(storageKey);
@@ -187,12 +225,15 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   const navigate = useNavigate();
+  useEffect(() => {
+    if (loaded?.redirect) navigate(`/review/${loaded.redirect}`, { replace: true });
+  }, [loaded, navigate]);
 
   // A completed review always renders from its STORED observations — an
   // in-progress draft left in sessionStorage (e.g. someone else completed the
   // review first) is stale and must not shadow the recorded answers.
   const prefilled = useMemo(
-    () => (loaded && isCompleted(loaded.review) ? prefillFromCompleted(loaded.review) : null),
+    () => (loaded?.review && isCompleted(loaded.review) ? prefillFromCompleted(loaded.review) : null),
     [loaded],
   );
   const effectiveForm = prefilled ?? form ?? emptyForm;
@@ -213,7 +254,7 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
   const presentPhotos = useMemo<number[]>(() => photos.map((p) => p.slot), [photos]);
 
   if (loadError) return <Alert severity="error">{loadError}</Alert>;
-  if (!loaded)
+  if (!loaded || loaded.redirect)
     return (
       <Box sx={{ p: 4, display: "flex", justifyContent: "center" }}>
         <CircularProgress />
@@ -236,12 +277,12 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
     loaded.screening.observations as Record<string, unknown>,
     presentPhotos.length,
   );
-  const completed = isCompleted(loaded.review);
+  const completed = !!loaded.review && isCompleted(loaded.review);
   const readOnly = completed || isLegacy;
   // A completed review shows what was RECORDED. Re-deriving from the current
   // diagnosisMapping would silently rewrite how past reviews read whenever the
   // mapping table changes (it already changed once — the OSMF row).
-  const storedObs = loaded.review.observations as Record<string, unknown>;
+  const storedObs = (loaded.review?.observations ?? {}) as Record<string, unknown>;
   const storedClassification = completed ? readObs<string>(storedObs, REVIEW_CONCEPTS.classification) : undefined;
   const storedRisk = completed ? (storedObs[REVIEW_CONCEPTS.highLowRisk.name] as string | undefined) : undefined;
   const storedAction = completed ? (storedObs[REVIEW_CONCEPTS.recommendedAction.name] as string | undefined) : undefined;
@@ -315,7 +356,8 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
     missingPhotoVerdicts.length === 0 && !diagnosisMissing && !subTypeMissing && !highestRiskMissing;
 
   const submit = async () => {
-    if (readOnly || !canSubmit) return;
+    const review = loaded.review;
+    if (readOnly || !canSubmit || !review) return;
     setSubmitting(true);
     setSubmitError(null);
     try {
@@ -325,8 +367,8 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
       // subject's reviews are re-fetched alongside (not reused from load time)
       // so the Encounter ID sequence below is computed on current data.
       const [current, reviewsNow] = await Promise.all([
-        getEncounter(loaded.review.ID),
-        listVisitsFor(loaded.review, ENCOUNTER_TYPE.physicianReviewForm.name),
+        getEncounter(review.ID),
+        listVisitsFor(review, ENCOUNTER_TYPE.physicianReviewForm.name),
       ]);
       if (isCompleted(current)) {
         setSubmitError(
@@ -388,15 +430,15 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
           readObs<string>(loaded.subject.observations ?? {}, PATIENT_ID_CONCEPT),
           "CLR",
           reviewsNow,
-          loaded.review.ID,
+          review.ID,
         );
       if (encounterId) observations[ENCOUNTER_ID_CONCEPT.name] = encounterId;
 
       await submitEncounter(
-        loaded.review.ID,
+        review.ID,
         {
           "Encounter type": ENCOUNTER_TYPE.physicianReviewForm.name,
-          "Subject ID": loaded.review["Subject ID"],
+          "Subject ID": review["Subject ID"],
           "Encounter date time": new Date().toISOString(),
           // Sent back unchanged: the PUT would otherwise null the window the
           // Oral Screening rule scheduled this review in.
@@ -404,7 +446,7 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
           "Max scheduled date": current["Max scheduled date"],
           observations,
         },
-        { program: isProgramEncounter(loaded.review) },
+        { program: isProgramEncounter(review) },
       );
       // The list tabs cache their org-wide sweeps — drop them so the review
       // just completed shows up in the counts and High Risk set immediately.
@@ -418,7 +460,7 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
       // High Risk pairs with the dentist-visit action, not the biopsy flow.
       if (!limitedMouthFixed && mapping?.risk === RISK.high) {
         try {
-          await ensureHighRiskFollowUp(loaded.review);
+          await ensureHighRiskFollowUp(review);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           setSubmitError(
@@ -428,7 +470,7 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
           return;
         }
         try {
-          await ensureReferralSlip(loaded.review);
+          await ensureReferralSlip(review);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           setSubmitError(
@@ -515,8 +557,8 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
           }}
         >
           Read-only — review completed
-          {loaded.review["Encounter date time"]
-            ? ` on ${format(parseISO(loaded.review["Encounter date time"]!), "dd MMM yyyy")}`
+          {loaded.review?.["Encounter date time"]
+            ? ` on ${format(parseISO(loaded.review["Encounter date time"]), "dd MMM yyyy")}`
             : ""}
           .
         </Alert>
