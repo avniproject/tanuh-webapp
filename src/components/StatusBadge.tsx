@@ -199,7 +199,7 @@ const CATEGORY_TIP: Record<string, string> = {
   [REVIEW_CATEGORY_VALUES.highRisk]: "The model rated this case high risk.",
   [REVIEW_CATEGORY_VALUES.flwOverride]: "The model found nothing suspicious, but the health worker marked a photo suspicious.",
   [REVIEW_CATEGORY_VALUES.lowRisk]: "The model rated this case low risk.",
-  [REVIEW_CATEGORY_VALUES.notScored]: "No model result: the screening has no photo, or the model has not scored it.",
+  [REVIEW_CATEGORY_VALUES.notScored]: "No model result: the screening has no photo.",
   [REVIEW_CATEGORY_VALUES.safetySample]: "Cleared by the model and the worker, and picked at random for a check.",
   [REVIEW_CATEGORY_VALUES.closed]: "Cleared by the model and the worker; not sent for review.",
 };
