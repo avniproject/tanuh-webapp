@@ -5,9 +5,11 @@ import CheckCircleOutlineIcon from "@mui/icons-material/CheckCircleOutline";
 import WarningAmberOutlinedIcon from "@mui/icons-material/WarningAmberOutlined";
 import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline";
 import RemoveCircleOutlineIcon from "@mui/icons-material/RemoveCircleOutline";
+import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import {
   AI_RISK_VALUES,
   DATA_QUALITY_VALUES,
+  REVIEW_CATEGORY_VALUES,
   aiRiskDisplayState,
   type AiRiskValue,
 } from "@/constants/tanuhConcepts";
@@ -16,12 +18,13 @@ import {
 // values. Colour + icon + text (never colour alone); red is reserved for High
 // Risk. Tooltip copy is Fathima's prototype (PE-96 attachment) verbatim.
 
-type Tone = "good" | "caution" | "concern" | "neutral";
+type Tone = "good" | "caution" | "concern" | "info" | "neutral";
 
 const TONE_ICON: Record<Tone, SvgIconComponent> = {
   good: CheckCircleOutlineIcon,
   caution: WarningAmberOutlinedIcon,
   concern: ErrorOutlineIcon,
+  info: InfoOutlinedIcon,
   neutral: RemoveCircleOutlineIcon,
 };
 
@@ -91,10 +94,18 @@ export function StatusBadge({ tone, label, tooltip, ai, testId, state }: StatusB
   );
 }
 
-function toneKey(tone: Exclude<Tone, "neutral">): "success" | "warning" | "error";
-function toneKey(tone: Tone): "success" | "warning" | "error" | "grey";
+function toneKey(tone: Exclude<Tone, "neutral">): "success" | "warning" | "error" | "info";
+function toneKey(tone: Tone): "success" | "warning" | "error" | "info" | "grey";
 function toneKey(tone: Tone) {
-  return tone === "good" ? "success" : tone === "caution" ? "warning" : tone === "concern" ? "error" : "grey";
+  return tone === "good"
+    ? "success"
+    : tone === "caution"
+      ? "warning"
+      : tone === "concern"
+        ? "error"
+        : tone === "info"
+          ? "info"
+          : "grey";
 }
 
 function AiMark() {
@@ -174,4 +185,51 @@ export function AiRiskBadge({
         />
       );
   }
+}
+
+const CATEGORY_TONE: Record<string, Tone> = {
+  [REVIEW_CATEGORY_VALUES.highRisk]: "concern",
+  [REVIEW_CATEGORY_VALUES.flwOverride]: "caution",
+  [REVIEW_CATEGORY_VALUES.lowRisk]: "caution",
+  [REVIEW_CATEGORY_VALUES.notScored]: "neutral",
+  [REVIEW_CATEGORY_VALUES.safetySample]: "info",
+  [REVIEW_CATEGORY_VALUES.closed]: "good",
+};
+const CATEGORY_TIP: Record<string, string> = {
+  [REVIEW_CATEGORY_VALUES.highRisk]: "The model rated this case high risk.",
+  [REVIEW_CATEGORY_VALUES.flwOverride]: "The model found nothing suspicious, but the health worker marked a photo suspicious.",
+  [REVIEW_CATEGORY_VALUES.lowRisk]: "The model rated this case low risk.",
+  [REVIEW_CATEGORY_VALUES.notScored]: "No model result: the screening has no photo, or the model has not scored it.",
+  [REVIEW_CATEGORY_VALUES.safetySample]: "Cleared by the model and the worker, and picked at random for a check.",
+  [REVIEW_CATEGORY_VALUES.closed]: "Cleared by the model and the worker; not sent for review.",
+};
+
+// The review group the model's job set on the screening. Independent of Data Quality, unlike AiRiskBadge.
+export function CategoryBadge({ value }: { value: string | undefined }) {
+  if (value === undefined) return <Dash />;
+  return (
+    <StatusBadge
+      tone={CATEGORY_TONE[value] ?? "neutral"}
+      label={value}
+      tooltip={CATEGORY_TIP[value] ?? TIP.unknown}
+      testId="review-category-badge"
+      state={value.toLowerCase().replace(/\s+/g, "-")}
+    />
+  );
+}
+
+// The model's own result, marked as AI. Independent of Data Quality.
+export function ModelResultBadge({ value }: { value: string | undefined }) {
+  if (value === undefined) return <Dash />;
+  const known = (Object.values(AI_RISK_VALUES) as string[]).includes(value);
+  return (
+    <StatusBadge
+      tone={known ? RISK_TONE[value as AiRiskValue] : "neutral"}
+      label={value}
+      tooltip={known ? TIP[value as AiRiskValue] : TIP.unknown}
+      ai
+      testId="model-result-badge"
+      state={value.toLowerCase().replace(/\s+/g, "-")}
+    />
+  );
 }
