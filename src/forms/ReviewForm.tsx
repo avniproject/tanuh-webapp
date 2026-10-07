@@ -20,7 +20,7 @@ import {
   Typography,
 } from "@mui/material";
 import LockOutlinedIcon from "@mui/icons-material/LockOutlined";
-import { addDays, differenceInYears, format, parseISO } from "date-fns";
+import { differenceInYears, format, parseISO } from "date-fns";
 import { useNavigate } from "react-router-dom";
 import {
   computeNextEncounterId,
@@ -28,10 +28,8 @@ import {
   invalidateEncounterSweeps,
   isCompleted,
   isProgramEncounter,
-  isScheduled,
   listVisitsFor,
   pairReviewsToScreenings,
-  scheduleEncounter,
   submitEncounter,
 } from "@/api/encounters";
 import { getSubject } from "@/api/subjects";
@@ -65,6 +63,7 @@ import {
 } from "@/constants/tanuhConcepts";
 import { CategoryBadge, DataQualityBadge, ModelResultBadge } from "@/components/StatusBadge";
 import { computeAgreement } from "./agreement";
+import { bookHighRiskFollowUps } from "./followUps";
 import {
   collectPhotos,
   deriveClassification,
@@ -105,42 +104,6 @@ interface LoadedState {
   subTypeAnswers: ConceptAnswer[];
 }
 
-
-// Schedules the High Risk Referral visit unless the subject already has one
-// open — re-reviews and double-submits must not pile up duplicate visits.
-// Window: due immediately, overdue after 7 days (the scoping doc's follow-up
-// convention; the sheet itself doesn't specify dates). A review recorded inside
-// a program schedules it in the same enrolment, so it lands under that program
-// on the phone.
-async function ensureHighRiskFollowUp(review: EncounterApiResponse): Promise<void> {
-  const existing = await listVisitsFor(review, ENCOUNTER_TYPE.highRiskFollowUp.name);
-  if (existing.some(isScheduled)) return;
-  const now = new Date();
-  await scheduleEncounter({
-    encounterType: ENCOUNTER_TYPE.highRiskFollowUp,
-    subjectId: review["Subject ID"],
-    enrolmentId: review["Enrolment ID"],
-    earliestVisitDateTime: now.toISOString(),
-    maxVisitDateTime: addDays(now, 7).toISOString(),
-  });
-}
-
-// Schedules the Referral Slip so it lands under Visits Planned on the patient
-// dashboard. Same shape and window as the High Risk Referral above; the guard
-// keeps re-reviews and double-submits from stacking up slips, and the encounter
-// type's eligibility rule suppresses the unplanned entry while one is pending.
-async function ensureReferralSlip(review: EncounterApiResponse): Promise<void> {
-  const existing = await listVisitsFor(review, ENCOUNTER_TYPE.referralSlip.name);
-  if (existing.some(isScheduled)) return;
-  const now = new Date();
-  await scheduleEncounter({
-    encounterType: ENCOUNTER_TYPE.referralSlip,
-    subjectId: review["Subject ID"],
-    enrolmentId: review["Enrolment ID"],
-    earliestVisitDateTime: now.toISOString(),
-    maxVisitDateTime: addDays(now, 7).toISOString(),
-  });
-}
 
 async function loadReview(encounterUuid: string): Promise<LoadedState> {
   const review = await getEncounter(encounterUuid);
@@ -236,6 +199,9 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
 
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
+  // The review this page saved. From then on the page is read-only: a second submit would be refused as already
+  // reviewed, and only the follow-ups can still be missing.
+  const [saved, setSaved] = useState<EncounterApiResponse | null>(null);
   const navigate = useNavigate();
   useEffect(() => {
     if (loaded?.redirect) navigate(`/review/${loaded.redirect}`, { replace: true });
@@ -290,7 +256,7 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
     presentPhotos.length,
   );
   const completed = !!loaded.review && isCompleted(loaded.review);
-  const readOnly = completed || isLegacy;
+  const readOnly = completed || isLegacy || saved !== null;
   // A completed review shows what was RECORDED. Re-deriving from the current
   // diagnosisMapping would silently rewrite how past reviews read whenever the
   // mapping table changes (it already changed once — the OSMF row).
@@ -492,47 +458,42 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
       } else {
         anchor = await submitEncounter(null, buildCreatedReviewBody(loaded.screening, observations, new Date().toISOString()));
       }
+      setSaved(anchor);
       // The list tabs cache their org-wide sweeps — drop them so the review
       // just completed shows up in the counts and High Risk set immediately.
       invalidateEncounterSweeps();
-      // Requirements 2.0 Case Updates: a High Risk diagnosis schedules a
-      // "High Risk Referral" visit for the screening worker (inform patient,
-      // pick biopsy hospital), and a "Referral Slip" for them to hand over.
-      // The review itself is already saved at this point, so a failure here is
-      // reported without retrying the review.
-      // Deliberately NOT triggered by the limited-mouth path: its pre-set
-      // High Risk pairs with the dentist-visit action, not the biopsy flow.
-      if (!limitedMouthFixed && mapping?.risk === RISK.high) {
-        try {
-          await ensureHighRiskFollowUp(anchor);
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          setSubmitError(
-            `Review saved, but scheduling the High Risk Referral visit failed: ${message}. ` +
-              "Please raise it with the field team so the worker is informed.",
-          );
-          return;
-        }
-        try {
-          await ensureReferralSlip(anchor);
-        } catch (err) {
-          const message = err instanceof Error ? err.message : String(err);
-          setSubmitError(
-            `Review saved, but scheduling the Referral Slip failed: ${message}. ` +
-              "The worker can still raise the slip from the patient's New Form list.",
-          );
-          return;
-        }
-      }
       try {
         sessionStorage.removeItem(storageKey);
       } catch {
         // storage may be disabled — nothing to clean up.
       }
+      // Deliberately NOT triggered by the limited-mouth path: its pre-set
+      // High Risk pairs with the dentist-visit action, not the biopsy flow.
+      if (!limitedMouthFixed && mapping?.risk === RISK.high) {
+        const problem = await bookHighRiskFollowUps(anchor);
+        if (problem) {
+          setSubmitError(problem);
+          return;
+        }
+      }
       navigate("/pending");
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setSubmitError(message);
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  // After a saved review whose follow-ups failed. The message stays up while this runs; a booking already made is
+  // skipped, so only what is missing is booked.
+  const bookFollowUpsAgain = async () => {
+    if (!saved) return;
+    setSubmitting(true);
+    try {
+      const problem = await bookHighRiskFollowUps(saved);
+      setSubmitError(problem);
+      if (!problem) navigate("/pending");
     } finally {
       setSubmitting(false);
     }
@@ -849,24 +810,39 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
 
       {submitError && <Alert severity="error">{submitError}</Alert>}
 
-      {!readOnly && (
+      {(!readOnly || saved) && (
         <Stack
           direction="row"
           justifyContent={{ xs: "stretch", sm: "flex-end" }}
           sx={{ pt: 1, pb: 4 }}
         >
-          <Button
-            variant="contained"
-            size="large"
-            disabled={submitting || !canSubmit}
-            onClick={submit}
-            sx={{
-              minWidth: { xs: "100%", sm: 160 },
-              width: { xs: "100%", sm: "auto" },
-            }}
-          >
-            {submitting ? "Submitting…" : "Complete"}
-          </Button>
+          {saved && submitError ? (
+            <Button
+              variant="contained"
+              size="large"
+              disabled={submitting}
+              onClick={bookFollowUpsAgain}
+              sx={{
+                minWidth: { xs: "100%", sm: 160 },
+                width: { xs: "100%", sm: "auto" },
+              }}
+            >
+              {submitting ? "Booking…" : "Book the follow-ups again"}
+            </Button>
+          ) : (
+            <Button
+              variant="contained"
+              size="large"
+              disabled={submitting || !canSubmit || saved !== null}
+              onClick={submit}
+              sx={{
+                minWidth: { xs: "100%", sm: 160 },
+                width: { xs: "100%", sm: "auto" },
+              }}
+            >
+              {submitting ? "Submitting…" : "Complete"}
+            </Button>
+          )}
         </Stack>
       )}
     </Stack>
