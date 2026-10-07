@@ -160,6 +160,8 @@ export interface UpsertEncounterBody {
   // included — completing a scheduled visit must send its dates back.
   "Earliest scheduled date"?: string | null;
   "Max scheduled date"?: string | null;
+  // A review created from a screening's page (tanuh-webapp#5): "review-<screening uuid>". The POST upserts by it.
+  "External ID"?: string;
   observations: Record<string, unknown>;
 }
 
