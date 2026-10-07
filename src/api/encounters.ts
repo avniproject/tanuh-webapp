@@ -2,12 +2,25 @@ import axios from "axios";
 import { http } from "@/auth/httpClient";
 import {
   ENCOUNTER_ID_CONCEPT,
+  MODEL_RESULT_CONCEPT,
+  MODEL_RUN_TIME_CONCEPT,
+  MODEL_STATUS_CONCEPT,
+  MODEL_VERSION_CONCEPT,
+  PLACE_OF_REFERRAL_CONCEPT,
+  REVIEW_CATEGORY_CONCEPT,
   REVIEWED_ORAL_SCREENING_CONCEPT,
   SCREENING_AI_RISK_CONCEPT,
   SCREENING_DATA_QUALITY_CONCEPT,
+  deriveWorkerOpinion,
   readAiRisk,
   readDataQuality,
+  readModelResult,
+  readModelRunTime,
+  readModelStatus,
+  readModelVersion,
   readObs,
+  readReviewCategory,
+  type WorkerOpinion,
 } from "@/constants/tanuhConcepts";
 import { getConcept, resetConceptCache } from "./concepts";
 import { idbDel, idbGet, idbSet } from "./idbStore";
@@ -16,6 +29,9 @@ import type { EncounterApiResponse, PagedResponse } from "./types";
 import type { MeResponse } from "@/auth/authContext";
 
 const EPOCH = "2000-01-01T00:00:00.000Z";
+
+// A stored row: the trimmed encounter, plus the worker's opinion worked out before the photo groups are dropped.
+export type CachedEncounter = EncounterApiResponse & { workerOpinion?: WorkerOpinion };
 
 interface ListParams {
   encounterType: string;
@@ -343,15 +359,23 @@ export function sweepProgramEncounters(encounterType: string): Promise<Encounter
 // getLatestScreeningInfoBySubject read, so the store stays small (no image
 // group / photo-URL arrays). Bump CACHE_SCHEMA if that field set changes.
 // Schema history: 1 = Encounter ID + Reviewed Oral Screening; 2 = + Data Quality
-// and AI Risk Assessment (PE-96). A mismatch below discards the persisted rows and
-// the watermark, so the next load is one cold full sweep — the intended migration.
+// and AI Risk Assessment (PE-96); 3 = + the high-risk model's five values, Place of
+// referral and the worker's opinion (tanuh-webapp#4). A mismatch below discards the
+// persisted rows and the watermark, so the next load is one cold full sweep — the
+// intended migration.
 // ---------------------------------------------------------------------------
-const CACHE_SCHEMA = 2;
+const CACHE_SCHEMA = 3;
 const CACHED_OBS_REFS = [
   ENCOUNTER_ID_CONCEPT,
   REVIEWED_ORAL_SCREENING_CONCEPT,
   SCREENING_DATA_QUALITY_CONCEPT,
   SCREENING_AI_RISK_CONCEPT,
+  MODEL_RESULT_CONCEPT,
+  MODEL_STATUS_CONCEPT,
+  MODEL_VERSION_CONCEPT,
+  MODEL_RUN_TIME_CONCEPT,
+  REVIEW_CATEGORY_CONCEPT,
+  PLACE_OF_REFERRAL_CONCEPT,
 ] as const;
 const CACHE_OVERLAP_MS = 5 * 60 * 1000;
 const CACHE_COLD_PAGE_CAP = 200; // ~20k rows; one-time cold-start guard
@@ -387,12 +411,12 @@ export function clearEncounterCacheScope(): void {
 interface CachedEncounters {
   schema: number;
   watermark: string; // max "Last modified at" seen so far, ISO
-  records: EncounterApiResponse[];
+  records: CachedEncounter[];
 }
 
 // Keep only the fields the pairing/screening-info consumers read; drop the rest
 // (notably the heavy repeatable image groups) so the persisted set stays tiny.
-function trimForCache(e: EncounterApiResponse): EncounterApiResponse {
+export function trimForCache(e: EncounterApiResponse): CachedEncounter {
   const obs: Record<string, unknown> = {};
   for (const ref of CACHED_OBS_REFS) {
     const v = e.observations?.[ref.name];
@@ -412,6 +436,7 @@ function trimForCache(e: EncounterApiResponse): EncounterApiResponse {
     "Cancel date time": e["Cancel date time"],
     ...(e["Enrolment ID"] ? { "Enrolment ID": e["Enrolment ID"] } : {}),
     observations: obs,
+    workerOpinion: deriveWorkerOpinion(e.observations ?? {}),
     audit: {
       "Created at": e.audit?.["Created at"],
       "Created by": e.audit?.["Created by"],
@@ -439,7 +464,7 @@ async function fetchEncountersSince(
   return all;
 }
 
-const cachedLayerMemo = new Map<string, { at: number; promise: Promise<EncounterApiResponse[]> }>();
+const cachedLayerMemo = new Map<string, { at: number; promise: Promise<CachedEncounter[]> }>();
 
 /**
  * Warm-cache + delta replacement for `sweepEncounters(type)` (unfiltered). Reads
@@ -448,7 +473,7 @@ const cachedLayerMemo = new Map<string, { at: number; promise: Promise<Encounter
  * On any storage failure it still returns a correct set (a full fetch), just
  * without the persistence benefit.
  */
-export function getCachedEncounters(encounterType: string): Promise<EncounterApiResponse[]> {
+export function getCachedEncounters(encounterType: string): Promise<CachedEncounter[]> {
   const memo = cachedLayerMemo.get(encounterType);
   if (memo && Date.now() - memo.at < SWEEP_TTL_MS) return memo.promise;
   const promise = Promise.all(SOURCES.map((source) => cachedFromSource(source, encounterType))).then((parts) =>
@@ -463,7 +488,7 @@ export function getCachedEncounters(encounterType: string): Promise<EncounterApi
 // their own lastModified order, so each keeps its own key and watermark. The
 // standalone key is the one every existing browser already has (no schema bump,
 // no cold reload); the program key is new and simply starts cold.
-async function cachedFromSource(source: EncounterSource, encounterType: string): Promise<EncounterApiResponse[]> {
+async function cachedFromSource(source: EncounterSource, encounterType: string): Promise<CachedEncounter[]> {
   // No scope yet (list mounted before /me answered): full fetch, persist nothing.
   const typeKey = source === "program" ? `program:${encounterType}` : encounterType;
   const key = cacheScope ? `${CACHE_KEY_PREFIX}:${cacheScope}:${typeKey}` : null;
@@ -531,6 +556,13 @@ export interface LatestScreeningInfo {
   // job/backfill has not reached). The list shows only dataQuality === "Pass".
   dataQuality?: string;
   aiRisk?: string;
+  // tanuh-webapp#4: the high-risk model's values on the screening, where the job has written them.
+  modelResult?: string;
+  modelStatus?: string;
+  modelVersion?: string;
+  modelRunTime?: string;
+  reviewCategory?: string;
+  workerOpinion?: WorkerOpinion;
 }
 
 // Sortable creation key. A completed Oral Screening schedules its review
@@ -540,7 +572,7 @@ function createdAtKey(e: EncounterApiResponse): string {
   return e.audit?.["Created at"] ?? e["Encounter date time"] ?? e["Earliest scheduled date"] ?? "";
 }
 
-function toScreeningInfo(screening: EncounterApiResponse): LatestScreeningInfo {
+function toScreeningInfo(screening: CachedEncounter): LatestScreeningInfo {
   const obs = screening.observations ?? {};
   return {
     screeningUuid: screening.ID,
@@ -550,6 +582,12 @@ function toScreeningInfo(screening: EncounterApiResponse): LatestScreeningInfo {
     healthWorker: screening.audit?.["Created by"] ?? "",
     dataQuality: readDataQuality(obs),
     aiRisk: readAiRisk(obs),
+    modelResult: readModelResult(obs),
+    modelStatus: readModelStatus(obs),
+    modelVersion: readModelVersion(obs),
+    modelRunTime: readModelRunTime(obs),
+    reviewCategory: readReviewCategory(obs),
+    workerOpinion: screening.workerOpinion,
   };
 }
 
