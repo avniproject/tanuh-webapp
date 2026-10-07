@@ -6,6 +6,7 @@ import {
   Card,
   CardContent,
   Checkbox,
+  Chip,
   CircularProgress,
   FormControl,
   FormControlLabel,
@@ -35,27 +36,35 @@ import {
 } from "@/api/encounters";
 import { getSubject } from "@/api/subjects";
 import { decideCaseRoute } from "@/api/caseRoute";
-import { getConcept, hasScreeningQualityGate, type ConceptAnswer } from "@/api/concepts";
+import { getConcept, hasHighRiskModel, hasScreeningQualityGate, type ConceptAnswer } from "@/api/concepts";
+import { buildCreatedReviewBody, decideCreate, findReviewCreatedFrom } from "@/api/reviewCreate";
 import type { EncounterApiResponse, SubjectApiResponse } from "@/api/types";
 import {
   ENCOUNTER_TYPE,
   ENCOUNTER_ID_CONCEPT,
   HABIT_CONCEPTS,
+  MODEL_AGREEMENT_CONCEPT,
   PATIENT_ID_CONCEPT,
   SYMPTOMS_CONCEPT,
   isLegacyOralScreening,
   QUALITY_VALUES,
   REVIEW_CONCEPTS,
   REVIEWED_ORAL_SCREENING_CONCEPT,
+  REVIEW_CATEGORY_VALUES,
   REVIEW_IMAGE_GROUP,
   REVIEW_IMAGE_GROUP_CHILD,
   VERDICT_VALUES,
   VISUAL_EXAM_CONCEPTS,
-  readAiRisk,
+  deriveWorkerOpinion,
   readDataQuality,
+  readModelResult,
+  readModelRunTime,
+  readModelVersion,
   readObs,
+  readReviewCategory,
 } from "@/constants/tanuhConcepts";
-import { AiRiskBadge, DataQualityBadge } from "@/components/StatusBadge";
+import { CategoryBadge, DataQualityBadge, ModelResultBadge } from "@/components/StatusBadge";
+import { computeAgreement } from "./agreement";
 import {
   collectPhotos,
   deriveClassification,
@@ -201,6 +210,9 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
   );
   // PE-96: the Data Quality card exists only for an org that carries the concept.
   const { data: qualityGate } = useAsync(() => hasScreeningQualityGate(), []);
+  // tanuh-webapp#5: the model's panel exists only for an org with the high-risk model. A failed probe hides the panel
+  // and nothing else; the agreement below is decided from the screening's own model result.
+  const { data: modelOn } = useAsync(() => hasHighRiskModel(), []);
   // In-progress form state is persisted to sessionStorage keyed by the
   // encounter uuid so it survives HMR, accidental refreshes, and tab
   // switches mid-review. Cleared on successful submit.
@@ -356,25 +368,53 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
     missingPhotoVerdicts.length === 0 && !diagnosisMissing && !subTypeMissing && !highestRiskMissing;
 
   const submit = async () => {
+    if (readOnly || !canSubmit) return;
     const review = loaded.review;
-    if (readOnly || !canSubmit || !review) return;
+    // tanuh-webapp#5: without a booked review the submit creates one, for a standalone screening only (there is no
+    // programme POST).
+    if (!review && isProgramEncounter(loaded.screening)) {
+      setSubmitError("This case is recorded inside a program and can be reviewed only from its booked review.");
+      return;
+    }
     setSubmitting(true);
     setSubmitError(null);
     try {
-      // Another physician may have completed this review since it was opened —
-      // re-check so a second submit can't silently overwrite the first.
-      // Best-effort (not transactional), but it closes the common case. The
-      // subject's reviews are re-fetched alongside (not reused from load time)
-      // so the Encounter ID sequence below is computed on current data.
-      const [current, reviewsNow] = await Promise.all([
-        getEncounter(review.ID),
-        listVisitsFor(review, ENCOUNTER_TYPE.physicianReviewForm.name),
-      ]);
-      if (isCompleted(current)) {
-        setSubmitError(
-          "This review has already been completed by someone else. Go back and reopen it to see the recorded answers.",
-        );
-        return;
+      const patientId = readObs<string>(loaded.subject.observations ?? {}, PATIENT_ID_CONCEPT);
+      let current: EncounterApiResponse | null = null;
+      let encounterId: string | null;
+      if (review) {
+        // Another physician may have completed this review since it was opened —
+        // re-check so a second submit can't silently overwrite the first.
+        // Best-effort (not transactional), but it closes the common case. The
+        // subject's reviews are re-fetched alongside (not reused from load time)
+        // so the Encounter ID sequence below is computed on current data.
+        const [fetched, reviewsNow] = await Promise.all([
+          getEncounter(review.ID),
+          listVisitsFor(review, ENCOUNTER_TYPE.physicianReviewForm.name),
+        ]);
+        current = fetched;
+        if (isCompleted(current)) {
+          setSubmitError(
+            "This review has already been completed by someone else. Go back and reopen it to see the recorded answers.",
+          );
+          return;
+        }
+        encounterId =
+          readObs<string>(current.observations ?? {}, ENCOUNTER_ID_CONCEPT) ??
+          computeNextEncounterId(patientId, "CLR", reviewsNow, review.ID);
+      } else {
+        // The created review carries External ID review-<screening uuid>, which a GET by id also matches: a review
+        // created from this screening by anyone (another physician, a second window) refuses this submit.
+        const [existing, reviewsNow] = await Promise.all([
+          findReviewCreatedFrom(loaded.screening.ID),
+          listVisitsFor(loaded.screening, ENCOUNTER_TYPE.physicianReviewForm.name),
+        ]);
+        const decision = decideCreate(existing, patientId, reviewsNow);
+        if (decision.kind === "refuse") {
+          setSubmitError("This case has already been reviewed.");
+          return;
+        }
+        encounterId = decision.encounterId;
       }
       const observations: Record<string, unknown> = {};
       // Physician verdicts → review form's repeatable Images QuestionGroup,
@@ -420,34 +460,38 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
       // Permanently tie this review to the screening it covered, so the list can
       // label it by its own Case ID instead of the subject's latest screening.
       observations[REVIEWED_ORAL_SCREENING_CONCEPT.name] = loaded.screening.ID;
-      // Rules only run on mobile, so the review's Encounter ID is written here.
-      // An id already on the encounter is reused verbatim (the PUT replaces
-      // observations wholesale — recomputing could change it); a subject
-      // without a Patient ID gets none, exactly like the mobile rule.
-      const encounterId =
-        readObs<string>(current.observations ?? {}, ENCOUNTER_ID_CONCEPT) ??
-        computeNextEncounterId(
-          readObs<string>(loaded.subject.observations ?? {}, PATIENT_ID_CONCEPT),
-          "CLR",
-          reviewsNow,
-          review.ID,
-        );
+      // Rules only run on mobile, so the review's Encounter ID is written here
+      // (worked out above). An id already on the encounter is reused verbatim
+      // (the save replaces observations wholesale — recomputing could change
+      // it); a subject without a Patient ID gets none, like the mobile rule.
       if (encounterId) observations[ENCOUNTER_ID_CONCEPT.name] = encounterId;
+      // tanuh-webapp#5: whether the clinician agreed with the model, only where the model scored this screening; an
+      // organisation without the configuration would reject the unknown concept for the whole submit.
+      const modelResult = readModelResult((loaded.screening.observations ?? {}) as Record<string, unknown>);
+      const agreement = computeAgreement(risk ?? undefined, classification, modelResult);
+      if (agreement && modelResult) observations[MODEL_AGREEMENT_CONCEPT.name] = agreement;
 
-      await submitEncounter(
-        review.ID,
-        {
-          "Encounter type": ENCOUNTER_TYPE.physicianReviewForm.name,
-          "Subject ID": review["Subject ID"],
-          "Encounter date time": new Date().toISOString(),
-          // Sent back unchanged: the PUT would otherwise null the window the
-          // Oral Screening rule scheduled this review in.
-          "Earliest scheduled date": current["Earliest scheduled date"],
-          "Max scheduled date": current["Max scheduled date"],
-          observations,
-        },
-        { program: isProgramEncounter(review) },
-      );
+      // The follow-ups below hang off the review: the booked one, or the one just created.
+      let anchor: EncounterApiResponse;
+      if (review && current) {
+        await submitEncounter(
+          review.ID,
+          {
+            "Encounter type": ENCOUNTER_TYPE.physicianReviewForm.name,
+            "Subject ID": review["Subject ID"],
+            "Encounter date time": new Date().toISOString(),
+            // Sent back unchanged: the PUT would otherwise null the window the
+            // Oral Screening rule scheduled this review in.
+            "Earliest scheduled date": current["Earliest scheduled date"],
+            "Max scheduled date": current["Max scheduled date"],
+            observations,
+          },
+          { program: isProgramEncounter(review) },
+        );
+        anchor = review;
+      } else {
+        anchor = await submitEncounter(null, buildCreatedReviewBody(loaded.screening, observations, new Date().toISOString()));
+      }
       // The list tabs cache their org-wide sweeps — drop them so the review
       // just completed shows up in the counts and High Risk set immediately.
       invalidateEncounterSweeps();
@@ -460,7 +504,7 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
       // High Risk pairs with the dentist-visit action, not the biopsy flow.
       if (!limitedMouthFixed && mapping?.risk === RISK.high) {
         try {
-          await ensureHighRiskFollowUp(review);
+          await ensureHighRiskFollowUp(anchor);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           setSubmitError(
@@ -470,7 +514,7 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
           return;
         }
         try {
-          await ensureReferralSlip(review);
+          await ensureReferralSlip(anchor);
         } catch (err) {
           const message = err instanceof Error ? err.message : String(err);
           setSubmitError(
@@ -580,6 +624,12 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
         {qualityGate && (
           <Grid size={{ xs: 12, md: 6 }}>
             <DataQualityCard screening={loaded.screening} />
+          </Grid>
+        )}
+        {/* tanuh-webapp#5: what the high-risk model said, beside the photos. Nothing in the form is filled from it. */}
+        {modelOn && (
+          <Grid size={{ xs: 12, md: 6 }}>
+            <ModelPanel screening={loaded.screening} />
           </Grid>
         )}
         {/* Shown only for the limited-mouth-opening path for now — whether it
@@ -906,7 +956,6 @@ function SymptomsCard({ screening }: { screening: EncounterApiResponse }) {
 function DataQualityCard({ screening }: { screening: EncounterApiResponse }) {
   const obs = screening.observations ?? {};
   const dataQuality = readDataQuality(obs);
-  const aiRisk = readAiRisk(obs);
   return (
     <Card variant="outlined" data-testid="data-quality-card" sx={{ height: "100%" }}>
       <CardContent>
@@ -914,7 +963,6 @@ function DataQualityCard({ screening }: { screening: EncounterApiResponse }) {
           Data Quality
         </Typography>
         <DetailRow label="Data Quality" value={<DataQualityBadge value={dataQuality} />} />
-        <DetailRow label="AI Risk Assessment" value={<AiRiskBadge dataQuality={dataQuality} aiRisk={aiRisk} />} />
         {/* Wording from Fathima (Discord, 2026-09-24); the earlier "Simulated values"
             demo flag was dropped on her instruction. */}
         <Typography variant="caption" component="p" color="text.secondary" sx={{ mt: 1.5 }}>
@@ -925,6 +973,54 @@ function DataQualityCard({ screening }: { screening: EncounterApiResponse }) {
           <br />
           Risk scores are generated only after required data quality checks pass.
         </Typography>
+      </CardContent>
+    </Card>
+  );
+}
+
+// tanuh-webapp#5: the high-risk model's values on the screening, read-only. The job writes them; a stand-in result is
+// labelled a test result, and the panel says when the model disagreed with the worker or has no result.
+function ModelPanel({ screening }: { screening: EncounterApiResponse }) {
+  const obs = (screening.observations ?? {}) as Record<string, unknown>;
+  const result = readModelResult(obs);
+  const version = readModelVersion(obs);
+  const runTime = readModelRunTime(obs);
+  const group = readReviewCategory(obs);
+  const opinion = deriveWorkerOpinion(obs);
+  const note =
+    group === REVIEW_CATEGORY_VALUES.flwOverride
+      ? "The model found nothing suspicious, but the health worker marked a photo suspicious."
+      : group === REVIEW_CATEGORY_VALUES.notScored || !result
+        ? "No model result is available for this screening."
+        : null;
+  return (
+    <Card variant="outlined" data-testid="model-panel" sx={{ height: "100%" }}>
+      <CardContent>
+        <Typography variant="overline" color="text.secondary">
+          High-risk model
+        </Typography>
+        <DetailRow label="Worker's opinion" value={opinion ?? "—"} />
+        <DetailRow label="Model result" value={<ModelResultBadge value={result} />} />
+        <DetailRow label="Group" value={<CategoryBadge value={group} />} />
+        <DetailRow
+          label="Model version"
+          value={
+            version ? (
+              <>
+                {version}
+                {version === "stub" && <Chip size="small" label="Test result" data-testid="test-result-label" />}
+              </>
+            ) : (
+              "—"
+            )
+          }
+        />
+        <DetailRow label="Scored at" value={runTime ? format(parseISO(runTime), "dd MMM yyyy, h:mm a") : "—"} />
+        {note && (
+          <Typography variant="body2" sx={{ mt: 1.5 }} data-testid="model-panel-note">
+            {note}
+          </Typography>
+        )}
       </CardContent>
     </Card>
   );

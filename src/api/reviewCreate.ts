@@ -1,5 +1,6 @@
+import axios from "axios";
 import { ENCOUNTER_ID_CONCEPT, ENCOUNTER_TYPE, readObs } from "@/constants/tanuhConcepts";
-import { REVIEW_EXTERNAL_ID_PREFIX, computeNextEncounterId, isCompleted, type UpsertEncounterBody } from "./encounters";
+import { REVIEW_EXTERNAL_ID_PREFIX, computeNextEncounterId, getEncounter, isCompleted, type UpsertEncounterBody } from "./encounters";
 import type { EncounterApiResponse } from "./types";
 
 // tanuh-webapp#5: a screening the model sent for review has no booked review, so its submit creates one. The External
@@ -35,4 +36,14 @@ export function buildCreatedReviewBody(
     "External ID": reviewExternalId(screening.ID),
     observations,
   };
+}
+
+// The review created from this screening, by anyone, or null: a GET by id matches the External ID as well as the uuid.
+export async function findReviewCreatedFrom(screeningUuid: string): Promise<EncounterApiResponse | null> {
+  try {
+    return await getEncounter(reviewExternalId(screeningUuid));
+  } catch (err) {
+    if (axios.isAxiosError(err) && err.response?.status === 404) return null;
+    throw err;
+  }
 }
