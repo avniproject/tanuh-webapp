@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useState } from "react";
 import {
   Alert,
   Box,
@@ -34,7 +34,7 @@ import {
   submitEncounter,
 } from "@/api/encounters";
 import { getSubject } from "@/api/subjects";
-import { getConcept, hasScreeningQualityGate, type ConceptAnswer } from "@/api/concepts";
+import { getConcept, type ConceptAnswer } from "@/api/concepts";
 import type { EncounterApiResponse, SubjectApiResponse } from "@/api/types";
 import {
   ENCOUNTER_TYPE,
@@ -50,11 +50,8 @@ import {
   REVIEW_IMAGE_GROUP_CHILD,
   VERDICT_VALUES,
   VISUAL_EXAM_CONCEPTS,
-  readAiRisk,
-  readDataQuality,
   readObs,
 } from "@/constants/tanuhConcepts";
-import { AiRiskBadge, DataQualityBadge } from "@/components/StatusBadge";
 import {
   collectPhotos,
   deriveClassification,
@@ -161,8 +158,6 @@ async function loadReview(encounterUuid: string): Promise<LoadedState> {
 
 export function ReviewForm({ encounterUuid, onBack }: Props) {
   const { data: loaded, error: loadError } = useAsync(() => loadReview(encounterUuid), [encounterUuid]);
-  // PE-96: the Data Quality card exists only for an org that carries the concept.
-  const { data: qualityGate } = useAsync(() => hasScreeningQualityGate(), []);
   // In-progress form state is persisted to sessionStorage keyed by the
   // encounter uuid so it survives HMR, accidental refreshes, and tab
   // switches mid-review. Cleared on successful submit.
@@ -532,14 +527,6 @@ export function ReviewForm({ encounterUuid, onBack }: Props) {
         <Grid size={{ xs: 12, md: 6 }}>
           <SymptomsCard screening={loaded.screening} />
         </Grid>
-        {/* PE-96: fourth cell of a two-column grid, so on md+ it renders directly
-            under Habit History (row 2, right), as in the approved prototype. Only
-            for an org that carries the Data Quality concept. */}
-        {qualityGate && (
-          <Grid size={{ xs: 12, md: 6 }}>
-            <DataQualityCard screening={loaded.screening} />
-          </Grid>
-        )}
         {/* Shown only for the limited-mouth-opening path for now — whether it
             should appear on every review is pending a decision with Tanuh. */}
         {mouthNotOpen && (
@@ -857,37 +844,6 @@ function SymptomsCard({ screening }: { screening: EncounterApiResponse }) {
   );
 }
 
-// PE-96: the backend-stamped Data Quality gate and AI risk label on the screening.
-// Read-only, always rendered: an unstamped screening shows "—" on both rows so
-// the card is discoverable on old cases too. The caption is the client's text. A Fail screening opened by URL still
-// renders (the list hides it; the detail page never redirects).
-function DataQualityCard({ screening }: { screening: EncounterApiResponse }) {
-  const obs = screening.observations ?? {};
-  const dataQuality = readDataQuality(obs);
-  const aiRisk = readAiRisk(obs);
-  return (
-    <Card variant="outlined" data-testid="data-quality-card" sx={{ height: "100%" }}>
-      <CardContent>
-        <Typography variant="overline" color="text.secondary">
-          Data Quality
-        </Typography>
-        <DetailRow label="Data Quality" value={<DataQualityBadge value={dataQuality} />} />
-        <DetailRow label="AI Risk Assessment" value={<AiRiskBadge dataQuality={dataQuality} aiRisk={aiRisk} />} />
-        {/* Wording from Fathima (Discord, 2026-09-24); the earlier "Simulated values"
-            demo flag was dropped on her instruction. */}
-        <Typography variant="caption" component="p" color="text.secondary" sx={{ mt: 1.5 }}>
-          <Box component="strong" sx={{ fontWeight: 700 }}>
-            AI-assisted pre-screening only.
-          </Box>{" "}
-          Not a diagnosis. Final clinical assessment remains with the clinician.
-          <br />
-          Risk scores are generated only after required data quality checks pass.
-        </Typography>
-      </CardContent>
-    </Card>
-  );
-}
-
 // Visual-exam findings from the screening — the review's only clinical context
 // when limited mouth opening prevented photo capture. "Do you see any lesions?"
 // and the referral acknowledgment are mutually exclusive paths in the bundle,
@@ -915,14 +871,11 @@ function OralVisualExamCard({ screening }: { screening: EncounterApiResponse }) 
   );
 }
 
-// `value` may be a badge (an inline span), not just text.
-function DetailRow({ label, value }: { label: string; value: ReactNode }) {
+function DetailRow({ label, value }: { label: string; value: string }) {
   return (
-    <Stack direction="row" alignItems="center" sx={{ py: 0.5 }}>
+    <Stack direction="row" sx={{ py: 0.5 }}>
       <Typography sx={{ minWidth: 180, fontWeight: 500 }}>{label}</Typography>
-      <Typography component="div" sx={{ display: "inline-flex", alignItems: "center", gap: 0.5 }}>
-        : {value}
-      </Typography>
+      <Typography>: {value}</Typography>
     </Stack>
   );
 }
