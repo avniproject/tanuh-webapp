@@ -29,7 +29,7 @@ import {
   isCompleted,
   isProgramEncounter,
   listVisitsFor,
-  pairReviewsToScreenings,
+  screeningsByReview,
   submitEncounter,
 } from "@/api/encounters";
 import { getSubject } from "@/api/subjects";
@@ -118,12 +118,12 @@ async function loadReview(encounterUuid: string): Promise<LoadedState> {
       getConcept(REVIEW_CONCEPTS.provisionalDiagnosis.uuid),
       getConcept(REVIEW_CONCEPTS.provisionalSubType.uuid),
     ]);
-  // Load the specific screening THIS review covers (its stamped source, or the
-  // created-order paired one), not just the subject's latest — otherwise a
-  // multi-screening subject's reviews would all bind to the newest screening.
-  const paired = pairReviewsToScreenings(reviews, screenings);
+  // Load the specific screening THIS review covers, by the rule the list and the
+  // case page use (a booked review: the screening that booked it; a completed
+  // one: its stamp, or the created-order pairing), not just the subject's latest —
+  // otherwise a multi-screening subject's reviews would all bind to the newest one.
   const screening =
-    paired.get(review.ID) ??
+    screeningsByReview(reviews, screenings).get(review.ID) ??
     screenings
       .filter((e) => !e.Voided && e["Encounter date time"] != null)
       .sort((a, b) => (b["Encounter date time"] || "").localeCompare(a["Encounter date time"] || ""))[0];

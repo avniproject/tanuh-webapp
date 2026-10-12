@@ -653,6 +653,8 @@ function groupBySubjectAndEnrolment(encounters: EncounterApiResponse[]): Record<
  * is authoritative and freezes that pairing; unstamped reviews (legacy +
  * still-pending) fall back to created-order index pairing against the
  * screenings not already claimed by a stamp. Returns reviewUuid -> screening.
+ * Callers go through screeningsByReview, which re-pairs a booked review with
+ * the screening that booked it.
  */
 export function pairReviewsToScreenings(
   reviews: EncounterApiResponse[],
@@ -721,6 +723,25 @@ export function pairBookedReviewToScreening(
   return best;
 }
 
+/**
+ * The screening each review covers, by one rule wherever a review is shown: the list, the case page and the review
+ * page (tanuh-webapp#5 review). A booked review takes the screening that booked it; a completed one keeps its stamp
+ * or, unstamped, the created-order pairing. The review page used the created-order pairing for booked reviews too, so
+ * a patient's earlier, unreferred screening took the review a later referral booked, and the submit stamped it.
+ */
+export function screeningsByReview(
+  reviews: EncounterApiResponse[],
+  screenings: EncounterApiResponse[],
+): Map<string, EncounterApiResponse> {
+  const paired = pairReviewsToScreenings(reviews, screenings);
+  for (const review of reviews) {
+    if (!isScheduled(review)) continue;
+    const booked = pairBookedReviewToScreening(review, screenings);
+    if (booked) paired.set(review.ID, booked);
+  }
+  return paired;
+}
+
 // The review a physician recorded for this screening: a live completed review stamped with it, or created from its
 // page.
 export function findScreeningReview(
@@ -757,7 +778,7 @@ export async function getReviewScreeningPairing(
   const screeningsByScope = groupBySubjectAndEnrolment(screeningsAll);
   const pairing: Record<string, LatestScreeningInfo> = {};
   for (const [scope, reviews] of Object.entries(reviewsByScope)) {
-    const paired = pairReviewsToScreenings(reviews, screeningsByScope[scope] ?? []);
+    const paired = screeningsByReview(reviews, screeningsByScope[scope] ?? []);
     for (const [reviewUuid, screening] of paired) pairing[reviewUuid] = toScreeningInfo(screening);
   }
   return pairing;

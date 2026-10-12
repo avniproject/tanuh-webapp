@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { EncounterApiResponse } from "./types";
-import { isScreeningReviewed, pairBookedReviewToScreening } from "./encounters";
+import { isScreeningReviewed, pairBookedReviewToScreening, screeningsByReview } from "./encounters";
 import { REVIEWED_ORAL_SCREENING_CONCEPT } from "@/constants/tanuhConcepts";
 
 const t = (second: number) => new Date(Date.UTC(2026, 9, 7, 10, 0, second)).toISOString();
@@ -45,5 +45,32 @@ describe("isScreeningReviewed", () => {
       completedReview({ observations: stamp, Voided: true }),
       completedReview({ observations: stamp, "Encounter date time": null }),
     ])).toBe(false);
+  });
+});
+
+describe("screeningsByReview", () => {
+  const completed = (id: string, createdSecond: number, stamp?: string) =>
+    ({
+      ID: id, "Subject ID": "p1", Voided: false, "Encounter date time": t(createdSecond + 100),
+      observations: stamp ? { [REVIEWED_ORAL_SCREENING_CONCEPT.name]: stamp } : {}, audit: { "Created at": t(createdSecond) },
+    }) as EncounterApiResponse;
+
+  // Review finding (#5): the review page paired a booked review with the oldest unclaimed screening. A patient's
+  // unreferred S1 took the review S2's referral booked: the page showed S1's photos and the submit stamped S1.
+  it("gives a booked review the screening that booked it, as the list and the case page do", () => {
+    const s1 = screening("s1", 0);
+    const s2 = screening("s2", 20);
+    const r1 = booked("r1", 22);
+    expect(screeningsByReview([r1], [s1, s2]).get("r1")?.ID).toBe("s2");
+    expect(screeningsByReview([r1], [s1, s2]).get("r1")).toBe(pairBookedReviewToScreening(r1, [s1, s2]));
+  });
+  it("keeps a completed review on its stamp, and an unstamped one on the created-order pairing", () => {
+    const paired = screeningsByReview([completed("legacy", 5), completed("stamped", 22, "s2")], [screening("s1", 0), screening("s2", 20)]);
+    expect(paired.get("stamped")?.ID).toBe("s2");
+    expect(paired.get("legacy")?.ID).toBe("s1");
+  });
+  it("leaves the created-order pairing for a booked review the booking rule cannot place", () => {
+    const noCreatedAt = { ...booked("r1", 22), audit: {} } as EncounterApiResponse;
+    expect(screeningsByReview([noCreatedAt], [screening("s1", 0)]).get("r1")?.ID).toBe("s1");
   });
 });
