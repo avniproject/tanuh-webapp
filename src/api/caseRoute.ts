@@ -34,8 +34,9 @@ export function decideCaseRoute(
 }
 
 // Each of these would otherwise take the create path and write a review, and on High Risk its follow-ups, against a
-// deleted or unfinished record. A deleted patient's row stays in the list until the page is reloaded. Checked before
-// the booked review too, so the case page never leads into a deleted patient's review.
+// deleted or unfinished record. A deleted patient's row can still be in the list: the list reads a patient only once the
+// row is on screen, and keeps that read for the page's life. Checked before the booked review too, so the case page
+// never leads into a deleted patient's review.
 function whyNotReviewable(screening: EncounterApiResponse, subject: SubjectApiResponse): string | null {
   if (screening["Encounter type"] !== ENCOUNTER_TYPE.oralScreening.name)
     return "This visit is not an Oral Screening, so there is no case to review.";

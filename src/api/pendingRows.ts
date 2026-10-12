@@ -1,17 +1,29 @@
-import { REVIEW_CATEGORY_VALUES, WORKER_OPINION, readModelStatus, readReviewCategory } from "@/constants/tanuhConcepts";
-import { isCompleted, isScreeningReviewed, pairBookedReviewToScreening, type CachedEncounter } from "./encounters";
-import type { EncounterWithLocation } from "./impl";
+import { ENCOUNTER_TYPE, REVIEW_CATEGORY_VALUES, WORKER_OPINION, readModelStatus, readReviewCategory } from "@/constants/tanuhConcepts";
+import { addressChain, patientsInLocation } from "./address";
+import {
+  isCompleted,
+  isProgramEncounter,
+  isScreeningReviewed,
+  pairBookedReviewToScreening,
+  type CachedEncounter,
+} from "./encounters";
+import { getEncounterUuidsInLocation, type EncounterWithLocation } from "./impl";
+import { readSubjects } from "./programList";
 import type { SubjectApiResponse } from "./types";
 
 // tanuh-webapp#4. The pending tab, where the organisation has the high-risk model: every booked review still waiting,
 // and every screening the model sent for review that nobody has reviewed. EncounterWithLocation is shaped around a
 // review and stays for the completed tab.
 export type PendingRow =
-  | { kind: "booked"; review: EncounterWithLocation; screening?: CachedEncounter; group?: string; subject?: SubjectApiResponse | null }
-  | { kind: "screening"; screening: CachedEncounter; group: string; subject?: SubjectApiResponse | null };
+  | { kind: "booked"; review: EncounterWithLocation; screening?: CachedEncounter; group?: string }
+  | { kind: "screening"; screening: CachedEncounter; group: string };
 
 export function pendingRowSubjectId(row: PendingRow): string {
   return row.kind === "booked" ? row.review.subject.uuid : row.screening["Subject ID"];
+}
+
+export function pendingRowKey(row: PendingRow): string {
+  return row.kind === "booked" ? row.review.encounterUuid : row.screening.ID;
 }
 
 export function selectPendingRows(
@@ -37,20 +49,88 @@ export function selectPendingRows(
   return rows;
 }
 
-// A deleted patient's rows go; a row whose patient could not be read stays, without the patient's details.
-export function withSubjects(rows: PendingRow[], subjects: Map<string, SubjectApiResponse | null>): PendingRow[] {
-  return rows
-    .map((row) => ({ ...row, subject: subjects.get(pendingRowSubjectId(row)) ?? null }))
-    .filter((row) => !row.subject?.Voided);
+// A deleted patient's rows go. A row whose patient could not be read stays, without the patient's details, and so does
+// one not read yet: the list reads patients for the rows on screen only (tanuh-webapp#4 review), so a deleted patient's
+// row leaves the list, and its count, once it has been on screen.
+export function withoutDeletedPatients(
+  rows: PendingRow[],
+  subjects: ReadonlyMap<string, SubjectApiResponse | null>,
+): PendingRow[] {
+  return rows.filter((row) => !subjects.get(pendingRowSubjectId(row))?.Voided);
 }
 
 export function buildPendingRows(
   booked: EncounterWithLocation[],
   screenings: CachedEncounter[],
   reviews: CachedEncounter[],
-  subjects: Map<string, SubjectApiResponse | null>,
+  subjects: ReadonlyMap<string, SubjectApiResponse | null>,
 ): PendingRow[] {
-  return withSubjects(selectPendingRows(booked, screenings, reviews), subjects);
+  return withoutDeletedPatients(selectPendingRows(booked, screenings, reviews), subjects);
+}
+
+// What the patient-location filter knows about the screening rows (tanuh-webapp#4 review).
+export interface PatientLocationMatch {
+  // The screenings the server placed in the location, and whether that read finished.
+  inLocation: ReadonlySet<string>;
+  complete: boolean;
+  // For a screening the server cannot place, one recorded inside a program: the location's address chain, and the
+  // patient, null where the read failed.
+  chain: Record<string, string>;
+  subjects: ReadonlyMap<string, SubjectApiResponse | null>;
+}
+
+// A booked review was narrowed by the server already. A screening stays when the server placed it in the location, or,
+// recorded inside a program, when its patient's address is in the location. A screening that could not be checked
+// stays, and is returned in `unchecked`, so the filtered list never loses a case without saying so: before, a patient
+// read that failed dropped its row silently.
+export function filterByPatientLocation(
+  rows: PendingRow[],
+  match: PatientLocationMatch,
+): { rows: PendingRow[]; unchecked: Set<string> } {
+  const programPatients = rows.flatMap((r) =>
+    r.kind === "screening" && isProgramEncounter(r.screening) ? [r.screening["Subject ID"]] : [],
+  );
+  const placed = patientsInLocation(programPatients, match.subjects, match.chain);
+  const unchecked = new Set<string>();
+  const kept = rows.filter((row) => {
+    if (row.kind === "booked") return true;
+    if (isProgramEncounter(row.screening)) {
+      if (placed.unplaced.has(row.screening["Subject ID"])) unchecked.add(row.screening.ID);
+      return placed.kept.has(row.screening["Subject ID"]);
+    }
+    if (match.inLocation.has(row.screening.ID)) return true;
+    if (match.complete) return false;
+    unchecked.add(row.screening.ID);
+    return true;
+  });
+  return { rows: kept, unchecked };
+}
+
+// The reads behind filterByPatientLocation: a server lookup for the standalone screenings, made only when there are
+// some, and patient reads only for screenings recorded inside a program, which that lookup cannot place.
+export async function matchPatientLocation(rows: PendingRow[], locationUuid: string): Promise<PatientLocationMatch> {
+  const screenings = rows.flatMap((r) => (r.kind === "screening" ? [r.screening] : []));
+  const programPatients = screenings.filter(isProgramEncounter).map((s) => s["Subject ID"]);
+  const [{ uuids, complete }, chain, subjects] = await Promise.all([
+    screenings.some((s) => !isProgramEncounter(s))
+      ? getEncounterUuidsInLocation(ENCOUNTER_TYPE.oralScreening.name, "completed", locationUuid)
+      : Promise.resolve({ uuids: new Set<string>(), complete: true }),
+    programPatients.length > 0 ? addressChain(locationUuid) : Promise.resolve({}),
+    readSubjects(programPatients),
+  ]);
+  return { inLocation: uuids, complete, chain, subjects };
+}
+
+// The rows on one page of the list; both tabs page in the browser.
+export function rowsOnPage<T>(rows: readonly T[], page: number, pageSize: number): T[] {
+  return rows.slice(page * pageSize, (page + 1) * pageSize);
+}
+
+// The patients to read for the rows on screen, each once, leaving out those already read (tanuh-webapp#4 review). A
+// failed read (null) counts as read until the list reloads, so a patient the server keeps refusing is not asked for
+// again on every render.
+export function patientsToRead(rows: readonly { subjectId: string }[], known: ReadonlyMap<string, unknown>): string[] {
+  return [...new Set(rows.map((r) => r.subjectId))].filter((id) => !known.has(id));
 }
 
 // High Risk, then FLW override, then Low Risk with Not scored, then Safety sample. A booked review whose screening has

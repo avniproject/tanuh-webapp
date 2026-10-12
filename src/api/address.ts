@@ -21,3 +21,23 @@ export function inSubtree(address: unknown, chain: Record<string, string>): bool
   const levels = address as Record<string, unknown>;
   return Object.entries(chain).every(([type, name]) => levels[type] === name);
 }
+
+// Which of these patients live in the location's subtree, by their address. A patient whose read failed (null) or is
+// missing cannot be placed: it is kept, and listed in `unplaced`, so a filtered list never loses a case without saying
+// so (tanuh-webapp#4 review). A failed read used to place the patient nowhere, and its rows dropped out silently.
+export function patientsInLocation<T extends { location?: unknown }>(
+  ids: Iterable<string>,
+  subjects: ReadonlyMap<string, T | null>,
+  chain: Record<string, string>,
+): { kept: Set<string>; unplaced: Set<string> } {
+  const kept = new Set<string>();
+  const unplaced = new Set<string>();
+  for (const id of ids) {
+    const subject = subjects.get(id);
+    if (!subject) {
+      kept.add(id);
+      unplaced.add(id);
+    } else if (inSubtree(subject.location, chain)) kept.add(id);
+  }
+  return { kept, unplaced };
+}

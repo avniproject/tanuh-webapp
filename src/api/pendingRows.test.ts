@@ -2,7 +2,16 @@ import { describe, expect, it } from "vitest";
 import type { CachedEncounter } from "./encounters";
 import type { EncounterWithLocation } from "./impl";
 import type { SubjectApiResponse } from "./types";
-import { buildPendingRows, filterPendingRows, sortPendingRows, type PendingRow } from "./pendingRows";
+import {
+  buildPendingRows,
+  filterByPatientLocation,
+  filterPendingRows,
+  patientsToRead,
+  rowsOnPage,
+  sortPendingRows,
+  type PatientLocationMatch,
+  type PendingRow,
+} from "./pendingRows";
 import { MODEL_STATUS_CONCEPT, REVIEW_CATEGORY_CONCEPT, REVIEWED_ORAL_SCREENING_CONCEPT } from "@/constants/tanuhConcepts";
 
 const t = (minute: number) => new Date(Date.UTC(2026, 9, 7, 10, minute)).toISOString();
@@ -44,11 +53,10 @@ describe("buildPendingRows", () => {
     const rescored = screening("s1", "p1", 1, "High Risk");
     expect(buildPendingRows([], [rescored], [completedReviewOf("s1")], subjectsFor("p1"))).toEqual([]);
   });
-  it("drops a deleted patient's rows and keeps a row whose patient could not be read", () => {
+  it("drops a deleted patient's rows and keeps a row whose patient could not be read, or is not read yet", () => {
     const subjects = new Map<string, SubjectApiResponse | null>([["p1", subject("p1", true)], ["p2", null]]);
-    const rows = buildPendingRows([], [screening("gone", "p1", 1, "High Risk"), screening("unread", "p2", 2, "Low Risk")], [], subjects);
-    expect(ids(rows)).toEqual(["unread"]);
-    expect(rows[0].subject).toBeNull();
+    const screenings = [screening("gone", "p1", 1, "High Risk"), screening("failed", "p2", 2, "Low Risk"), screening("later", "p3", 3, "Low Risk")];
+    expect(ids(buildPendingRows([], screenings, [], subjects))).toEqual(["failed", "later"]);
   });
 });
 
@@ -69,5 +77,50 @@ describe("filterPendingRows", () => {
     const rows = buildPendingRows([], [screening("a", "p1", 1, "Safety sample"), screening("b", "p2", 2, "High Risk")], [], subjectsFor("p1", "p2"));
     expect(ids(filterPendingRows(rows, "safety-sample"))).toEqual(["a"]);
     expect(ids(filterPendingRows(rows, "all"))).toEqual(["a", "b"]);
+  });
+});
+
+// Review finding (#4): the location filter read every pending patient, and a failed read dropped its row silently.
+describe("filterByPatientLocation", () => {
+  const chain = { State: "Karnataka", District: "Bengaluru Rural" };
+  const inChain = (id: string) => ({ ...subject(id), location: { ...chain, Village: "Begur" } }) as SubjectApiResponse;
+  const elsewhere = (id: string) => ({ ...subject(id), location: { State: "Karnataka", District: "Mysuru" } }) as SubjectApiResponse;
+  const inProgram = (s: CachedEncounter) => ({ ...s, "Enrolment ID": "e1" }) as CachedEncounter;
+  const match = (over: Partial<PatientLocationMatch>): PatientLocationMatch =>
+    ({ inLocation: new Set(), complete: true, chain, subjects: new Map(), ...over });
+
+  it("keeps booked reviews and the screenings the server placed in the location, and drops the rest", () => {
+    const rows = buildPendingRows([bookedRow("r1", "p9")], [screening("here", "p1", 1, "High Risk"), screening("away", "p2", 2, "High Risk")], [bookedReview("r1", "p9", 0)], new Map());
+    const result = filterByPatientLocation(rows, match({ inLocation: new Set(["here"]) }));
+    expect(ids(result.rows).sort()).toEqual(["here", "r1"]);
+    expect(result.unchecked.size).toBe(0);
+  });
+  it("keeps and counts the screenings it cannot rule out when the server's read stopped short", () => {
+    const rows = buildPendingRows([], [screening("here", "p1", 1, "High Risk"), screening("unknown", "p2", 2, "High Risk")], [], new Map());
+    const result = filterByPatientLocation(rows, match({ inLocation: new Set(["here"]), complete: false }));
+    expect(ids(result.rows)).toEqual(["here", "unknown"]);
+    expect([...result.unchecked]).toEqual(["unknown"]);
+  });
+  it("matches a screening inside a program by its patient's address, and keeps and counts one whose patient could not be read", () => {
+    const rows = buildPendingRows([], [inProgram(screening("here", "p1", 1, "High Risk")), inProgram(screening("away", "p2", 2, "High Risk")), inProgram(screening("failed", "p3", 3, "High Risk"))], [], new Map());
+    const subjects = new Map<string, SubjectApiResponse | null>([["p1", inChain("p1")], ["p2", elsewhere("p2")], ["p3", null]]);
+    const result = filterByPatientLocation(rows, match({ subjects }));
+    expect(ids(result.rows)).toEqual(["here", "failed"]);
+    expect([...result.unchecked]).toEqual(["failed"]);
+  });
+});
+
+// Review finding (#4): the pending tab read every pending patient to show 50.
+describe("reading the patients on screen", () => {
+  const view = (subjectId: string) => ({ subjectId });
+  const views = ["a", "a", "b", "c", "d"].map(view);
+  it("reads only the patients of the page shown, each once", () => {
+    expect(patientsToRead(rowsOnPage(views, 0, 2), new Map())).toEqual(["a"]);
+    expect(patientsToRead(rowsOnPage(views, 1, 2), new Map())).toEqual(["b", "c"]);
+    expect(patientsToRead(rowsOnPage(views, 2, 2), new Map())).toEqual(["d"]);
+  });
+  it("leaves out patients already read, a failed read included, until the list reloads", () => {
+    const known = new Map<string, SubjectApiResponse | null>([["b", subject("b")], ["c", null]]);
+    expect(patientsToRead(rowsOnPage(views, 1, 2), known)).toEqual([]);
   });
 });

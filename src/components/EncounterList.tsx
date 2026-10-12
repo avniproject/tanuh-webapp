@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import {
+  Alert,
   Box,
   Button,
   IconButton,
@@ -39,15 +40,21 @@ import {
 import { hasHighRiskModel } from "@/api/concepts";
 import { addressChain, inSubtree } from "@/api/address";
 import {
+  filterByPatientLocation,
   filterPendingRows,
+  matchPatientLocation,
+  patientsToRead,
+  pendingRowKey,
   pendingRowSubjectId,
+  rowsOnPage,
   selectPendingRows,
   sortPendingRows,
-  withSubjects,
+  withoutDeletedPatients,
   type GroupFilter,
   type PendingRow,
   type PendingSort,
 } from "@/api/pendingRows";
+import type { SubjectApiResponse } from "@/api/types";
 import { loadListState, saveListState, type ListState } from "@/api/listState";
 import {
   ENCOUNTER_ID_CONCEPT,
@@ -121,6 +128,7 @@ const SORTS: { value: PendingSort; label: string }[] = [
 interface RowView {
   key: string;
   href: string;
+  subjectId: string;
   caseId?: string | null;
   screeningDate?: string | null;
   village?: string | null;
@@ -136,6 +144,7 @@ function reviewRowView(e: EncounterWithLocation, info: LatestScreeningInfo | und
   return {
     key: e.encounterUuid,
     href: `/review/${e.encounterUuid}`,
+    subjectId: e.subject.uuid,
     caseId: info?.encounterId || info?.caseId || e.subject.externalId,
     screeningDate: info?.screeningDate,
     village: e.subject.location?.["Village"],
@@ -148,15 +157,14 @@ function reviewRowView(e: EncounterWithLocation, info: LatestScreeningInfo | und
   };
 }
 
-// A screening row opens the case page (tanuh-webapp#5); a booked review opens its review, as before.
-function pendingRowView(row: PendingRow): RowView {
+// A screening row opens the case page (tanuh-webapp#5); a booked review opens its review, as before. `subject` is the
+// patient once read, which only the rows on screen are.
+function pendingRowView(row: PendingRow, subject: SubjectApiResponse | null | undefined): RowView {
   const screening = row.screening;
   const obs = screening?.observations ?? {};
   const fromScreening = {
-    caseId:
-      (screening ? readObs<string>(obs, ENCOUNTER_ID_CONCEPT) : undefined) ||
-      row.subject?.["External ID"] ||
-      screening?.["Subject external ID"],
+    subjectId: pendingRowSubjectId(row),
+    caseId: (screening ? readObs<string>(obs, ENCOUNTER_ID_CONCEPT) : undefined) || screening?.["Subject external ID"],
     screeningDate: screening?.["Encounter date time"],
     healthWorker: screening?.audit?.["Created by"],
     opinion: screening?.workerOpinion,
@@ -167,7 +175,7 @@ function pendingRowView(row: PendingRow): RowView {
     return {
       key: row.screening.ID,
       href: `/case/${row.screening.ID}`,
-      village: row.subject?.location?.["Village"],
+      village: subject?.location?.["Village"],
       ...fromScreening,
     };
   }
@@ -176,7 +184,7 @@ function pendingRowView(row: PendingRow): RowView {
     href: `/review/${row.review.encounterUuid}`,
     ...fromScreening,
     caseId: fromScreening.caseId || row.review.subject.externalId,
-    village: row.review.subject.location?.["Village"] ?? row.subject?.location?.["Village"],
+    village: row.review.subject.location?.["Village"] ?? subject?.location?.["Village"],
   };
 }
 
@@ -221,7 +229,12 @@ export function EncounterList({ mode }: Props) {
       getAllEncountersWithLocation(params),
       getProgramEncountersWithLocation(params),
     ]);
-    return { content: [...standalone.content, ...program], totalElements: standalone.totalElements + program.length };
+    return {
+      content: [...standalone.content, ...program.rows],
+      totalElements: standalone.totalElements + program.rows.length,
+      // Program reviews kept under the location filter because their patient could not be read.
+      unchecked: program.unchecked,
+    };
   }, [mode, referralUuid, patientLocationUuid]);
 
   // tanuh-webapp#4: does the signed-in org have the high-risk model's values? Where it does, the pending tab adds the
@@ -231,20 +244,23 @@ export function EncounterList({ mode }: Props) {
   const pendingFromScreenings = mode === "pending" && modelOn === true;
 
   // The pending rows: every booked review still waiting, with the screening that booked it, and every screening the
-  // model sent for review that nobody has reviewed. Booked rows are narrowed by the server as before; screening rows are
-  // matched here by the patient's address and by the screening's own referral place, and one without a referral drops
-  // out while that filter is set.
-  const { data: pendingRows, error: rowsError } = useAsync(async () => {
+  // model sent for review that nobody has reviewed. Booked rows are narrowed by the server as before. Screening rows are
+  // matched to the patient's location by a server lookup rather than a read per patient (a screening inside a program
+  // still needs its patient read), and by the screening's own referral place here; one without a referral drops out
+  // while that filter is set. `unchecked` holds the rows kept because their location could not be checked
+  // (tanuh-webapp#4 review).
+  const { data: pending, error: rowsError } = useAsync(async () => {
     if (!pendingFromScreenings || !pageData) return null;
     const [screenings, reviews] = await Promise.all([
       getCachedEncounters(ENCOUNTER_TYPE.oralScreening.name),
       getCachedEncounters(ENCOUNTER_TYPE.physicianReviewForm.name),
     ]);
     let rows = selectPendingRows(pageData.content, screenings, reviews);
-    rows = withSubjects(rows, await readSubjects(rows.map(pendingRowSubjectId)));
+    const unchecked = new Set(pageData.unchecked);
     if (patientLocationUuid) {
-      const chain = await addressChain(patientLocationUuid);
-      rows = rows.filter((r) => r.kind === "booked" || inSubtree(r.subject?.location, chain));
+      const located = filterByPatientLocation(rows, await matchPatientLocation(rows, patientLocationUuid));
+      rows = located.rows;
+      located.unchecked.forEach((key) => unchecked.add(key));
     }
     if (referralUuid) {
       const chain = await addressChain(referralUuid);
@@ -252,8 +268,23 @@ export function EncounterList({ mode }: Props) {
         (r) => r.kind === "booked" || inSubtree(r.screening.observations?.[PLACE_OF_REFERRAL_CONCEPT.name], chain),
       );
     }
-    return rows;
+    return { rows, unchecked };
   }, [pendingFromScreenings, pageData]);
+
+  // The patients of the rows on screen, read as those rows show and kept for the page's life; none for the rest of
+  // the list. The pending tab used to read every pending patient before showing 50 (tanuh-webapp#4 review). A deleted
+  // patient's rows leave the list once read; a failed read keeps its row, without the patient's details.
+  const [subjects, setSubjects] = useState<ReadonlyMap<string, SubjectApiResponse | null>>(() => new Map());
+  const pendingRows = useMemo(
+    () => (pending ? withoutDeletedPatients(pending.rows, subjects) : null),
+    [pending, subjects],
+  );
+  // A failed read is asked again when the list reloads, as it was when the whole list was read on every load.
+  useEffect(() => {
+    setSubjects((known) =>
+      [...known.values()].includes(null) ? new Map([...known].filter(([, subject]) => subject !== null)) : known,
+    );
+  }, [pending]);
 
   // subjectUuid -> latest Oral Screening info (screening date, Case ID,
   // health worker) from ONE cached org-wide sweep — replaces the previous
@@ -320,7 +351,7 @@ export function EncounterList({ mode }: Props) {
     if (pendingFromScreenings) {
       if (!pendingRows) return null;
       return filterPendingRows(sortPendingRows(pendingRows, state.sort), state.group)
-        .map(pendingRowView)
+        .map((row) => pendingRowView(row, subjects.get(pendingRowSubjectId(row))))
         .filter(matchesSearch);
     }
     if (!pageData) return null;
@@ -356,6 +387,7 @@ export function EncounterList({ mode }: Props) {
     modelOn,
     pendingFromScreenings,
     pendingRows,
+    subjects,
     pageData,
     mode,
     state.sort,
@@ -367,6 +399,30 @@ export function EncounterList({ mode }: Props) {
     riskOnly,
     highRiskUuids,
   ]);
+
+  // Both tabs paginate client-side over the (sorted, filtered) full fetch.
+  // Clamp the page so a filter that shrinks the list can't strand the user on
+  // an out-of-range page.
+  const totalRows = views?.length ?? 0;
+  const effectivePageIndex = Math.min(
+    pageIndex,
+    Math.max(0, Math.ceil(totalRows / PAGE_SIZE) - 1),
+  );
+  const visibleRows = useMemo(
+    () => (views ? rowsOnPage(views, effectivePageIndex, PAGE_SIZE) : []),
+    [views, effectivePageIndex],
+  );
+  const unreadKey = pendingFromScreenings ? patientsToRead(visibleRows, subjects).join(",") : "";
+  useEffect(() => {
+    if (!unreadKey) return;
+    let cancelled = false;
+    void readSubjects(unreadKey.split(",")).then((read) => {
+      if (!cancelled) setSubjects((known) => new Map([...known, ...read]));
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [unreadKey]);
 
   const loadError = error ?? pairingError ?? screeningError ?? modelError ?? rowsError;
   if (loadError) return <Box sx={{ p: 3, color: "error.main" }}>Failed to load: {loadError}</Box>;
@@ -381,21 +437,16 @@ export function EncounterList({ mode }: Props) {
       </Box>
     );
 
-  // Both tabs paginate client-side over the (sorted, filtered) full fetch.
-  // Clamp the page so a filter that shrinks the list can't strand the user on
-  // an out-of-range page.
-  const totalRows = views.length;
-  const effectivePageIndex = Math.min(
-    pageIndex,
-    Math.max(0, Math.ceil(totalRows / PAGE_SIZE) - 1),
-  );
-  const visibleRows = views.slice(
-    effectivePageIndex * PAGE_SIZE,
-    (effectivePageIndex + 1) * PAGE_SIZE,
-  );
   // The headline count: every row the location/referral filters allow, before the display filters (group, High Risk,
-  // date range, search).
+  // date range, search). On the pending tab with the model, a deleted patient's rows leave it once they have been on
+  // screen, since only those patients are read.
   const listedCount = pendingFromScreenings ? (pendingRows?.length ?? 0) : pageData.totalElements;
+  // The listed rows whose location could not be checked, counted where they are still listed: after the referral
+  // filter, and without a deleted patient's rows.
+  const uncheckedCount =
+    pendingFromScreenings && pending && pendingRows
+      ? pendingRows.filter((r) => pending.unchecked.has(pendingRowKey(r))).length
+      : pageData.unchecked.size;
   // High Risk count over every row the current location/referral filters allow —
   // deliberately not narrowed by the date or High Risk display filters.
   const highRiskCount =
@@ -646,6 +697,15 @@ export function EncounterList({ mode }: Props) {
           </>
         )}
       </Stack>
+
+      {/* The location could not be checked for these cases, so they stay rather than vanish (tanuh-webapp#4 review). */}
+      {uncheckedCount > 0 && (
+        <Alert severity="warning" data-testid="location-unchecked" sx={{ m: { xs: 1.5, sm: 2 }, mb: 0 }}>
+          {uncheckedCount === 1
+            ? "1 case could not be checked against the patient location, so it is listed anyway."
+            : `${uncheckedCount} cases could not be checked against the patient location, so they are listed anyway.`}
+        </Alert>
+      )}
 
       {views.length === 0 ? (
         <Typography color="text.secondary" sx={{ p: 4, textAlign: "center" }}>

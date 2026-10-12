@@ -1,4 +1,5 @@
 import { http } from "@/auth/httpClient";
+import { createLimiter } from "./limiter";
 import type { PagedResponse } from "./types";
 
 export interface CatchmentLocationNode {
@@ -86,6 +87,38 @@ export async function getAllEncountersWithLocation(
     content.push(...next.content);
   }
   return { content, totalElements: first.totalElements };
+}
+
+// The uuids of a type's encounters whose patient lives in the location's subtree, matched by the server as it matches
+// the list's booked reviews. The pending tab's patient-location filter uses it for screening rows, so it needs no read
+// per patient (tanuh-webapp#4 review). Standalone encounters only: the endpoint reads no program visits. After the
+// first page the rest are read four at a time. `complete` is false when a page failed or the guard (the screening
+// store's own, 20,000 rows) stopped the read short; the caller then keeps what it cannot place, and says so.
+const LOCATION_LOOKUP_MAX_PAGES = 100;
+const lookupPages = createLimiter(4);
+
+export async function getEncounterUuidsInLocation(
+  encounterType: string,
+  status: EncounterStatus,
+  locationUuid: string,
+): Promise<{ uuids: Set<string>; complete: boolean }> {
+  const uuids = new Set<string>();
+  const read = async (page: number) => {
+    const res = await getEncountersWithLocation({ encounterType, status, locationUuid, page, size: FULL_FETCH_PAGE_SIZE });
+    for (const e of res.content) uuids.add(e.encounterUuid);
+    return res.totalPages;
+  };
+  let totalPages: number;
+  try {
+    totalPages = await read(0);
+  } catch {
+    return { uuids, complete: false };
+  }
+  const pages = Math.min(totalPages, LOCATION_LOOKUP_MAX_PAGES);
+  const rest = await Promise.allSettled(
+    Array.from({ length: Math.max(0, pages - 1) }, (_, i) => lookupPages(() => read(i + 1))),
+  );
+  return { uuids, complete: totalPages <= LOCATION_LOOKUP_MAX_PAGES && rest.every((r) => r.status === "fulfilled") };
 }
 
 export async function getEncountersWithLocation(
