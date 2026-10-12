@@ -36,7 +36,7 @@ import {
   getReviewScreeningPairing,
   type LatestScreeningInfo,
 } from "@/api/encounters";
-import { hasHighRiskModel, hasScreeningQualityGate } from "@/api/concepts";
+import { hasHighRiskModel } from "@/api/concepts";
 import { addressChain, inSubtree } from "@/api/address";
 import {
   filterPendingRows,
@@ -50,7 +50,6 @@ import {
 } from "@/api/pendingRows";
 import { loadListState, saveListState, type ListState } from "@/api/listState";
 import {
-  DATA_QUALITY_VALUES,
   ENCOUNTER_ID_CONCEPT,
   ENCOUNTER_TYPE,
   PLACE_OF_REFERRAL_CONCEPT,
@@ -62,7 +61,7 @@ import { RISK } from "@/forms/diagnosisMapping";
 import { useAsync } from "@/hooks/useAsync";
 import { LocationFilter } from "./LocationFilter";
 import { FacilityFilter } from "./FacilityFilter";
-import { AiRiskBadge, CategoryBadge, ModelResultBadge } from "./StatusBadge";
+import { CategoryBadge, ModelResultBadge } from "./StatusBadge";
 
 interface Props {
   mode: "pending" | "completed";
@@ -129,8 +128,6 @@ interface RowView {
   opinion?: string;
   modelResult?: string;
   group?: string;
-  dataQuality?: string;
-  aiRisk?: string;
   reviewedOn?: string | null;
   reviewedBy?: string | null;
 }
@@ -146,8 +143,6 @@ function reviewRowView(e: EncounterWithLocation, info: LatestScreeningInfo | und
     opinion: info?.workerOpinion,
     modelResult: info?.modelResult,
     group: info?.reviewCategory,
-    dataQuality: info?.dataQuality,
-    aiRisk: info?.aiRisk,
     reviewedOn: e.encounterDateTime,
     reviewedBy: e.lastModifiedBy,
   };
@@ -308,27 +303,6 @@ export function EncounterList({ mode }: Props) {
     [reviewPairing, screeningInfo],
   );
 
-  // PE-96: does the signed-in org carry the Data Quality concept? true on UAT
-  // 1071; false on staging 1187 / prod 1113, where the list must behave exactly as
-  // before (every review shown, no AI Risk column). null while probing.
-  const { data: qualityGate, error: gateError } = useAsync(() => hasScreeningQualityGate(), [mode]);
-
-  // PE-96 (client decision, 2026-09-24): where the gate applies, only reviews
-  // whose paired screening carries Data Quality = "Pass" are listed, on both
-  // tabs. Fail rows AND rows with no Data Quality observation are hidden — so a
-  // new field screening stays out of the list until the backend stamps it. null
-  // until the probe, the screening sweep and the pairing have landed, so the
-  // ungated list never flashes. tanuh-webapp#4: a review of a screening the model
-  // routed is never hidden, and the pending tab from screenings skips the gate.
-  const passRows = useMemo(() => {
-    if (!pageData || !reviewPairing || !screeningInfo || qualityGate === null) return null;
-    if (!qualityGate) return pageData.content;
-    return pageData.content.filter((e) => {
-      const info = infoFor(e);
-      return info?.modelStatus !== undefined || info?.dataQuality === DATA_QUALITY_VALUES.pass;
-    });
-  }, [pageData, reviewPairing, screeningInfo, infoFor, qualityGate]);
-
   const views = useMemo<RowView[] | null>(() => {
     if (modelOn === null) return null;
 
@@ -349,17 +323,17 @@ export function EncounterList({ mode }: Props) {
         .map(pendingRowView)
         .filter(matchesSearch);
     }
-    if (!passRows) return null;
+    if (!pageData) return null;
     if (mode !== "completed") {
       // Pending: show the most recently screened patient first — across the
       // WHOLE list (all pages were fetched). Rows whose screening date hasn't
       // loaded yet (or is missing) sort to the bottom.
-      return [...passRows]
+      return [...pageData.content]
         .sort((a, b) => (infoFor(b)?.screeningDate || "").localeCompare(infoFor(a)?.screeningDate || ""))
         .map((e) => reviewRowView(e, infoFor(e)))
         .filter(matchesSearch);
     }
-    let rows = passRows;
+    let rows = pageData.content;
     if (riskOnly && highRiskUuids) {
       rows = rows.filter((e) => highRiskUuids.has(e.encounterUuid));
     }
@@ -382,7 +356,7 @@ export function EncounterList({ mode }: Props) {
     modelOn,
     pendingFromScreenings,
     pendingRows,
-    passRows,
+    pageData,
     mode,
     state.sort,
     state.group,
@@ -394,7 +368,7 @@ export function EncounterList({ mode }: Props) {
     highRiskUuids,
   ]);
 
-  const loadError = error ?? pairingError ?? screeningError ?? gateError ?? modelError ?? rowsError;
+  const loadError = error ?? pairingError ?? screeningError ?? modelError ?? rowsError;
   if (loadError) return <Box sx={{ p: 3, color: "error.main" }}>Failed to load: {loadError}</Box>;
   if (!pageData || !views)
     return (
@@ -421,32 +395,27 @@ export function EncounterList({ mode }: Props) {
   );
   // The headline count: every row the location/referral filters allow, before the display filters (group, High Risk,
   // date range, search).
-  const listedCount = (pendingFromScreenings ? pendingRows?.length : passRows?.length) ?? 0;
-  // High Risk count over every Pass-gated row the current location/referral
-  // filters allow — deliberately not narrowed by the date or High Risk display filters.
+  const listedCount = pendingFromScreenings ? (pendingRows?.length ?? 0) : pageData.totalElements;
+  // High Risk count over every row the current location/referral filters allow —
+  // deliberately not narrowed by the date or High Risk display filters.
   const highRiskCount =
-    mode === "completed" && highRiskUuids && passRows
-      ? passRows.filter((e) => highRiskUuids.has(e.encounterUuid)).length
+    mode === "completed" && highRiskUuids
+      ? pageData.content.filter((e) => highRiskUuids.has(e.encounterUuid)).length
       : null;
 
-  // The model's three columns replace the demo AI Risk Assessment column wherever the org has the model; without it the
-  // v1.12.2 / PE-96 columns apply unchanged. Badges never wrap: "Non Suspicious" with its AI mark needs about 17% and
-  // "Safety sample" about 14% of a desktop table, or they run into the next column.
+  // The model's three columns show wherever the org has the model; without it the v1.12.2 columns apply unchanged.
+  // Badges never wrap: "Non Suspicious" with its AI mark needs about 17% and "Safety sample" about 14% of a desktop
+  // table, or they run into the next column.
   const showModel = modelOn === true;
-  const showAi = !showModel && !!qualityGate;
-  const none = { opinion: "0", model: "0", group: "0", ai: "0" };
+  const none = { opinion: "0", model: "0", group: "0" };
   const widths =
     mode === "pending"
       ? showModel
-        ? { sno: "4%", caseId: "11%", date: "14%", village: "10%", hw: "11%", opinion: "10%", model: "17%", group: "14%", ai: "0", on: "0", by: "0", action: "9%" }
-        : showAi
-          ? { ...none, sno: "5%", caseId: "15%", date: "20%", village: "16%", hw: "16%", ai: "16%", on: "0", by: "0", action: "12%" }
-          : { ...none, sno: "6%", caseId: "16%", date: "22%", village: "18%", hw: "16%", on: "0", by: "0", action: "14%" }
+        ? { sno: "4%", caseId: "11%", date: "14%", village: "10%", hw: "11%", opinion: "10%", model: "17%", group: "14%", on: "0", by: "0", action: "9%" }
+        : { ...none, sno: "6%", caseId: "16%", date: "22%", village: "18%", hw: "16%", on: "0", by: "0", action: "14%" }
       : showModel
-        ? { sno: "3%", caseId: "8%", date: "10%", village: "7%", hw: "8%", opinion: "7%", model: "17%", group: "14%", ai: "0", on: "8%", by: "10%", action: "8%" }
-        : showAi
-          ? { ...none, sno: "4%", caseId: "12%", date: "13%", village: "10%", hw: "13%", ai: "16%", on: "11%", by: "13%", action: "8%" }
-          : { ...none, sno: "6%", caseId: "12%", date: "16%", village: "13%", hw: "13%", on: "13%", by: "14%", action: "7%" };
+        ? { sno: "3%", caseId: "8%", date: "10%", village: "7%", hw: "8%", opinion: "7%", model: "17%", group: "14%", on: "8%", by: "10%", action: "8%" }
+        : { ...none, sno: "6%", caseId: "12%", date: "16%", village: "13%", hw: "13%", on: "13%", by: "14%", action: "7%" };
 
   const handleRiskOnlyChange = (checked: boolean) => update({ riskOnly: checked, page: 0 });
   const handleReferralChange = (uuid: string | null) => update({ referral: uuid, page: 0 });
@@ -461,9 +430,8 @@ export function EncounterList({ mode }: Props) {
         spacing={1.5}
         sx={{ p: { xs: 1.5, sm: 2 }, borderBottom: "1px solid #e5e7eb" }}
       >
-        {/* KPI row. Totals = all rows across all pages, Pass-gated where the org
-            has the PE-96 gate — display filters (group, High Risk, date range, search)
-            narrow the rows below, not these numbers. */}
+        {/* KPI row. Totals = all rows across all pages — display filters (group,
+            High Risk, date range, search) narrow the rows below, not these numbers. */}
         <Stack direction="row" spacing={1.5} sx={{ flexWrap: "wrap", rowGap: 1.5 }}>
           <StatTile
             testId="stat-total"
@@ -686,7 +654,7 @@ export function EncounterList({ mode }: Props) {
           ) : (
             <>
               No {riskOnly ? "High Risk " : ""}
-              {mode === "pending" ? "pending" : "completed"} reviews{showAi ? " with Data Quality Pass" : ""}
+              {mode === "pending" ? "pending" : "completed"} reviews
               {referralUuid ? " for the selected referral facility." : " in your catchment."}
             </>
           )}
@@ -774,14 +742,6 @@ export function EncounterList({ mode }: Props) {
                           <CategoryBadge value={v.group} />
                         </Stack>
                       )}
-                      {showAi && (
-                        <Stack direction="row" alignItems="center" spacing={0.75}>
-                          <Typography variant="body2" sx={{ color: "text.secondary", fontWeight: 500 }}>
-                            AI Risk Assessment:
-                          </Typography>
-                          <AiRiskBadge dataQuality={v.dataQuality} aiRisk={v.aiRisk} />
-                        </Stack>
-                      )}
                       {mode === "completed" && (
                         <Typography variant="body2" sx={{ color: "text.primary" }}>
                           <Box component="span" sx={{ color: "text.secondary", fontWeight: 500 }}>
@@ -816,11 +776,6 @@ export function EncounterList({ mode }: Props) {
                   {/* Badges never wrap, so their columns must fit them (fixed table layout clips nothing). */}
                   {showModel && <TableCell sx={{ width: widths.model, whiteSpace: "nowrap" }}>Model</TableCell>}
                   {showModel && <TableCell sx={{ width: widths.group, whiteSpace: "nowrap" }}>Group</TableCell>}
-                  {/* Widest value is "Non Suspicious" + the AI mark; the badge never wraps,
-                      so the column must fit it (fixed table layout clips nothing). */}
-                  {showAi && (
-                    <TableCell sx={{ width: widths.ai, whiteSpace: "nowrap" }}>AI Risk Assessment</TableCell>
-                  )}
                   {mode === "completed" && <TableCell sx={{ width: widths.on }}>Reviewed on</TableCell>}
                   {mode === "completed" && <TableCell sx={{ width: widths.by }}>Reviewed by</TableCell>}
                   <TableCell sx={{ width: widths.action }} aria-hidden />
@@ -858,11 +813,6 @@ export function EncounterList({ mode }: Props) {
                       {showModel && (
                         <TableCell sx={{ whiteSpace: "nowrap" }}>
                           <CategoryBadge value={v.group} />
-                        </TableCell>
-                      )}
-                      {showAi && (
-                        <TableCell sx={{ whiteSpace: "nowrap" }}>
-                          <AiRiskBadge dataQuality={v.dataQuality} aiRisk={v.aiRisk} />
                         </TableCell>
                       )}
                       {mode === "completed" && (

@@ -34,7 +34,7 @@ import {
 } from "@/api/encounters";
 import { getSubject } from "@/api/subjects";
 import { decideCaseRoute } from "@/api/caseRoute";
-import { getConcept, hasHighRiskModel, hasScreeningQualityGate, type ConceptAnswer } from "@/api/concepts";
+import { getConcept, hasHighRiskModel, type ConceptAnswer } from "@/api/concepts";
 import { buildCreatedReviewBody, decideCreate, findReviewCreatedFrom } from "@/api/reviewCreate";
 import type { EncounterApiResponse, SubjectApiResponse } from "@/api/types";
 import {
@@ -54,14 +54,13 @@ import {
   VERDICT_VALUES,
   VISUAL_EXAM_CONCEPTS,
   deriveWorkerOpinion,
-  readDataQuality,
   readModelResult,
   readModelRunTime,
   readModelVersion,
   readObs,
   readReviewCategory,
 } from "@/constants/tanuhConcepts";
-import { CategoryBadge, DataQualityBadge, ModelResultBadge } from "@/components/StatusBadge";
+import { CategoryBadge, ModelResultBadge } from "@/components/StatusBadge";
 import { computeAgreement } from "./agreement";
 import { bookHighRiskFollowUps, type FollowUp } from "./followUps";
 import {
@@ -170,8 +169,6 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
     () => (screeningUuid ? loadCase(screeningUuid) : loadReview(encounterUuid ?? "")),
     [encounterUuid, screeningUuid],
   );
-  // PE-96: the Data Quality card exists only for an org that carries the concept.
-  const { data: qualityGate } = useAsync(() => hasScreeningQualityGate(), []);
   // tanuh-webapp#5: the model's panel exists only for an org with the high-risk model. A failed probe hides the panel
   // and nothing else; the agreement below is decided from the screening's own model result.
   const { data: modelOn } = useAsync(() => hasHighRiskModel(), []);
@@ -579,14 +576,6 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
         <Grid size={{ xs: 12, md: 6 }}>
           <SymptomsCard screening={loaded.screening} />
         </Grid>
-        {/* PE-96: fourth cell of a two-column grid, so on md+ it renders directly
-            under Habit History (row 2, right), as in the approved prototype. Only
-            for an org that carries the Data Quality concept. */}
-        {qualityGate && (
-          <Grid size={{ xs: 12, md: 6 }}>
-            <DataQualityCard screening={loaded.screening} />
-          </Grid>
-        )}
         {/* tanuh-webapp#5: what the high-risk model said, beside the photos. Nothing in the form is filled from it. */}
         {modelOn && (
           <Grid size={{ xs: 12, md: 6 }}>
@@ -920,35 +909,6 @@ function SymptomsCard({ screening }: { screening: EncounterApiResponse }) {
           Symptoms
         </Typography>
         <DetailRow label="Any symptoms" value={obs[SYMPTOMS_CONCEPT.name] ?? "—"} />
-      </CardContent>
-    </Card>
-  );
-}
-
-// PE-96: the backend-stamped Data Quality gate on the screening. Read-only, always rendered: an unstamped screening
-// shows "—" so the card is discoverable on old cases too. The model's values moved to its own panel (tanuh-webapp#5).
-// The caption is the client's text. A Fail screening opened by URL still renders (the list hides it; the detail page
-// never redirects).
-function DataQualityCard({ screening }: { screening: EncounterApiResponse }) {
-  const obs = screening.observations ?? {};
-  const dataQuality = readDataQuality(obs);
-  return (
-    <Card variant="outlined" data-testid="data-quality-card" sx={{ height: "100%" }}>
-      <CardContent>
-        <Typography variant="overline" color="text.secondary">
-          Data Quality
-        </Typography>
-        <DetailRow label="Data Quality" value={<DataQualityBadge value={dataQuality} />} />
-        {/* Wording from Fathima (Discord, 2026-09-24); the earlier "Simulated values"
-            demo flag was dropped on her instruction. */}
-        <Typography variant="caption" component="p" color="text.secondary" sx={{ mt: 1.5 }}>
-          <Box component="strong" sx={{ fontWeight: 700 }}>
-            AI-assisted pre-screening only.
-          </Box>{" "}
-          Not a diagnosis. Final clinical assessment remains with the clinician.
-          <br />
-          Risk scores are generated only after required data quality checks pass.
-        </Typography>
       </CardContent>
     </Card>
   );

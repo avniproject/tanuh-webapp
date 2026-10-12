@@ -9,11 +9,7 @@ import {
   PLACE_OF_REFERRAL_CONCEPT,
   REVIEW_CATEGORY_CONCEPT,
   REVIEWED_ORAL_SCREENING_CONCEPT,
-  SCREENING_AI_RISK_CONCEPT,
-  SCREENING_DATA_QUALITY_CONCEPT,
   deriveWorkerOpinion,
-  readAiRisk,
-  readDataQuality,
   readModelResult,
   readModelRunTime,
   readModelStatus,
@@ -365,7 +361,9 @@ export function sweepProgramEncounters(encounterType: string): Promise<Encounter
 // group / photo-URL arrays). Bump CACHE_SCHEMA if that field set changes.
 // Schema history: 1 = Encounter ID + Reviewed Oral Screening; 2 = + Data Quality
 // and AI Risk Assessment (PE-96); 3 = + the high-risk model's five values, Place of
-// referral and the worker's opinion (tanuh-webapp#4). A mismatch below discards the
+// referral and the worker's opinion (tanuh-webapp#4). PE-136 took Data Quality and AI
+// Risk Assessment out of 3 before it shipped; a smaller set needs no reload, since
+// nothing reads what a stored row carries beyond it. A mismatch below discards the
 // persisted rows and the watermark, so the next load is one cold full sweep — the
 // intended migration.
 // ---------------------------------------------------------------------------
@@ -373,8 +371,6 @@ const CACHE_SCHEMA = 3;
 const CACHED_OBS_REFS = [
   ENCOUNTER_ID_CONCEPT,
   REVIEWED_ORAL_SCREENING_CONCEPT,
-  SCREENING_DATA_QUALITY_CONCEPT,
-  SCREENING_AI_RISK_CONCEPT,
   MODEL_RESULT_CONCEPT,
   MODEL_STATUS_CONCEPT,
   MODEL_VERSION_CONCEPT,
@@ -402,7 +398,7 @@ export function bindEncounterCacheScope(
   const scope = `${user.organisationId ?? user.organisationName ?? "org"}:${user.userUUID ?? user.username}`;
   if (scope !== cacheScope) {
     invalidateEncounterSweeps();
-    resetConceptCache(); // concept answers and the PE-96 gate probe are org-scoped too
+    resetConceptCache(); // concept answers and the model probe are org-scoped too
   }
   cacheScope = scope;
 }
@@ -608,10 +604,6 @@ export interface LatestScreeningInfo {
   caseId: string;
   encounterId: string;
   healthWorker: string;
-  // PE-96: backend-stamped observations on the screening (absent on rows the
-  // job/backfill has not reached). The list shows only dataQuality === "Pass".
-  dataQuality?: string;
-  aiRisk?: string;
   // tanuh-webapp#4: the high-risk model's values on the screening, where the job has written them.
   modelResult?: string;
   modelStatus?: string;
@@ -636,8 +628,6 @@ function toScreeningInfo(screening: CachedEncounter): LatestScreeningInfo {
     caseId: screening["Subject external ID"] ?? "",
     encounterId: readObs<string>(obs, ENCOUNTER_ID_CONCEPT) ?? "",
     healthWorker: screening.audit?.["Created by"] ?? "",
-    dataQuality: readDataQuality(obs),
-    aiRisk: readAiRisk(obs),
     modelResult: readModelResult(obs),
     modelStatus: readModelStatus(obs),
     modelVersion: readModelVersion(obs),

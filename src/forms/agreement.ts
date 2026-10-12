@@ -1,4 +1,4 @@
-import { AI_RISK_VALUES } from "@/constants/tanuhConcepts";
+import { MODEL_RESULT_VALUES } from "@/constants/tanuhConcepts";
 import { CLASSIFICATION, RISK } from "./diagnosisMapping";
 
 // tanuh-webapp#5. Whether the clinician agreed with the high-risk model, stored as "High risk model agreement" so
@@ -13,13 +13,13 @@ export function computeAgreement(
   modelResult: string | undefined,
 ): Agreement | null {
   if (!modelResult || !clinicianRisk || !clinicianClassification) return null;
-  const knownModel = (Object.values(AI_RISK_VALUES) as string[]).includes(modelResult);
+  const knownModel = (Object.values(MODEL_RESULT_VALUES) as string[]).includes(modelResult);
   const knownClassification = clinicianClassification === CLASSIFICATION.suspicious || clinicianClassification === CLASSIFICATION.nonSuspicious;
   if (!knownModel || !knownClassification) return null;
   const agree = (yes: boolean) => (yes ? AGREEMENT_VALUES.match : AGREEMENT_VALUES.mismatch);
-  if (clinicianRisk === RISK.high) return agree(modelResult === AI_RISK_VALUES.highRisk);
+  if (clinicianRisk === RISK.high) return agree(modelResult === MODEL_RESULT_VALUES.highRisk);
   if (clinicianRisk !== RISK.low) return null;
-  if (modelResult === AI_RISK_VALUES.lowRisk) return AGREEMENT_VALUES.match;
-  if (modelResult === AI_RISK_VALUES.highRisk) return AGREEMENT_VALUES.mismatch;
+  if (modelResult === MODEL_RESULT_VALUES.lowRisk) return AGREEMENT_VALUES.match;
+  if (modelResult === MODEL_RESULT_VALUES.highRisk) return AGREEMENT_VALUES.mismatch;
   return agree(clinicianClassification === CLASSIFICATION.nonSuspicious); // the model said Non Suspicious
 }

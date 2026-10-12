@@ -1,6 +1,6 @@
 import axios from "axios";
 import { http } from "@/auth/httpClient";
-import { REVIEW_CATEGORY_CONCEPT, SCREENING_DATA_QUALITY_CONCEPT } from "@/constants/tanuhConcepts";
+import { REVIEW_CATEGORY_CONCEPT } from "@/constants/tanuhConcepts";
 
 export interface ConceptAnswer {
   uuid: string;
@@ -12,6 +12,7 @@ export interface ConceptResponse {
   uuid: string;
   name: string;
   dataType: string;
+  voided: boolean;
   answers: ConceptAnswer[];
 }
 
@@ -26,6 +27,7 @@ interface RawConceptProjection {
   uuid: string;
   name: string;
   dataType: string;
+  voided?: boolean;
   conceptAnswers?: RawConceptAnswerProjection[];
 }
 
@@ -44,53 +46,22 @@ export function getConcept(uuid: string): Promise<ConceptResponse> {
 // the same page, since /web/concept answers are org-scoped.
 export function resetConceptCache(): void {
   cache.clear();
-  gateProbe = null;
   modelProbe = null;
-}
-
-// PE-96: the Data Quality gate (Pass-only list, AI Risk column, Data Quality card)
-// applies only to an org whose bundle carries the "Data Quality" concept. Every
-// Tanuh org signs in to the same webapp, so the org is detected, not assumed:
-// UAT 1071 has the concept; staging 1187 and prod 1113 do not, and for them the
-// list behaves exactly as before. The server throws EntityNotFoundException
-// ("Concept not found with uuid …") for a missing concept, and row-level security
-// hides another org's concept the same way; whatever status that maps to, ANY
-// HTTP error answer means "this org does not have it" — the gate is off. Only a
-// request that never reached the server (network, CORS) propagates, so a real
-// outage still shows "Failed to load" instead of a silently ungated list.
-// One probe per sign-in; reset with the encounter cache scope.
-let gateProbe: Promise<boolean> | null = null;
-export function hasScreeningQualityGate(): Promise<boolean> {
-  if (!gateProbe) {
-    const uuid = SCREENING_DATA_QUALITY_CONCEPT.uuid;
-    gateProbe = getConcept(uuid)
-      .then((c) => c.name === SCREENING_DATA_QUALITY_CONCEPT.name)
-      .catch((e: unknown) => {
-        cache.delete(uuid); // a rejected probe must not be pinned in the concept cache
-        if (axios.isAxiosError(e) && e.response) {
-          if (e.response.status !== 404)
-            console.warn(`[PE-96] Data Quality probe answered ${e.response.status}; treating as "org has no concept"`);
-          return false;
-        }
-        gateProbe = null; // transient: probe again on the next load
-        throw e;
-      });
-  }
-  return gateProbe;
 }
 
 // tanuh-webapp#4: the pending list from screenings applies only where the organisation has the high-risk model's
 // "Review category" concept (Tanuh's configuration). Staging, and production before promotion, keep today's list.
-// Only a 404 means "not here": avni-server answers a missing concept, or another organisation's, with 404 on every
-// release line from 16.15 to 18.1. Any other failure (a 503 during a restart, a 500) fails the load and is asked
-// again next time; treating it as "not here", as the Data Quality probe safely can, would hide every case the model
-// sent for review for the rest of the session.
+// A voided concept counts as absent: the server still answers for it, with its name, which is how UAT's Data Quality
+// gate stayed on after PE-136 voided that concept. Of the failures, only a 404 means "not here": avni-server answers a
+// missing concept, or another organisation's, with 404 on every release line from 16.15 to 18.1. Any other failure (a
+// 503 during a restart, a 500) fails the load and is asked again next time; treating it as "not here" would hide every
+// case the model sent for review for the rest of the session.
 let modelProbe: Promise<boolean> | null = null;
 export function hasHighRiskModel(): Promise<boolean> {
   if (!modelProbe) {
     const uuid = REVIEW_CATEGORY_CONCEPT.uuid;
     modelProbe = getConcept(uuid)
-      .then((c) => c.name === REVIEW_CATEGORY_CONCEPT.name)
+      .then((c) => c.name === REVIEW_CATEGORY_CONCEPT.name && !c.voided)
       .catch((e: unknown) => {
         cache.delete(uuid);
         if (axios.isAxiosError(e) && e.response?.status === 404) return false;
@@ -106,5 +77,5 @@ function normalise(raw: RawConceptProjection): ConceptResponse {
     .filter((a) => !a.voided && !a.answerConcept.voided)
     .map((a) => ({ uuid: a.answerConcept.uuid, name: a.answerConcept.name, order: a.order }))
     .sort((a, b) => a.order - b.order);
-  return { uuid: raw.uuid, name: raw.name, dataType: raw.dataType, answers };
+  return { uuid: raw.uuid, name: raw.name, dataType: raw.dataType, voided: raw.voided === true, answers };
 }

@@ -6,17 +6,10 @@ import WarningAmberOutlinedIcon from "@mui/icons-material/WarningAmberOutlined";
 import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline";
 import RemoveCircleOutlineIcon from "@mui/icons-material/RemoveCircleOutline";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
-import {
-  AI_RISK_VALUES,
-  DATA_QUALITY_VALUES,
-  REVIEW_CATEGORY_VALUES,
-  aiRiskDisplayState,
-  type AiRiskValue,
-} from "@/constants/tanuhConcepts";
+import { MODEL_RESULT_VALUES, REVIEW_CATEGORY_VALUES, type ModelResultValue } from "@/constants/tanuhConcepts";
 
-// PE-96 status pills for the backend-stamped Data Quality / AI Risk Assessment
-// values. Colour + icon + text (never colour alone); red is reserved for High
-// Risk. Tooltip copy is Fathima's prototype (PE-96 attachment) verbatim.
+// Status pills for the high-risk model's values on a screening (tanuh-webapp#4). Colour + icon + text (never colour
+// alone); red is reserved for High Risk. The result tooltips are Fathima's prototype copy (PE-96 attachment) verbatim.
 
 type Tone = "good" | "caution" | "concern" | "info" | "neutral";
 
@@ -29,9 +22,6 @@ const TONE_ICON: Record<Tone, SvgIconComponent> = {
 };
 
 const TIP = {
-  pass: "Image and metadata checks passed. Encounter is suitable for AI pre-screening.",
-  fail: "One or more image or metadata checks failed. AI risk is not generated for failed encounters.",
-  notAssessed: "Not assessed — data quality did not pass, so no risk signal is produced.",
   unknown: "Value not recognised by this build of the app; shown as stored.",
   "High Risk":
     "Model flags features associated with a higher likelihood of a suspicious lesion. Prioritise clinician review.",
@@ -39,10 +29,10 @@ const TIP = {
   "Non Suspicious": "No concerning features detected by the model.",
 } as const;
 
-const RISK_TONE: Record<AiRiskValue, Tone> = {
-  [AI_RISK_VALUES.highRisk]: "concern",
-  [AI_RISK_VALUES.lowRisk]: "caution",
-  [AI_RISK_VALUES.nonSuspicious]: "good",
+const RISK_TONE: Record<ModelResultValue, Tone> = {
+  [MODEL_RESULT_VALUES.highRisk]: "concern",
+  [MODEL_RESULT_VALUES.lowRisk]: "caution",
+  [MODEL_RESULT_VALUES.nonSuspicious]: "good",
 };
 
 interface StatusBadgeProps {
@@ -141,52 +131,6 @@ function Dash() {
   );
 }
 
-export function DataQualityBadge({ value }: { value: string | undefined }) {
-  if (value === undefined) return <Dash />;
-  if (value === DATA_QUALITY_VALUES.pass)
-    return <StatusBadge tone="good" label="Pass" tooltip={TIP.pass} testId="data-quality-badge" state="pass" />;
-  if (value === DATA_QUALITY_VALUES.fail)
-    return <StatusBadge tone="caution" label="Fail" tooltip={TIP.fail} testId="data-quality-badge" state="fail" />;
-  return <StatusBadge tone="neutral" label={value} tooltip={TIP.unknown} testId="data-quality-badge" state="unknown" />;
-}
-
-export function AiRiskBadge({
-  dataQuality,
-  aiRisk,
-}: {
-  dataQuality: string | undefined;
-  aiRisk: string | undefined;
-}) {
-  const s = aiRiskDisplayState(dataQuality, aiRisk);
-  switch (s.kind) {
-    case "absent":
-      return <Dash />;
-    case "not-assessed":
-      return (
-        <StatusBadge
-          tone="neutral"
-          label="Not assessed"
-          tooltip={TIP.notAssessed}
-          testId="ai-risk-badge"
-          state="not-assessed"
-        />
-      );
-    case "unknown":
-      return <StatusBadge tone="neutral" label={s.value} tooltip={TIP.unknown} ai testId="ai-risk-badge" state="unknown" />;
-    case "value":
-      return (
-        <StatusBadge
-          tone={RISK_TONE[s.value]}
-          label={s.value}
-          tooltip={TIP[s.value]}
-          ai
-          testId="ai-risk-badge"
-          state={s.value.toLowerCase().replace(/\s+/g, "-")}
-        />
-      );
-  }
-}
-
 const CATEGORY_TONE: Record<string, Tone> = {
   [REVIEW_CATEGORY_VALUES.highRisk]: "concern",
   [REVIEW_CATEGORY_VALUES.flwOverride]: "caution",
@@ -204,7 +148,7 @@ const CATEGORY_TIP: Record<string, string> = {
   [REVIEW_CATEGORY_VALUES.closed]: "Cleared by the model and the worker; not sent for review.",
 };
 
-// The review group the model's job set on the screening. Independent of Data Quality, unlike AiRiskBadge.
+// The review group the model's job set on the screening.
 export function CategoryBadge({ value }: { value: string | undefined }) {
   if (value === undefined) return <Dash />;
   return (
@@ -218,15 +162,15 @@ export function CategoryBadge({ value }: { value: string | undefined }) {
   );
 }
 
-// The model's own result, marked as AI. Independent of Data Quality.
+// The model's own result, marked as AI.
 export function ModelResultBadge({ value }: { value: string | undefined }) {
   if (value === undefined) return <Dash />;
-  const known = (Object.values(AI_RISK_VALUES) as string[]).includes(value);
+  const known = (Object.values(MODEL_RESULT_VALUES) as string[]).includes(value);
   return (
     <StatusBadge
-      tone={known ? RISK_TONE[value as AiRiskValue] : "neutral"}
+      tone={known ? RISK_TONE[value as ModelResultValue] : "neutral"}
       label={value}
-      tooltip={known ? TIP[value as AiRiskValue] : TIP.unknown}
+      tooltip={known ? TIP[value as ModelResultValue] : TIP.unknown}
       ai
       testId="model-result-badge"
       state={value.toLowerCase().replace(/\s+/g, "-")}

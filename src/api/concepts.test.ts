@@ -24,6 +24,12 @@ describe("hasHighRiskModel", () => {
     await expect(hasHighRiskModel()).resolves.toBe(false);
   });
 
+  // The server still answers for a voided concept, with its name: that kept UAT's Data Quality gate on after PE-136.
+  it("is off where the organisation voided its Review category concept", async () => {
+    get.mockResolvedValueOnce({ data: { ...reviewCategory.data, voided: true } });
+    await expect(hasHighRiskModel()).resolves.toBe(false);
+  });
+
   // Review finding: one 503 during a server restart switched the model's cases off for the rest of the session.
   it("fails the load on any other error, and asks again on the next one", async () => {
     get.mockRejectedValueOnce(answered(503)).mockResolvedValueOnce(reviewCategory);
