@@ -18,6 +18,7 @@ import {
   REVIEW_IMAGE_GROUP,
   REVIEW_IMAGE_GROUP_CHILD,
   VERDICT_VALUES,
+  VISUAL_EXAM_CONCEPTS,
   readObs,
 } from "@/constants/tanuhConcepts";
 import type { EncounterApiResponse } from "@/api/types";
@@ -76,6 +77,14 @@ export function collectPhotos(obs: Record<string, unknown>): ReviewPhoto[] {
     photos.push({ slot, imageUrl });
   }
   return photos;
+}
+
+// Limited mouth opening ("Able to Open Mouth?" = No) with no photo: the review
+// takes the spec's fixed LIMITED_MOUTH_REVIEW values and the clinician only
+// writes Notes. Since PE-126 the worker may photograph what is visible; a
+// screening with photos is reviewed like any other.
+export function isLimitedMouthAutoReview(obs: Record<string, unknown>, photoCount: number): boolean {
+  return obs[VISUAL_EXAM_CONCEPTS.ableToOpenMouth.name] === "No" && photoCount === 0;
 }
 
 // Requirements 2.0: classification is computed from the per-photo physician
