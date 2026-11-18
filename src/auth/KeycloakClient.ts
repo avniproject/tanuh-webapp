@@ -44,6 +44,12 @@ export class KeycloakClient implements IdpClient {
     localStorage.setItem(AUTH_TOKEN_KEY, this.kc.token);
   }
 
+  async getToken(): Promise<string> {
+    if (!this.kc.token) throw new Error("NOT_SIGNED_IN");
+    await this.kc.updateToken(30);
+    return this.kc.token;
+  }
+
   async signOut(): Promise<void> {
     localStorage.removeItem(AUTH_TOKEN_KEY);
     await this.kc.logout();

@@ -59,9 +59,12 @@ Multi-provider (Cognito + Keycloak) selected at runtime from `GET /idp-details` 
 ### Server-side extension endpoints
 The list view relies on custom `/api/impl/*` endpoints (`src/api/impl.ts`): `catchmentLocations` (cached per session) and `encountersWithLocation`, which joins encounters to subject location and supports a linked-observation filter (used to filter pending reviews by referral facility). They are stock avni-server endpoints since v16.14.0 (`CustomImplController`), built for this app.
 
+### Data Quality screens (`src/dataQuality/`)
+A second section, at `/data-quality/*`, for programme managers: Health Check, Workers, Quality Dimensions and How to read this, built from the dqs-demo design. Only users in the Avni **"Programme Manager"** user group reach it (`isProgrammeManager` in `src/auth/roles.ts`); a user in both groups sees both sections, with links in the header. It reads the **data quality service (DQS)**, not Avni: `src/dataQuality/api/client.ts` calls DQS's dashboard routes under `VITE_DQS_API_BASE_URL` (default `/dqs`, which the dev server proxies to `VITE_DQS_PROXY_TARGET`) and sends the signed-in user's token as `Authorization: Bearer` (`IdpClient.getToken`). DQS decides who may read: it accepts only the users its tenant authentication file lists, and a refusal is shown as a warning in the section. The screens compute no score — every score, rule title and threshold comes from DQS; they only count, sort and format. Its colours are the design's (`src/dataQuality/tokens.ts`), applied in `sx` props rather than in the app theme. The map views are a separate task.
+
 ## Conventions & gotchas
 - Path alias `@/` → `src/`.
-- Dev proxy forwards a fixed prefix list (`/api`, `/me`, `/web`, `/media`, `/idp-details`, `/cognito-details`) to `VITE_AVNI_PROXY_TARGET` (falls back to `VITE_AVNI_API_BASE_URL`); add new upstream prefixes to `vite.config.ts`.
+- Dev proxy forwards a fixed prefix list (`/api`, `/me`, `/web`, `/media`, `/idp-details`, `/cognito-details`) to `VITE_AVNI_PROXY_TARGET` (falls back to `VITE_AVNI_API_BASE_URL`); add new upstream prefixes to `vite.config.ts`. `/dqs` is proxied separately, to `VITE_DQS_PROXY_TARGET`, with the prefix stripped.
 - In-progress review form state is persisted to `sessionStorage` per encounter UUID (survives refresh/HMR), cleared on successful submit.
 - The review UI is deliberately **name-blind** — patient name is never shown; cases are titled by external/Case ID.
 - Concept answer lists are fetched from `/web/concept/{uuid}` and cached (`src/api/concepts.ts`), filtering voided answers.

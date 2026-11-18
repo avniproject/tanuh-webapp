@@ -24,6 +24,11 @@ export function bindIdp(idp: IdpClient): void {
   });
 }
 
+// The sign-in client the app is using, once AuthProvider has bound one.
+export function boundIdp(): IdpClient | null {
+  return idpRef;
+}
+
 // Used before the IDP is configured; must bypass the interceptor.
 export async function fetchIdpDetails<T>(): Promise<T> {
   const response = await axios.get<T>(`${baseURL}/idp-details`, {

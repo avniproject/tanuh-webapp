@@ -1,0 +1,321 @@
+// The Workers view: every worker of the period, ten to a page, filtered by taluk and status,
+// and the selected worker's profile beside the table.
+//
+// The table is DQS's workers route for the filters. The profile reads the worker's score for
+// the period (its four gates and its rule outcomes) and every period the worker has at this
+// grain, for the DQ Score Over Time chart. Its name and place come from the table row; a
+// worker opened from another view whose row has not been seen yet is shown by id.
+
+import { Box, Chip, Pagination, Stack, Table, TableBody, TableCell, TableHead, TableRow, Typography } from "@mui/material";
+import { dqsApi } from "../api/client";
+import type { GateScore, RuleRow, WorkerPeriod, WorkerRow } from "../api/types";
+import { LineChart } from "../components/LineChart";
+import {
+  ClickRow,
+  FilterChip,
+  GateCell,
+  Heading,
+  Legend,
+  Panel,
+  Pending,
+  PlainSelect,
+  ReasonCard,
+  SectionTitle,
+  StatusPill,
+  TABLE_SX,
+  TrustCell,
+} from "../components/ui";
+import {
+  GATE_GROUP,
+  PERIOD_NOUN,
+  STATUS_KEY,
+  STATUS_LABEL,
+  STATUS_OF_KEY,
+  dayMonth,
+  dimensionName,
+  f2,
+  int,
+  periodLabel,
+  periodShort,
+  place,
+  shortId,
+  suspicionText,
+} from "../format";
+import type { StatusKey } from "../format";
+import { useGo } from "../navigation";
+import { useDashboard, useLoad, useParam, useSetParams } from "../state";
+import { DQ } from "../tokens";
+import { NameCell } from "./HealthCheck";
+
+const PAGE_SIZE = 10;
+
+// Rows seen in any table this session, so that a worker opened from another view is named.
+const seen = new Map<string, WorkerRow>();
+
+export function Workers() {
+  const { grain, span, context } = useDashboard();
+  const taluk = useParam("taluk");
+  const statusParam = useParam("status");
+  const pageParam = useParam("page");
+  const worker = useParam("worker");
+  const setParams = useSetParams();
+  const start = span?.start ?? "";
+  const status = (statusParam && statusParam in STATUS_OF_KEY ? statusParam : null) as StatusKey | null;
+  const page = Math.max(1, Number(pageParam) || 1);
+
+  const units = useLoad(() => dqsApi.units(grain, start), [grain, start]);
+  const rows = useLoad(
+    () =>
+      dqsApi
+        .workers(grain, start, { unitId: taluk, status: status ? STATUS_OF_KEY[status] : null, page, pageSize: PAGE_SIZE })
+        .then((found) => {
+          found.workers.forEach((row) => seen.set(row.worker_id, row));
+          return found;
+        }),
+    [grain, start, taluk, status, page],
+  );
+
+  if (!span) return <Typography sx={{ color: DQ.textSubtle }}>No scores are stored at this grain yet.</Typography>;
+  const selected = worker ?? (rows.state === "ok" && rows.value.workers.length ? rows.value.workers[0].worker_id : null);
+  const chips: [StatusKey | null, string][] = [
+    [null, "All"],
+    ["low", STATUS_LABEL.low],
+    ["high", STATUS_LABEL.high],
+    ["slip", STATUS_LABEL.slip],
+    ["ins", STATUS_LABEL.ins],
+  ];
+
+  return (
+    <Stack spacing={2} sx={{ minWidth: 0 }}>
+      <Stack direction="row" justifyContent="space-between" alignItems="center" flexWrap="wrap" useFlexGap spacing={1.5}>
+        <SectionTitle>Workers Performance</SectionTitle>
+        <PlainSelect
+          label="Taluk"
+          value={taluk ?? ""}
+          onChange={(value) => {
+            setParams({ taluk: value || null, page: null, worker: null });
+          }}
+          options={[
+            { value: "", label: "Select Taluk" },
+            ...(units.state === "ok" ? units.value.units.map((u) => ({ value: u.unit_id, label: u.name || u.unit_id })) : []),
+          ]}
+        />
+      </Stack>
+      <Box
+        sx={{
+          display: "grid",
+          gridTemplateColumns: { xs: "1fr", lg: "minmax(0,1fr) 360px", xl: "minmax(0,1fr) 435px" },
+          gap: 3,
+          alignItems: "start",
+        }}
+      >
+        <Panel sx={{ display: "flex", flexDirection: "column", gap: 2 }}>
+          <Stack direction="row" spacing={1} useFlexGap flexWrap="wrap" role="group" aria-label="Status">
+            {chips.map(([key, label]) => (
+              <FilterChip
+                key={label}
+                label={label}
+                selected={status === key}
+                onClick={() => {
+                  setParams({ status: key, page: null, worker: null });
+                }}
+              />
+            ))}
+          </Stack>
+          <Pending loaded={rows} empty={`No worker scores are stored for ${periodLabel(grain, span)}.`}>
+            {(found) => (
+              <>
+                <Box sx={{ overflowX: "auto" }}>
+                  <Table size="small" sx={TABLE_SX}>
+                    <TableHead>
+                      <TableRow>
+                        <TableCell>Name</TableCell>
+                        <TableCell>Location</TableCell>
+                        <TableCell>DQ Score</TableCell>
+                        <TableCell>Sufficiency</TableCell>
+                        <TableCell title="Provenance confidence">Genuineness</TableCell>
+                        <TableCell>Fidelity</TableCell>
+                        <TableCell>Status</TableCell>
+                      </TableRow>
+                    </TableHead>
+                    <TableBody>
+                      {found.workers.length ? (
+                        found.workers.map((row) => (
+                          <ClickRow
+                            key={`${row.worker_id}-${row.peer_group_key}`}
+                            selected={row.worker_id === selected}
+                            onOpen={() => setParams({ worker: row.worker_id })}
+                          >
+                            <TableCell><NameCell row={row} /></TableCell>
+                            <TableCell>{place(row)}</TableCell>
+                            <TableCell><TrustCell trust={row.trust} previous={row.previous_trust} insufficient={row.insufficient} /></TableCell>
+                            <TableCell><GateCell gate={row.sufficiency} insufficient={row.insufficient} /></TableCell>
+                            <TableCell><GateCell gate={row.provenance_confidence} insufficient={row.insufficient} /></TableCell>
+                            <TableCell><GateCell gate={row.quality} insufficient={row.insufficient} /></TableCell>
+                            <TableCell><StatusPill status={row.status ? STATUS_KEY[row.status] : null} /></TableCell>
+                          </ClickRow>
+                        ))
+                      ) : (
+                        <TableRow>
+                          <TableCell colSpan={7} sx={{ color: DQ.textSubtle }}>No workers match these filters.</TableCell>
+                        </TableRow>
+                      )}
+                    </TableBody>
+                  </Table>
+                </Box>
+                <Stack direction="row" justifyContent="space-between" alignItems="center" flexWrap="wrap" useFlexGap
+                  spacing={2} sx={{ borderTop: `1px solid ${DQ.border}`, pt: 3 }}>
+                  <Legend settings={context.settings} withMid={false} />
+                  {found.total > PAGE_SIZE && (
+                    <Pagination
+                      size="small"
+                      page={found.page}
+                      count={Math.ceil(found.total / PAGE_SIZE)}
+                      onChange={(_, next) => {
+                        setParams({ page: String(next), worker: null });
+                      }}
+                    />
+                  )}
+                </Stack>
+              </>
+            )}
+          </Pending>
+        </Panel>
+        <Panel sx={{ display: "flex", flexDirection: "column", gap: 2, position: { lg: "sticky" }, top: { lg: 16 } }}>
+          {selected ? (
+            <Profile workerId={selected} />
+          ) : (
+            <Typography variant="body2" sx={{ color: DQ.textSubtle }}>Select a worker to see their scores.</Typography>
+          )}
+        </Panel>
+      </Box>
+    </Stack>
+  );
+}
+
+const TILE_COLOUR = { low: DQ.danger, high: DQ.brand, mid: DQ.text };
+
+function Tile({ label, gate, insufficient, extra }: {
+  label: string;
+  gate: GateScore | null;
+  insufficient: boolean;
+  extra?: string | null;
+}) {
+  const colour = !insufficient && gate ? TILE_COLOUR[gate.band] : DQ.text;
+  // The interval is stored on 0-100; it is shown on the same 1-5 scale as the score.
+  const range = gate && !insufficient ? `Range ${f2(1 + (4 * gate.low) / 100)} – ${f2(1 + (4 * gate.high) / 100)}` : null;
+  return (
+    <Box sx={{ bgcolor: DQ.surfaceSubtle, border: `1px solid ${DQ.border}`, borderRadius: 1, p: 2, display: "flex", flexDirection: "column", gap: 0.5 }}>
+      <Typography sx={{ color: colour }}>{label}</Typography>
+      <Typography sx={{ fontSize: 20, color: DQ.textMuted }}>
+        {insufficient ? "—" : gate ? f2(gate.scale) : <Box component="span" sx={{ fontSize: 14, color: DQ.textDisabled }}>Not measured</Box>}
+      </Typography>
+      <Typography sx={{ fontSize: 10, color: DQ.textSubtle, minHeight: 14 }}>{extra ?? range ?? ""}</Typography>
+    </Box>
+  );
+}
+
+function Profile({ workerId }: { workerId: string }) {
+  const { grain, span, context, rules } = useDashboard();
+  const go = useGo();
+  const start = span!.start;
+  const period = useLoad(() => dqsApi.workerPeriod(workerId, grain, start), [workerId, grain, start]);
+  const history = useLoad(() => dqsApi.workerHistory(workerId, grain), [workerId, grain]);
+  const row = seen.get(workerId);
+  const noun = PERIOD_NOUN[grain].toLowerCase();
+
+  const scored: WorkerPeriod | null = period.state === "ok" ? period.value.periods[0] ?? null : null;
+  const insufficient = scored?.insufficient ?? false;
+  const last =
+    history.state === "ok" && history.value.periods.length
+      ? history.value.periods[history.value.periods.length - 1].period_start
+      : null;
+  const top: RuleRow[] = scored
+    ? scored.rules
+        .filter((rule) => rule.n_violations > 0 && rules[rule.rule_id]?.scored !== false)
+        .sort((a, b) => b.n_violations - a.n_violations)
+        .slice(0, 3)
+    : [];
+  const tag = (name: string, value: string) => (
+    <Chip size="small" sx={{ bgcolor: DQ.surfaceMuted }}
+      label={<><Box component="span" sx={{ color: DQ.textDisabled, mr: 1 }}>{name}</Box>{value}</>} />
+  );
+
+  return (
+    <>
+      <Stack direction="row" justifyContent="space-between" alignItems="flex-start" flexWrap="wrap" useFlexGap spacing={1}>
+        <Heading>{row?.name || workerId}</Heading>
+        {row?.taluk_name && (
+          <Chip size="small" sx={{ bgcolor: DQ.brandSubtle, "& .MuiChip-label": { color: DQ.brand } }}
+            label={<><Box component="span" sx={{ color: DQ.textDisabled, mr: 1 }}>Taluk</Box>{row.taluk_name}</>} />
+        )}
+      </Stack>
+      <Typography variant="caption" sx={{ color: DQ.textSubtle }}>
+        {row?.name && <Box component="span" sx={{ mr: 1 }}>{workerId}</Box>}
+        {row && <Box component="b" sx={{ fontWeight: 400, color: DQ.text }}>{place(row)}</Box>}
+      </Typography>
+      <Stack direction="row" spacing={2} useFlexGap flexWrap="wrap" alignItems="center" sx={{ pb: 2, borderBottom: `1px solid ${DQ.border}` }}>
+        {tag("Volume", scored ? int(scored.n_records) : "0")}
+        {tag("Last Activity", last ? periodShort(grain, last) : "—")}
+        <StatusPill status={insufficient ? "ins" : scored?.trend ? STATUS_KEY[scored.trend] : null} />
+      </Stack>
+      <Pending loaded={period} empty={`No records in ${periodLabel(grain, span!)}.`}>
+        {() =>
+          scored ? (
+            <>
+              {insufficient && (
+                <Typography variant="body2" sx={{ color: DQ.textSubtle }}>
+                  {scored.n_records} record{scored.n_records === 1 ? "" : "s"} this {noun}
+                  {context.settings ? `; ${context.settings.n_min} are needed to score` : ""}. No score is stored.
+                </Typography>
+              )}
+              <Box sx={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 1.25 }}>
+                <Tile label="DQ Score" gate={scored.trust} insufficient={insufficient} />
+                <Tile label="Sufficiency" gate={scored.sufficiency} insufficient={insufficient} />
+                <Tile label="Genuineness" gate={scored.provenance_confidence} insufficient={insufficient}
+                  extra={insufficient ? null : suspicionText(scored.fabrication_suspicion)} />
+                <Tile label="Fidelity" gate={scored.quality} insufficient={insufficient} />
+              </Box>
+              <Stack spacing={1.25} sx={{ bgcolor: DQ.surfaceSubtle, borderRadius: 1, p: 2 }}>
+                <Typography variant="body2" sx={{ fontWeight: 500 }}>Top Reason for Poor Quality</Typography>
+                {top.length ? (
+                  top.map((rule) => (
+                    <ReasonCard
+                      key={rule.rule_id}
+                      title={rules[rule.rule_id]?.title || rule.rule_id}
+                      group={GATE_GROUP[rule.feeds] || dimensionName(rule.dimension)}
+                      records={rule.n_evaluated}
+                      rate={rule.rate}
+                      tooltip={`${shortId(rule.rule_id)}: ${rule.n_violations} of ${rule.n_evaluated} records failed`}
+                      onClick={() => go("dimensions", { gate: GATE_GROUP[rule.feeds], rule: rule.rule_id, unit: row?.taluk_id })}
+                    />
+                  ))
+                ) : (
+                  <Typography variant="body2" sx={{ color: DQ.textSubtle }}>No rule failures this {noun}.</Typography>
+                )}
+              </Stack>
+            </>
+          ) : (
+            <Typography variant="body2" sx={{ color: DQ.textSubtle }}>No records in {periodLabel(grain, span!)}.</Typography>
+          )
+        }
+      </Pending>
+      <Box sx={{ bgcolor: DQ.surfaceSubtle, border: `1px solid ${DQ.border}`, borderRadius: 1, p: 2 }}>
+        <Typography variant="body2" sx={{ fontWeight: 500, mb: 0.5 }}>DQ Score Over Time</Typography>
+        <Pending loaded={history} empty="No scored periods.">
+          {(found) => (
+            <LineChart
+              settings={context.settings}
+              points={found.periods.map((point) => ({
+                label: dayMonth(point.period_start),
+                value: point.insufficient || !point.trust ? null : point.trust.scale,
+                insufficient: point.insufficient,
+                current: point.period_start === start,
+              }))}
+            />
+          )}
+        </Pending>
+      </Box>
+    </>
+  );
+}
