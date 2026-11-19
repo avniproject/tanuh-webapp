@@ -24,6 +24,10 @@ npm run typecheck    # tsc -b --noEmit
 
 See `RELEASE_WORKFLOW.md`: Avni's release-branch model, as in avni-webapp. One `X.Y` branch per minor release (`1.12` = prod line, `1.13` = UAT line); patches are committed and tagged `vX.Y.Z` on their branch, then merged forward into newer release branches and `main`. No `develop`, no hotfix branches.
 
+## Deployment
+
+Staging and UAT sites run on the data quality service's instance in the Tanuh staging AWS account, deployed with `deploy/deploy.sh` (`make deploy-staging REF=…`, `make deploy-uat`); prod still runs from `avni-infra`. See the README's "Releases & promotion".
+
 ## What this app is
 
 A React 18 + TypeScript + Material UI v7 (Vite) webapp for **clinician/physician review** of oral-cancer screenings. It is a thin CRUD client over **Avni Web APIs** — it holds no database. A worker completes an "Oral Screening" encounter on mobile; an Avni visit-schedule rule then schedules a review encounter; this app lists those pending reviews, shows the screening data + photos, and writes the clinician's verdict back as observations on the review encounter.

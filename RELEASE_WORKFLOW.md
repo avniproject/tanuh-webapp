@@ -16,13 +16,15 @@ were retired into the release branches below.
 
 ## Which branch serves which site
 
-| Site | Serves | Infra pin (`avni-infra/configure/prod_tanuh_metabase_servers.yml`) |
-|---|---|---|
-| UAT: https://uat-tanuh.avniproject.org | head of the open minor branch | `tanuh_webapp_git_ref: <open minor branch>` |
-| Prod: https://tanuh.avniproject.org | a release tag | `tanuh_webapp_git_ref: <live tag>` |
+| Site | Org | Serves | Pinned in |
+|---|---|---|---|
+| Staging: https://staging-tanuh.avniproject.org | Tanuh staging (org 1187) | any ref, named at each deploy | — |
+| UAT: https://uat-tanuh.avniproject.org | Tanuh UAT | head of the open minor branch | `UAT_REF` in `deploy/deploy.sh` |
+| Prod: https://tanuh.avniproject.org | Tanuh prod | a release tag | `tanuh_webapp_git_ref` in `avni-infra/configure/prod_tanuh_metabase_servers.yml` |
 
-Staging (org 1187) has no site of its own; its users log in through the UAT site. Both sites proxy
-the same Avni server, so the org you log in with is the only data boundary.
+Staging and UAT run in the Tanuh staging AWS account (see the README's "Releases & promotion");
+prod runs from `avni-infra` until it moves to the Tanuh prod account. Every site proxies the same
+Avni server, so the org you log in with is the only data boundary.
 
 ## Making a change
 
@@ -30,7 +32,9 @@ the same Avni server, so the org you log in with is the only data boundary.
    **merge forward** into every newer release branch and `main` (`1.12` → `1.13` → `main`). Merge;
    do not cherry-pick between release branches.
 2. **New work:** a feature branch from the open minor branch, merged back into it.
-3. **UAT:** `make tanuh-webapp-uat` deploys the pinned branch; `EXTRA_ARGS='-e tanuh_webapp_git_ref=<ref>'`
+3. **Staging:** `make deploy-staging REF=<branch, tag or commit>` puts a feature branch in front of
+   the staging org before it is merged.
+4. **UAT:** `make deploy-uat` deploys the open minor branch (`UAT_REF`); `make deploy-uat REF=<ref>`
    deploys any other ref. Check the result with the org repo's `verify_deploy.sh`.
 
 CI (`.github/workflows/ci.yml`) runs lint, typecheck, tests and build on pull requests and on
@@ -49,7 +53,8 @@ pushes to `main` and every `X.Y` branch.
 4. Prod deploys the **tag**, and only on explicit sign-off:
    `EXTRA_ARGS='-e tanuh_webapp_git_ref=vX.Y.Z' make tanuh-webapp-prod`. Then bump the infra prod
    pin to that tag so a bare prod deploy cannot drift.
-5. When the next minor line starts: `git branch X.(Y+1) X.Y && git push origin X.(Y+1)`.
+5. When the next minor line starts: `git branch X.(Y+1) X.Y && git push origin X.(Y+1)`, and move
+   `UAT_REF` in `deploy/deploy.sh` to it.
 
 Pre-release builds on an open minor branch may carry `X.Y.0-<label>.N` (e.g. `1.13.0-mvp.7`); the
 release commit sets `X.Y.0`.
