@@ -2,7 +2,7 @@
   "name": "avni-tanuh-physician-app",
   "version": "1.13.0-mvp.7",
   "private": true,
-  "description": "Physician Review CRUD webapp for Tanuh — sits on top of Avni Web APIs",
+  "description": "Tanuh webapp: clinician review over Avni Web APIs, and the Data Quality screens over the data quality service",
   "type": "module",
   "scripts": {
     "dev": "vite",
