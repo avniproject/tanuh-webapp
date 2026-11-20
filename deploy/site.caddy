@@ -1,0 +1,47 @@
+# One site of the Tanuh webapp, served by the Caddy that runs on the DQS instance in the Tanuh
+# staging account. deploy/deploy.sh fills in the site's placeholders and uploads the result
+# as site.caddy beside the site's dist/; the DQS Caddyfile imports every
+# /srv/tanuh-webapp/*/site.caddy (data-quality-service, deploy/aws/Caddyfile).
+#
+# Caddy gets the certificate for the site's name from Let's Encrypt once the name resolves to
+# the instance's Elastic IP.
+__SITE_ADDRESS__ {
+	encode zstd gzip
+
+	# Avni's routes, forwarded to Avni's server so that the browser sees them on the app's own
+	# origin and CORS never applies. The list mirrors the dev server's proxy in vite.config.ts.
+	@avni path /idp-details /idp-details/* /api /api/* /me /me/* /web /web/* /media /media/* /cognito-details /cognito-details/*
+	handle @avni {
+		reverse_proxy __AVNI_ORIGIN__ {
+			header_up Host __AVNI_HOST__
+			# A cookie Avni scopes to its own domain would never come back on this origin; with
+			# no Domain it belongs to the app's host.
+			header_down Set-Cookie "(?i);\s*domain=[^;]*" ""
+			flush_interval -1
+		}
+	}
+
+	# The Data Quality screens call DQS under /dqs (VITE_DQS_API_BASE_URL's default). The site
+	# reaches only its own tenant's API, which has no routes for any other tenant.
+	handle_path /dqs/* {
+		reverse_proxy api-__TENANT__:8000
+	}
+
+	# Vite names every file under /assets/ by its content, so they never change.
+	handle /assets/* {
+		root * /srv/tanuh-webapp/__SITE__/dist
+		header Cache-Control "public, max-age=31536000, immutable"
+		file_server
+	}
+
+	# Everything else is the app: a file that exists, or index.html for the app's own routes.
+	# Never cached, so a deploy reaches everyone on their next load.
+	handle {
+		root * /srv/tanuh-webapp/__SITE__/dist
+		header Cache-Control "no-store"
+		try_files {path} /index.html
+		file_server
+	}
+
+	log
+}

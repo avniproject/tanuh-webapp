@@ -1,0 +1,98 @@
+# Deploy the staging and UAT sites from GitHub Actions, through deploy/deploy.sh.
+#
+# A push to the open minor branch (UAT_REF in deploy/deploy.sh) runs the checks in ci.yml and
+# then deploys the pushed commit to UAT. A push to any other X.Y branch deploys nothing.
+# Staging, or UAT from another ref, is deployed by running this workflow by hand (Actions ->
+# deploy -> Run workflow, or `gh workflow run deploy.yml -f site=staging -f ref=<ref>`) with
+# the branch, tag or commit to deploy; the checks do not run for those, since the ref may be a
+# feature branch still in progress.
+#
+# The deploy job runs in the GitHub environment named for the site, and signs in to the Tanuh
+# staging account as tanuh-webapp-deploy (tanuh-samanvay-infra's deploy-roles/), which trusts
+# only this repository's `staging` and `uat` environments. deploy.sh skips its AWS profile
+# sign-in when a session is already in the environment.
+name: deploy
+
+on:
+  push:
+    branches: ['[0-9]+.[0-9]+']
+  workflow_dispatch:
+    inputs:
+      site:
+        description: Site to deploy
+        type: choice
+        options: [staging, uat]
+        default: staging
+      ref:
+        description: Branch, tag or commit to deploy (UAT defaults to the open minor branch)
+        type: string
+        required: false
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  # Works out what to deploy where, or that a push deploys nothing.
+  target:
+    runs-on: ubuntu-latest
+    outputs:
+      site: ${{ steps.pick.outputs.site }}
+      ref: ${{ steps.pick.outputs.ref }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: pick
+        env:
+          EVENT: ${{ github.event_name }}
+          INPUT_SITE: ${{ inputs.site }}
+          INPUT_REF: ${{ inputs.ref }}
+        run: |
+          uat_ref="$(sed -n 's/^UAT_REF=//p' deploy/deploy.sh)"
+          [ -n "$uat_ref" ] || { echo "deploy/deploy.sh sets no UAT_REF" >&2; exit 1; }
+          if [ "$EVENT" = push ]; then
+            if [ "$GITHUB_REF_NAME" = "$uat_ref" ]; then
+              # The pushed commit, so a later push to the branch cannot change what this run deploys.
+              echo "site=uat" >>"$GITHUB_OUTPUT"
+              echo "ref=$GITHUB_SHA" >>"$GITHUB_OUTPUT"
+            else
+              echo "$GITHUB_REF_NAME is not the open minor branch ($uat_ref); nothing to deploy"
+            fi
+          else
+            echo "site=$INPUT_SITE" >>"$GITHUB_OUTPUT"
+            echo "ref=$INPUT_REF" >>"$GITHUB_OUTPUT"
+          fi
+
+  checks:
+    needs: target
+    if: github.event_name == 'push' && needs.target.outputs.site != ''
+    uses: ./.github/workflows/ci.yml
+
+  deploy:
+    needs: [target, checks]
+    # Runs after the checks pass on a push, and without them when run by hand.
+    if: >-
+      always() && needs.target.result == 'success' && needs.target.outputs.site != ''
+      && (needs.checks.result == 'success' || needs.checks.result == 'skipped')
+    runs-on: ubuntu-latest
+    environment: ${{ needs.target.outputs.site }}
+    # One deploy of a site at a time; none is cancelled, so each is either done or failed.
+    concurrency:
+      group: deploy-${{ needs.target.outputs.site }}
+      cancel-in-progress: false
+    steps:
+      # deploy.sh resolves the ref against origin's branches and tags, so it needs the history.
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-node@v4
+        with:
+          node-version-file: .nvmrc
+      - uses: aws-actions/configure-aws-credentials@v4
+        with:
+          role-to-assume: arn:aws:iam::234432913930:role/tanuh-webapp-deploy
+          aws-region: ap-south-1
+      - name: Deploy
+        env:
+          SITE: ${{ needs.target.outputs.site }}
+          REF: ${{ needs.target.outputs.ref }}
+        run: deploy/deploy.sh "$SITE" ${REF:+"$REF"}

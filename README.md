@@ -37,20 +37,42 @@ The Tanuh org instance must have:
 - Each Physician user assigned the catchment locations they review.
 - Optional: the same encounter types recorded inside a program (Tanuh Staging's NCD program, PE-83). The app reads program visits through the stock `/api/programEncounters` API alongside the standalone ones, completes a program review on `/api/programEncounter/{id}`, and schedules its High Risk Referral / Referral Slip in the review's own enrolment on `/web/programEncounters` (the external API cannot name a planned visit — PE-125). The Physician group then needs program-scoped ViewVisit on the review and screening types. Program list rows are assembled in the browser (one subject request per patient), which suits a small org; at scale `/api/impl/encountersWithLocation` should return program visits too.
 
-## Releases & promotion (prod ⇄ UAT)
+## Releases & promotion (staging → UAT → prod)
 
-Two instances of this app run on the **same** Tanuh reporting node, deployed from
-`avni-infra` (`configure/`). Branching and releases follow Avni's model, one `X.Y` branch per
-minor release with fixes merged forward. See [`RELEASE_WORKFLOW.md`](RELEASE_WORKFLOW.md).
+Each Tanuh org on Avni's prod server has a site of its own. Changes move staging → UAT → prod.
+Branching and releases follow Avni's model, one `X.Y` branch per minor release with fixes merged
+forward. See [`RELEASE_WORKFLOW.md`](RELEASE_WORKFLOW.md).
 
-- **UAT**: `https://uat-tanuh.avniproject.org` serves the head of the open minor branch.
-  Deploy: `make tanuh-webapp-uat`.
-- **Prod**: `https://tanuh.avniproject.org` serves a **release tag**, never a branch head
-  (avni-infra prod role var `tanuh_webapp_git_ref`). Deploy only on sign-off:
-  `EXTRA_ARGS='-e tanuh_webapp_git_ref=vX.Y.Z' make tanuh-webapp-prod`.
+| Site | Org | Serves | Runs on | Deploy |
+|---|---|---|---|---|
+| `https://staging-tanuh.avniproject.org` | Tanuh staging | any ref you name | DQS instance, Tanuh staging account | run the `deploy` workflow with `site=staging` and the ref, or `make deploy-staging REF=<ref>` |
+| `https://uat-tanuh.avniproject.org` | Tanuh UAT | head of the open minor branch | DQS instance, Tanuh staging account | automatic on every push to the open minor branch; `make deploy-uat` |
+| `https://tanuh.avniproject.org` | Tanuh prod | a **release tag**, never a branch head | Tanuh reporting node, Avni account (`avni-infra`) | `EXTRA_ARGS='-e tanuh_webapp_git_ref=vX.Y.Z' make tanuh-webapp-prod` in `avni-infra/configure`, only on sign-off |
 
-Validate on UAT with a **`Tanuh_UAT`-org** account. Both instances proxy the *same* prod Avni, so
-the only data boundary is your org, and a prod-org login would show prod data.
+**Staging and UAT** run on the data quality service's instance in the Tanuh staging AWS account,
+served by its Caddy, beside DQS's tenants for the same two orgs (`samvit-staging` and
+`samvit-uat`). `deploy/deploy.sh` builds the ref's committed tree with the site's DQS tenant,
+uploads it, and installs it on the instance through SSM; `deploy/site.caddy` is the site's Caddy
+configuration and `deploy/install-site.sh` what runs on the instance. Each site forwards Avni's
+routes to Avni's prod server and `/dqs/` to its own DQS tenant.
+
+GitHub Actions runs `deploy/deploy.sh` (`.github/workflows/deploy.yml`): every push to the open
+minor branch (`UAT_REF` in `deploy/deploy.sh`) is checked and deployed to UAT, and the workflow
+can be run by hand, from the Actions tab or with
+`gh workflow run deploy.yml -f site=staging -f ref=<ref>`, to deploy any ref to staging or UAT.
+It signs in as the `tanuh-webapp-deploy` role, which `tanuh-samanvay-infra` creates and which
+trusts only this repository's `staging` and `uat` environments.
+
+Run from a laptop, the script needs the `tanuh-staging`
+AWS profile (`tanuh-samanvay-infra/docs/access/README.md`), `jq`, and the Node version in
+`.nvmrc`; the DQS bundle must already run on the instance (`data-quality-service`,
+`deploy/aws/README.md`). The deploy and the instance's tooling come from the checkout you run
+it in, the app from the ref you name.
+
+**Prod** stays on the Tanuh reporting node until it moves to the Tanuh prod account.
+
+Validate with an account of the site's org. Every site proxies the *same* prod Avni, so the only
+data boundary is your org, and a prod-org login would show prod data.
 
 Which version runs where today, and what is pending, is tracked in the org repo:
 `avniproject/tanuh-implementation` → `docs/physician-webapp.md`.
