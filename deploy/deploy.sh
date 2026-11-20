@@ -17,9 +17,10 @@
 # `git archive` into a temporary directory, so uncommitted changes and local .env files never
 # reach a build. The build needs the Node major version in the ref's .nvmrc.
 #
-# On a laptop with no AWS session exported, it signs in with the profile in AWS_PROFILE, or
-# tanuh-staging, which asks for the MFA code (tanuh-samanvay-infra/docs/access/README.md). It
-# refuses a session for any other account.
+# GitHub Actions runs it (.github/workflows/deploy.yml) with the tanuh-webapp-deploy role's
+# session already exported. On a laptop with no AWS session exported, it signs in with the
+# profile in AWS_PROFILE, or tanuh-staging, which asks for the MFA code
+# (tanuh-samanvay-infra/docs/access/README.md). It refuses a session for any other account.
 #
 # It then copies s3://dqs-staging-deploy-<account>/tanuh-webapp/<site>/current/ to previous/,
 # uploads the build (dist/, site.caddy, VERSION) to current/, and through SSM Run Command
@@ -147,7 +148,7 @@ commit=$commit
 site=$site
 tenant=$tenant
 built_at=$(date -u +%Y-%m-%dT%H:%M:%SZ)
-built_by=$(git config user.name || whoami)
+built_by=${GITHUB_ACTOR:-$(git config user.name || whoami)}
 VERSION
 
 echo "== uploading to $prefix/current/"

@@ -32,13 +32,17 @@ Avni server, so the org you log in with is the only data boundary.
    **merge forward** into every newer release branch and `main` (`1.12` → `1.13` → `main`). Merge;
    do not cherry-pick between release branches.
 2. **New work:** a feature branch from the open minor branch, merged back into it.
-3. **Staging:** `make deploy-staging REF=<branch, tag or commit>` puts a feature branch in front of
-   the staging org before it is merged.
-4. **UAT:** `make deploy-uat` deploys the open minor branch (`UAT_REF`); `make deploy-uat REF=<ref>`
-   deploys any other ref. Check the result with the org repo's `verify_deploy.sh`.
+3. **Staging:** run the `deploy` workflow with `site=staging` and the branch, tag or commit
+   (`gh workflow run deploy.yml -f site=staging -f ref=<ref>`) to put a feature branch in front of
+   the staging org before it is merged. `make deploy-staging REF=<ref>` does the same from a laptop.
+4. **UAT:** every push to the open minor branch (`UAT_REF`) is checked and deployed to UAT by the
+   `deploy` workflow. To deploy another ref, run the workflow with `site=uat` and the ref, or
+   `make deploy-uat REF=<ref>` from a laptop. Check the result with the org repo's
+   `verify_deploy.sh`.
 
 CI (`.github/workflows/ci.yml`) runs lint, typecheck, tests and build on pull requests and on
-pushes to `main` and every `X.Y` branch.
+pushes to `main` and every `X.Y` branch. `.github/workflows/deploy.yml` deploys the staging and
+UAT sites.
 
 ## Releasing `X.Y.Z`
 

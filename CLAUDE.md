@@ -26,7 +26,7 @@ See `RELEASE_WORKFLOW.md`: Avni's release-branch model, as in avni-webapp. One `
 
 ## Deployment
 
-Staging and UAT sites run on the data quality service's instance in the Tanuh staging AWS account, deployed with `deploy/deploy.sh` (`make deploy-staging REF=…`, `make deploy-uat`); prod still runs from `avni-infra`. See the README's "Releases & promotion".
+Staging and UAT sites run on the data quality service's instance in the Tanuh staging AWS account, deployed with `deploy/deploy.sh`, which `.github/workflows/deploy.yml` runs on every push to the open minor branch (UAT) and on demand (staging, or UAT from another ref), and which also runs from a laptop (`make deploy-staging REF=…`, `make deploy-uat`); prod still runs from `avni-infra`. See the README's "Releases & promotion".
 
 ## What this app is
 
