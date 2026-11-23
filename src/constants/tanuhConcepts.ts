@@ -398,7 +398,7 @@ export const REVIEW_CATEGORY_VALUES = {
 export type ReviewCategoryValue = (typeof REVIEW_CATEGORY_VALUES)[keyof typeof REVIEW_CATEGORY_VALUES];
 
 // A Coded single-select serialises as the answer name; tolerate a one-element array.
-function codedAnswerName(v: unknown): string | undefined {
+export function codedAnswerName(v: unknown): string | undefined {
   const s = Array.isArray(v) ? v[0] : v;
   return typeof s === "string" && s !== "" ? s : undefined;
 }
@@ -441,3 +441,22 @@ export function deriveWorkerOpinion(obs: Record<string, unknown>): WorkerOpinion
   );
   return suspicious ? WORKER_OPINION.suspicious : WORKER_OPINION.notSuspicious;
 }
+
+// ---------------------------------------------------------------------------
+// The review queue (PE-249). Names are what reads use; the UAT uuids of these are not known here, so uuid is "".
+export const OCSHR_RESULT_CONCEPT = { name: "OCSHR Model Result", uuid: "" } as const;
+export const RANDOM_SAMPLE_ID_CONCEPT = { name: "Random Sample ID", uuid: "" } as const;
+// "Egde" is the live spelling on Tanuh UAT; the correctly spelled name is read too in case it is ever fixed.
+export const EDGE_AI_VERDICT_CONCEPT = {
+  name: "Egde AI Final Verdict",
+  uuid: "",
+  legacyNames: ["Edge AI Final Verdict"],
+} as const;
+export const IN_REVIEW_BY_CONCEPT = { name: "In review by", uuid: "" } as const;
+export const IN_REVIEW_SINCE_CONCEPT = { name: "In review since", uuid: "" } as const;
+
+export const OCSHR_RESULT_VALUES = { highRisk: "High Risk", notHighRisk: "Not High Risk" } as const;
+
+// Display order of the queue's groups: worker first, then AI, then the safety sample.
+export const QUEUE_GROUPS = ["FLW marked", "AI marked", "Safety sample"] as const;
+export type QueueGroup = (typeof QUEUE_GROUPS)[number];
