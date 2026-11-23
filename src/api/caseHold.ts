@@ -12,7 +12,9 @@ import {
   getEncounter,
   invalidateEncounterSweeps,
   isProgramEncounter,
+  listVisitsFor,
   patchEncounter,
+  screeningsByReview,
   submitEncounter,
   type PatchEncounterBody,
   type UpsertEncounterBody,
@@ -190,7 +192,8 @@ export function createReviewVisit(screening: EncounterApiResponse, uuid: string,
   );
 }
 
-export type TakeRefusal = "completed" | "held" | "gone";
+// "reviewed": the screening has a review of its own already, which this load did not see (FW7).
+export type TakeRefusal = "completed" | "held" | "gone" | "reviewed";
 export type TakeResult = { reviewUuid: string } | { refused: TakeRefusal };
 
 const isNotFound = (err: unknown) => axios.isAxiosError(err) && err.response?.status === 404;
@@ -231,6 +234,41 @@ async function writeHoldOnce<Stop extends string>(
     await writeHold(fresh, hold, extra);
     return undefined;
   }
+}
+
+/**
+ * Whether the screening already has a live review other than the derived one (FW7). The queue's load can miss it: the
+ * booked reviews are read up to a cap per place and the encounter cache has its own caps. So the patient's reviews,
+ * or for a programme screening its enrolment's, are read from the server and paired as everywhere else. A voided or
+ * cancelled review cannot be completed, so it does not count.
+ */
+async function hasOwnReview(screening: EncounterApiResponse, derivedUuid: string): Promise<boolean> {
+  const [reviews, screenings] = await Promise.all([
+    listVisitsFor(screening, ENCOUNTER_TYPE.physicianReviewForm.name),
+    listVisitsFor(screening, ENCOUNTER_TYPE.oralScreening.name),
+  ]);
+  const paired = screeningsByReview(reviews, screenings);
+  return reviews.some((r) => r.ID !== derivedUuid && !isGone(r) && paired.get(r.ID)?.ID === screening.ID);
+}
+
+/**
+ * Creates the derived review on the web save (D1) and gives it as read back. The POST can fail after it, or another
+ * physician's take, made the review; the review is then read again and given when it is there (FW7). With none
+ * there, the failure is thrown.
+ */
+async function createReview(screening: EncounterApiResponse, uuid: string, now: Date): Promise<EncounterApiResponse> {
+  const { url, body } = createReviewVisit(screening, uuid, now);
+  try {
+    const response = await http.post<{ success: boolean; errorMessage?: string }>(url, body);
+    if (!response.data.success) {
+      throw new Error(response.data.errorMessage || `${url} refused the review`);
+    }
+  } catch (err) {
+    const after = await readReview(uuid).catch(() => null);
+    if (after) return after;
+    throw err;
+  }
+  return getEncounter(uuid);
 }
 
 // Writes the hold on a review the take has decided to take, then reads it again: the case is the viewer's only when
@@ -276,21 +314,8 @@ export async function takeCase(row: QueueRow, viewer: string, now: Date = server
     const verdict = decideTake(current, viewer, now);
     if (verdict !== "take") return { refused: verdict };
   } else {
-    const { url, body } = createReviewVisit(screening, uuid, now);
-    try {
-      const response = await http.post<{ success: boolean; errorMessage?: string }>(url, body);
-      if (!response.data.success) {
-        throw new Error(response.data.errorMessage || `${url} refused the review`);
-      }
-    } catch (err) {
-      // The POST can fail after another physician created and completed the review.
-      if (axios.isAxiosError(err)) {
-        const after = await readReview(uuid).catch(() => null);
-        if (after && decideTake(after, viewer, now) === "completed") return { refused: "completed" };
-      }
-      throw err;
-    }
-    current = await getEncounter(uuid);
+    if (await hasOwnReview(screening, uuid)) return { refused: "reviewed" };
+    current = await createReview(screening, uuid, now);
     const verdict = decideTake(current, viewer, now);
     if (verdict !== "take") return { refused: verdict };
   }

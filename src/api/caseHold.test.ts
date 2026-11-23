@@ -517,6 +517,92 @@ describe("takeCase and releaseCase", () => {
     expect(patch).not.toHaveBeenCalled();
   });
 
+  // FW7: the load can miss the screening's real review (a capped read, a cold cache), so before a new review is made the
+  // patient's reviews are read from the server.
+  describe("a screening that has a review this load did not see", () => {
+    const at = (min: number) => new Date(Date.UTC(2026, 10, 20, 9, min)).toISOString();
+    const scr = { ...screening, audit: { "Created at": at(0) } };
+    const other = { ...screening, ID: "scr0", "Encounter date time": "2026-11-10T00:00:00Z", audit: { "Created at": at(-60 * 24 * 10) } };
+    const bookedFor = (id: string, extra: Partial<EncounterApiResponse> = {}): EncounterApiResponse => ({
+      ...booked,
+      ID: id,
+      audit: { "Created at": at(0) },
+      ...extra,
+    });
+
+    it.each([
+      ["a planned review the screening booked", bookedFor("rB")],
+      ["a completed review stamped with the screening", bookedFor("rC", { "Encounter date time": at(30), observations: { "Reviewed Oral Screening": "scr1" } })],
+    ])("refuses with no POST when the patient has %s", async (_n, review) => {
+      fakeServer([], [scr, review]);
+      expect(await takeCase({ kind: "screening", screening: scr } as unknown as QueueRow, "dr.a", t0)).toEqual({
+        refused: "reviewed",
+      });
+      expect(post).not.toHaveBeenCalled();
+      expect(patch).not.toHaveBeenCalled();
+      expect(get.mock.calls.some(([u, c]) => u === "/api/encounters" && c?.params?.subjectId === "sub1")).toBe(true);
+    });
+
+    it.each([
+      ["voided", { Voided: true }],
+      ["cancelled", { "Cancel date time": at(5), "Earliest scheduled date": at(0) }],
+    ])("creates the review when the only one that pairs is %s", async (_n, extra) => {
+      const uuid = await reviewUuidFor("scr1");
+      fakeServer([], [scr, bookedFor("rX", { observations: { "Reviewed Oral Screening": "scr1" }, ...extra })]);
+      expect(await takeCase({ kind: "screening", screening: scr } as unknown as QueueRow, "dr.a", t0)).toEqual({
+        reviewUuid: uuid,
+      });
+      expect(post).toHaveBeenCalledTimes(1);
+    });
+
+    it("creates the review when the patient's review covers another of their screenings", async () => {
+      const uuid = await reviewUuidFor("scr1");
+      const done = bookedFor("rOld", { "Encounter date time": "2026-11-11T00:00:00Z", observations: { "Reviewed Oral Screening": "scr0" } });
+      fakeServer([], [scr, other, done]);
+      expect(await takeCase({ kind: "screening", screening: scr } as unknown as QueueRow, "dr.a", t0)).toEqual({
+        reviewUuid: uuid,
+      });
+      expect(post).toHaveBeenCalledTimes(1);
+    });
+
+    it("reads a programme screening's reviews in its enrolment", async () => {
+      const inProgramme = { ...scr, "Enrolment ID": "enr1" };
+      fakeServer([], [inProgramme, bookedFor("rB", { "Enrolment ID": "enr1" })]);
+      expect(await takeCase({ kind: "screening", screening: inProgramme } as unknown as QueueRow, "dr.a", t0)).toEqual({
+        refused: "reviewed",
+      });
+      expect(post).not.toHaveBeenCalled();
+      expect(get.mock.calls.some(([u, c]) => u === "/api/programEncounters" && c?.params?.programEnrolmentId === "enr1")).toBe(true);
+    });
+  });
+
+  // FW7: a POST can fail after it, or another physician's take, made the review.
+  it.each([
+    ["fails", () => Promise.reject(serverError())],
+    ["answers success false", () => reply({ success: false, errorMessage: "already exists" })],
+  ])("a POST that %s but left an open review behind goes on to the hold write", async (_n, answer) => {
+    const uuid = await reviewUuidFor("scr1");
+    const { store } = fakeServer([], [screening]);
+    post.mockImplementation(() => {
+      store.set(uuid, { ...booked, ID: uuid });
+      return answer();
+    });
+    expect(await takeCase(screeningRow, "dr.a", t0)).toEqual({ reviewUuid: uuid });
+    expect(patch).toHaveBeenCalledTimes(1);
+    expect(store.get(uuid)?.observations).toEqual({ ...stamp, "Reviewed Oral Screening": "scr1" });
+  });
+
+  it("a failed POST that left a review another physician holds is refused as held", async () => {
+    const uuid = await reviewUuidFor("scr1");
+    const { store } = fakeServer([], [screening]);
+    post.mockImplementation(() => {
+      store.set(uuid, { ...heldBy("dr.b", t0), ID: uuid });
+      return Promise.reject(serverError());
+    });
+    expect(await takeCase(screeningRow, "dr.a", t0)).toEqual({ refused: "held" });
+    expect(patch).not.toHaveBeenCalled();
+  });
+
   it("release by the holder PATCHes nulls for both marker fields and nothing else", async () => {
     const { store } = fakeServer([bookedWith({ ...stamp, Other: "x" })]);
     await releaseCase("r1", "dr.a");
