@@ -456,6 +456,17 @@ export const IN_REVIEW_BY_CONCEPT = { name: "In review by", uuid: "" } as const;
 export const IN_REVIEW_SINCE_CONCEPT = { name: "In review since", uuid: "" } as const;
 
 export const OCSHR_RESULT_VALUES = { highRisk: "High Risk", notHighRisk: "Not High Risk" } as const;
+// What the integration writes back about the OCSHR call (PE-250). Names only; the UAT uuids are not read here.
+export const OCSHR_CALL_MADE_CONCEPT = { name: "OCSHR Call Made", uuid: "" } as const;
+export const OCSHR_PROBABILITY_CONCEPT = { name: "OCSHR Model Probability", uuid: "" } as const;
+export const OCSHR_VERSION_CONCEPT = { name: "OCSHR Model Version", uuid: "" } as const;
+export const OCSHR_STATUS_CONCEPT = { name: "OCSHR Model Status", uuid: "" } as const;
+export const OCSHR_ERROR_CONCEPT = { name: "OCSHR Model Error", uuid: "" } as const;
+export const OCSHR_ERROR_CODE_CONCEPT = { name: "OCSHR Model Error Code", uuid: "" } as const;
+export const OCSHR_PROCESSED_TIME_CONCEPT = { name: "OCSHR Model Processed Time", uuid: "" } as const;
+export const QC_STATUS_CONCEPT = { name: "QC status", uuid: "" } as const;
+export const QC_STATUS_VALUES = { pass: "QC Pass", fail: "QC Fail" } as const;
+export const OCSHR_FAILED_STATUSES = ["REJECTED", "FAILED"] as const;
 
 // Display order of the queue's groups: worker first, then AI, then the safety sample.
 export const QUEUE_GROUPS = ["FLW marked", "AI marked", "Safety sample"] as const;
