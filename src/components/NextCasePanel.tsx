@@ -13,14 +13,15 @@ interface Props {
   // The case the viewer holds, if any: the button continues it.
   held: { caseId: string | null } | null;
   busy: boolean;
-  error: string | null;
+  // The last press failed; the detail is in the console.
+  failed: boolean;
   onTake: () => void;
 }
 
 // PE-249: the only way to start a review. The physician holds one case at a time, so while they hold one the button
 // continues it. It is enabled whenever it is not busy: every press reads the queue again, so cases that arrived and
 // holds that lapsed since the tab opened are found by pressing it.
-export function NextCasePanel({ reviewed, next, held, busy, error, onTake }: Props) {
+export function NextCasePanel({ reviewed, next, held, busy, failed, onTake }: Props) {
   const label = held ? `Continue case ${held.caseId ?? ""}`.trim() : "Review next case";
   return (
     <Stack
@@ -47,9 +48,9 @@ export function NextCasePanel({ reviewed, next, held, busy, error, onTake }: Pro
         <Typography variant="body2" color="text.secondary">
           Opens the oldest waiting case from the group you have reviewed least today.
         </Typography>
-        {error && (
+        {failed && (
           <Alert severity="error" data-testid="next-case-error">
-            Could not take a case: {error}
+            Could not take a case. Please try again.
           </Alert>
         )}
       </Stack>

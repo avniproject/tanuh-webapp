@@ -75,8 +75,10 @@ export function heldByViewer(rows: QueueRow[], viewer: string, now: Date): Queue
 /**
  * Review next case (PE-249): the oldest waiting case of the group chosen by `chooseGroup`, taken with `take`. A refused
  * case moves on to the next waiting case of that group; a group whose cases are all refused is set aside and the group
- * is chosen again from the rest. The taken review's uuid, or null once every candidate is refused. Errors go to the
- * caller.
+ * is chosen again from the rest. `held`, the case the viewer already holds, is taken again first, so Continue case
+ * renews the hold before the page opens (FW12); when it cannot be, the press goes on to the waiting cases. A case whose
+ * take fails is logged and passed over like a refusal, so one broken case cannot stop every press (FW1). The taken
+ * review's uuid; null once every candidate is refused; one error when nothing was taken and at least one take failed.
  */
 export async function takeNextCase(
   rows: QueueRow[],
@@ -84,17 +86,39 @@ export async function takeNextCase(
   viewer: string,
   now: Date,
   take: (row: QueueRow) => Promise<TakeResult>,
+  held?: QueueRow,
 ): Promise<string | null> {
-  const tried = new Set<string>();
+  let failures = 0;
+  let firstFailure: unknown;
+  const attempt = async (row: QueueRow): Promise<string | null> => {
+    try {
+      const result = await take(row);
+      return "reviewUuid" in result ? result.reviewUuid : null;
+    } catch (err) {
+      console.error(`Review next case: could not take case ${queueRowKey(row)}`, err);
+      failures += 1;
+      firstFailure ??= err;
+      return null;
+    }
+  };
+
+  if (held) {
+    const renewed = await attempt(held);
+    if (renewed) return renewed;
+  }
+  const tried = new Set<string>(held ? [queueRowKey(held)] : []);
   const untried = () => rows.filter((r) => !tried.has(queueRowKey(r)));
   const waiting: GroupCounts = { ...waitingCounts(rows, viewer, now) };
   for (let group = chooseGroup(reviewed, waiting); group; group = chooseGroup(reviewed, waiting)) {
     for (let row = nextCaseIn(untried(), group, viewer, now); row; row = nextCaseIn(untried(), group, viewer, now)) {
       tried.add(queueRowKey(row));
-      const result = await take(row);
-      if ("reviewUuid" in result) return result.reviewUuid;
+      const reviewUuid = await attempt(row);
+      if (reviewUuid) return reviewUuid;
     }
     waiting[group] = 0;
+  }
+  if (failures > 0) {
+    throw new Error(`Could not take ${failures === 1 ? "a case" : `${failures} cases`}`, { cause: firstFailure });
   }
   return null;
 }

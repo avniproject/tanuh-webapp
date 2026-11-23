@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Alert,
   Box,
@@ -325,23 +325,37 @@ export function EncounterList({ mode }: Props) {
   // disabled for want of cases: the tab does not re-read on its own, so a press is how new cases and lapsed holds show.
   const filtered = !!(patientLocationUuid || referralUuid);
   const [taking, setTaking] = useState(false);
-  const [takeError, setTakeError] = useState<string | null>(null);
+  const [takeFailed, setTakeFailed] = useState(false);
   const [exhausted, setExhausted] = useState(false);
+  // A press still running when the physician leaves the list must not navigate, or set state, afterwards (FW4).
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
   const handleTake = useCallback(async () => {
     setTaking(true);
-    setTakeError(null);
+    setTakeFailed(false);
     setExhausted(false);
     try {
       const fresh = await reloadQueue();
-      if (fresh.held?.kind === "booked") {
-        navigate(`/review/${fresh.held.review.encounterUuid}`);
-        return;
-      }
+      if (!mounted.current) return;
+      // The case the viewer holds is taken again first, which renews the hold before its page opens (FW12).
       let tried = 0;
-      const reviewUuid = await takeNextCase(fresh.rows, fresh.reviewed, viewer, fresh.now, (row) => {
-        tried += 1;
-        return takeCase(row, viewer);
-      });
+      const reviewUuid = await takeNextCase(
+        fresh.rows,
+        fresh.reviewed,
+        viewer,
+        fresh.now,
+        (row) => {
+          tried += 1;
+          return takeCase(row, viewer);
+        },
+        fresh.held,
+      );
+      if (!mounted.current) return;
       if (reviewUuid) {
         navigate(`/review/${reviewUuid}`);
         return;
@@ -352,12 +366,14 @@ export function EncounterList({ mode }: Props) {
       if (tried > 0) {
         await reloadQueue();
         // With a place or referral facility chosen the list narrows booked reviews by its own read, so it is read too.
-        if (filtered) setListVersion((v) => v + 1);
+        if (filtered && mounted.current) setListVersion((v) => v + 1);
       }
     } catch (err) {
-      setTakeError(err instanceof Error ? err.message : String(err));
+      // The physician sees a plain message; the detail goes to the console (FW15).
+      console.error("Review next case failed", err);
+      if (mounted.current) setTakeFailed(true);
     } finally {
-      setTaking(false);
+      if (mounted.current) setTaking(false);
     }
   }, [navigate, reloadQueue, viewer, filtered]);
 
@@ -658,7 +674,7 @@ export function EncounterList({ mode }: Props) {
             next={exhausted ? null : queueData.next}
             held={heldView ? { caseId: heldView.caseId ?? null } : null}
             busy={taking}
-            error={takeError}
+            failed={takeFailed}
             onTake={() => void handleTake()}
           />
         )}

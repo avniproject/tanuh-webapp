@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CachedEncounter } from "./encounters";
 import type { EncounterWithLocation } from "./impl";
 import { chooseGroup, heldByViewer, nextCaseIn, reviewedToday, takeNextCase, waitingCounts } from "./queueChoice";
@@ -159,10 +159,77 @@ describe("takeNextCase", () => {
     expect(take).not.toHaveBeenCalled();
   });
 
-  it("lets a thrown error through", async () => {
-    const take = vi.fn(async () => {
-      throw new Error("503");
+  // FW1: one case that fails no longer stops every press on the same oldest case.
+  describe("a case that fails", () => {
+    let logged: ReturnType<typeof vi.spyOn>;
+    beforeEach(() => {
+      logged = vi.spyOn(console, "error").mockImplementation(() => {});
     });
-    await expect(takeNextCase([row("f1", 1, true)], none, "dr.a", NOW, take)).rejects.toThrow("503");
+    afterEach(() => logged.mockRestore());
+
+    it("is logged and passed over, and the next case is taken", async () => {
+      const rows = [row("f1", 1, true), row("f2", 2, true)];
+      const take = vi.fn(async (r: QueueRow) => {
+        if (key(r) === "f1") throw new Error("503");
+        return { reviewUuid: "rev-" + key(r) };
+      });
+      await expect(takeNextCase(rows, none, "dr.a", NOW, take)).resolves.toBe("rev-f2");
+      expect(take.mock.calls.map(([r]) => key(r))).toEqual(["f1", "f2"]);
+      expect(logged).toHaveBeenCalledTimes(1);
+      expect(logged.mock.calls[0]).toContainEqual(new Error("503"));
+    });
+
+    it("moves on to the next group when every case of a group fails", async () => {
+      const rows = [row("f1", 1, true), row("a1", 2, false)];
+      const take = vi.fn(async (r: QueueRow): Promise<TakeResult> => {
+        if (key(r) === "f1") throw new Error("503");
+        return { reviewUuid: "rev-" + key(r) };
+      });
+      await expect(takeNextCase(rows, none, "dr.a", NOW, take)).resolves.toBe("rev-a1");
+    });
+
+    it("raises one error when nothing could be taken and a case failed", async () => {
+      const rows = [row("f1", 1, true), row("f2", 2, true), row("a1", 3, false)];
+      const take = vi.fn(async (r: QueueRow): Promise<TakeResult> => {
+        if (key(r) === "a1") return { refused: "held" };
+        throw new Error("503 " + key(r));
+      });
+      await expect(takeNextCase(rows, none, "dr.a", NOW, take)).rejects.toThrow();
+      expect(take).toHaveBeenCalledTimes(3);
+      expect(logged).toHaveBeenCalledTimes(2);
+    });
+  });
+
+  // FW12: Continue case renews the hold before the page opens, so the physician keeps the case for ten more minutes.
+  describe("continuing the case the physician holds", () => {
+    const mine = () => row("m1", 0, true, { by: "dr.a", modifiedMinute: 25 });
+
+    it("takes the held case again, and gives it, before any waiting case", async () => {
+      const held = mine();
+      const take = vi.fn(async (r: QueueRow) => ({ reviewUuid: "rev-" + key(r) }));
+      await expect(takeNextCase([held, row("f1", 1, true)], none, "dr.a", NOW, take, held)).resolves.toBe("rev-m1");
+      expect(take.mock.calls.map(([r]) => key(r))).toEqual(["m1"]);
+    });
+
+    it("moves on to the next waiting case when the held case cannot be taken again", async () => {
+      const held = mine();
+      const take = vi.fn(async (r: QueueRow): Promise<TakeResult> =>
+        key(r) === "m1" ? { refused: "completed" } : { reviewUuid: "rev-" + key(r) },
+      );
+      await expect(takeNextCase([held, row("f1", 1, true)], none, "dr.a", NOW, take, held)).resolves.toBe("rev-f1");
+      expect(take.mock.calls.map(([r]) => key(r))).toEqual(["m1", "f1"]);
+    });
+
+    it("moves on, and logs, when renewing the held case fails", async () => {
+      const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+      const held = mine();
+      const take = vi.fn(async (r: QueueRow): Promise<TakeResult> => {
+        if (key(r) === "m1") throw new Error("503");
+        return { reviewUuid: "rev-" + key(r) };
+      });
+      await expect(takeNextCase([held, row("f1", 1, true)], none, "dr.a", NOW, take, held)).resolves.toBe("rev-f1");
+      expect(logged).toHaveBeenCalledTimes(1);
+      logged.mockRestore();
+    });
   });
 });
