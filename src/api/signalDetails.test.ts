@@ -71,7 +71,7 @@ describe("OCSHR rules", () => {
 });
 
 describe("probability and version", () => {
-  const p = (v: unknown) => D({ "OCSHR Model Probability": v }).probability;
+  const p = (v: unknown) => D({ "OCSHR Model Result": "High Risk", "OCSHR Model Probability": v }).probability;
   it("formats numbers and numeric text", () => {
     expect(p(0.8214)).toBe("0.82");
     expect(p("0.7312")).toBe("0.73");
@@ -111,4 +111,22 @@ describe("FLW, Edge and safety sample", () => {
   it("safety sample for an all-negative low id", () => expect(all(negative()).safetySample).toBe(true));
   it("not for 0.5", () => expect(all(negative({ "Random Sample ID": 0.5 })).safetySample).toBe(false));
   it("not when the model failed", () => expect(all(negative({ "OCSHR Model Status": "FAILED" })).safetySample).toBe(false));
+});
+
+describe("probability only on a scored card", () => {
+  it("a failure row carries no probability but keeps the version", () => {
+    const o = D({
+      "OCSHR Model Result": "High Risk",
+      "OCSHR Model Probability": 0.91,
+      "OCSHR Model Version": "v2.1",
+      "OCSHR Model Status": "FAILED",
+    });
+    expect(o.state).toBe("unavailable");
+    expect(o.probability).toBeUndefined();
+    expect(o.version).toBe("v2.1");
+  });
+  it("a pending row carries no probability", () =>
+    expect(D({ "OCSHR Call Made": "Yes", "OCSHR Model Probability": 0.5 }).probability).toBeUndefined());
+  it("a scored row keeps it", () =>
+    expect(D({ "OCSHR Model Result": "High Risk", "OCSHR Model Probability": 0.91 }).probability).toBe("0.91"));
 });

@@ -68,12 +68,13 @@ function ocshrOf(obs: Record<string, unknown>, hasResult: boolean, resultValue?:
 
   const probability = probabilityOf(readObs(obs, OCSHR_PROBABILITY_CONCEPT));
   const version = text(readObs(obs, OCSHR_VERSION_CONCEPT));
-  const extras = { ...(probability !== undefined && { probability }), ...(version !== undefined && { version }) };
+  const versionOnly = version !== undefined ? { version } : {};
   const row = (state: OcshrState, resultText: string, statusLine: string): SignalDetails["ocshr"] => ({
     state,
     resultText,
     statusLine,
-    ...extras,
+    ...versionOnly,
+    ...(state === "scored" && probability !== undefined && { probability }),
   });
 
   if (failed) {
