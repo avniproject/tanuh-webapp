@@ -157,13 +157,27 @@ async function readReview(uuid: string): Promise<EncounterApiResponse | null> {
   }
 }
 
-// The hold write, retried once: a second failure is thrown.
-async function putHold(current: EncounterApiResponse, body: UpsertEncounterBody): Promise<void> {
-  const send = () => submitEncounter(current.ID, body, { program: isProgramEncounter(current) });
+type Stop = "completed" | "held" | "gone" | "skip";
+
+// The hold write, retried once. The first PUT may have landed before it failed, so the retry re-reads the review and
+// decides again: `rebuild` gives the body from the fresh copy, or the reason to stop. A second failure is thrown.
+async function putHold(
+  current: EncounterApiResponse,
+  body: UpsertEncounterBody,
+  rebuild: (fresh: EncounterApiResponse) => UpsertEncounterBody | Stop,
+): Promise<Stop | undefined> {
+  const send = (c: EncounterApiResponse, b: UpsertEncounterBody) =>
+    submitEncounter(c.ID, b, { program: isProgramEncounter(c) });
   try {
-    await send();
+    await send(current, body);
+    return undefined;
   } catch {
-    await send();
+    const fresh = await readReview(current.ID);
+    if (!fresh) return "gone";
+    const next = rebuild(fresh);
+    if (typeof next === "string") return next;
+    await send(fresh, next);
+    return undefined;
   }
 }
 
@@ -179,7 +193,11 @@ export async function takeCase(row: QueueRow, viewer: string, now: Date = new Da
     if (!current) return { refused: "gone" };
     const verdict = decideTake(current, viewer, now);
     if (verdict !== "take") return { refused: verdict };
-    await putHold(current, holdBody(current, hold));
+    const stopped = await putHold(current, holdBody(current, hold), (fresh) => {
+      const again = decideTake(fresh, viewer, now);
+      return again === "take" ? holdBody(fresh, hold) : again;
+    });
+    if (stopped && stopped !== "skip") return { refused: stopped };
     invalidateEncounterSweeps();
     return { reviewUuid: row.review.encounterUuid };
   }
@@ -195,7 +213,7 @@ export async function takeCase(row: QueueRow, viewer: string, now: Date = new Da
     const { url, body } = createReviewVisit(screening, uuid, now);
     try {
       const response = await http.post<{ success: boolean; errorMessage?: string }>(url, body);
-      if (response.data.success === false) {
+      if (!response.data.success) {
         throw new Error(response.data.errorMessage || `${url} refused the review`);
       }
     } catch (err) {
@@ -207,17 +225,28 @@ export async function takeCase(row: QueueRow, viewer: string, now: Date = new Da
       throw err;
     }
     current = await getEncounter(uuid);
+    const verdict = decideTake(current, viewer, now);
+    if (verdict !== "take") return { refused: verdict };
   }
-  await putHold(current, holdBody(current, hold, stamp));
+  const stopped = await putHold(current, holdBody(current, hold, stamp), (fresh) => {
+    const again = decideTake(fresh, viewer, now);
+    return again === "take" ? holdBody(fresh, hold, stamp) : again;
+  });
+  if (stopped && stopped !== "skip") return { refused: stopped };
   invalidateEncounterSweeps();
   return { reviewUuid: uuid };
 }
 
+const canRelease = (r: EncounterApiResponse, viewer: string) =>
+  !isCompleted(r) && !isGone(r) && readHold(r)?.by === viewer;
+
 /** Removes the viewer's own hold from a review; a review held by someone else, or already over, is left alone. */
 export async function releaseCase(reviewUuid: string, viewer: string): Promise<void> {
   const current = await readReview(reviewUuid);
-  if (!current || isCompleted(current)) return;
-  if (readHold(current)?.by !== viewer) return;
-  await putHold(current, holdBody(current, null));
+  if (!current || !canRelease(current, viewer)) return;
+  const stopped = await putHold(current, holdBody(current, null), (fresh) =>
+    canRelease(fresh, viewer) ? holdBody(fresh, null) : "skip",
+  );
+  if (stopped) return;
   invalidateEncounterSweeps();
 }

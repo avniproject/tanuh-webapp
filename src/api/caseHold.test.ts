@@ -193,8 +193,8 @@ describe("takeCase and releaseCase", () => {
       "Encounter date time": null,
       "Earliest scheduled date": booked["Earliest scheduled date"],
       "Max scheduled date": booked["Max scheduled date"],
-      observations: { Other: "x", ...stamp },
     });
+    expect(body.observations).toEqual({ Other: "x", ...stamp });
   });
 
   it("a booked take inside a programme uses the programme endpoint", async () => {
@@ -320,8 +320,64 @@ describe("takeCase and releaseCase", () => {
       cancelObservations: {},
       "Encounter date time": null,
       "Max scheduled date": booked["Max scheduled date"],
-      observations: { Other: "x" },
     });
+    expect(body.observations).toEqual({ Other: "x" });
+  });
+
+  it.each([
+    ["cancelled", { "Cancel date time": "2026-11-23T09:00:00Z" }],
+    ["voided", { Voided: true }],
+  ])("release of a %s review held by the viewer sends nothing", async (_n, extra) => {
+    get.mockImplementation(() => reply(bookedWith(stamp, extra)));
+    await releaseCase("r1", "dr.a");
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it("a first PUT that fails, then a re-read showing the review completed, sends no second PUT", async () => {
+    get.mockResolvedValueOnce({ data: booked }).mockResolvedValueOnce({ data: completedReview });
+    put.mockRejectedValueOnce(serverError());
+    expect(await takeCase(bookedRow, "dr.a", t0)).toEqual({ refused: "completed" });
+    expect(put).toHaveBeenCalledTimes(1);
+  });
+
+  it("a first PUT that fails, then a re-read showing another physician's live hold, sends no second PUT", async () => {
+    get.mockResolvedValueOnce({ data: booked }).mockResolvedValueOnce({ data: heldBy("dr.b", t0) });
+    put.mockRejectedValueOnce(serverError());
+    expect(await takeCase(bookedRow, "dr.a", t0)).toEqual({ refused: "held" });
+    expect(put).toHaveBeenCalledTimes(1);
+  });
+
+  it("a retried take is built from the fresh copy", async () => {
+    get.mockResolvedValueOnce({ data: booked }).mockResolvedValueOnce({ data: bookedWith({ Fresh: "y" }) });
+    put.mockRejectedValueOnce(serverError()).mockResolvedValueOnce({ data: {} });
+    expect(await takeCase(bookedRow, "dr.a", t0)).toEqual({ reviewUuid: "r1" });
+    expect(put).toHaveBeenCalledTimes(2);
+    expect(put.mock.calls[1][1].observations).toEqual({ Fresh: "y", ...stamp });
+  });
+
+  it("a retried release stops when the re-read shows the review completed", async () => {
+    get.mockResolvedValueOnce({ data: bookedWith(stamp) }).mockResolvedValueOnce({ data: completedReview });
+    put.mockRejectedValueOnce(serverError());
+    await releaseCase("r1", "dr.a");
+    expect(put).toHaveBeenCalledTimes(1);
+  });
+
+  it("a review read after a successful POST that is no longer takeable is refused with no PUT", async () => {
+    let posted = false;
+    get.mockImplementation(() => (posted ? reply(completedReview) : Promise.reject(notFound())));
+    post.mockImplementation(() => {
+      posted = true;
+      return reply({ success: true });
+    });
+    expect(await takeCase(screeningRow, "dr.a", t0)).toEqual({ refused: "completed" });
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it("a web POST answering 200 without the success flag throws", async () => {
+    get.mockImplementation(() => (post.mock.calls.length ? reply(booked) : Promise.reject(notFound())));
+    post.mockResolvedValue({ data: {} });
+    await expect(takeCase(screeningRow, "dr.a", t0)).rejects.toThrow();
+    expect(put).not.toHaveBeenCalled();
   });
 
   it("release of the viewer's own expired marker still removes it", async () => {
