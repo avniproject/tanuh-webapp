@@ -25,7 +25,7 @@ import RateReviewIcon from "@mui/icons-material/RateReview";
 import VisibilityIcon from "@mui/icons-material/Visibility";
 import SearchIcon from "@mui/icons-material/Search";
 import ClearIcon from "@mui/icons-material/Clear";
-import { useNavigate } from "react-router-dom";
+import { useLocation, useNavigate } from "react-router-dom";
 import { endOfDay, format, parseISO } from "date-fns";
 import type { EncounterWithLocation } from "@/api/impl";
 import { readSubjects } from "@/api/programList";
@@ -323,7 +323,16 @@ export function EncounterList({ mode }: Props) {
   // holds, but only a full read, which a press makes, finds new cases.
   const filtered = !!(patientLocationUuid || referralUuid);
   const [taking, setTaking] = useState(false);
-  const [takeFailed, setTakeFailed] = useState(false);
+  // A review page's Complete and review next case that saved the review but could not take the next case opens the list
+  // saying so (PE-249).
+  const location = useLocation();
+  const [takeFailed, setTakeFailed] = useState(() => (location.state as { takeFailed?: boolean } | null)?.takeFailed === true);
+  // Read once: the note is dropped from the page's history entry, so a reload does not show it again.
+  useEffect(() => {
+    if ((location.state as { takeFailed?: boolean } | null)?.takeFailed) {
+      navigate({ pathname: location.pathname, search: location.search }, { replace: true, state: null });
+    }
+  }, [location, navigate]);
   // The cases the last press was refused, or failed, on. Until the next press reads the queue in full, the panel's
   // next-case line and Continue case leave them out, so a refresh does not offer a case a press would only be refused
   // on again. After a press that took nothing, that is every case it tried, so the line says nothing is waiting.
@@ -1068,7 +1077,11 @@ export function EncounterList({ mode }: Props) {
                           <Typography variant="body2" sx={{ color: "text.secondary", fontWeight: 500 }}>
                             Status:
                           </Typography>
-                          <HoldStatusBadge status={v.hold} usernameSuffix={usernameSuffix} />
+                          <HoldStatusBadge
+                            status={v.hold}
+                            usernameSuffix={usernameSuffix}
+                            awaitingOcshr={v.reason === "OCSHR pending"}
+                          />
                         </Stack>
                       )}
                       {mode === "completed" && (
@@ -1170,7 +1183,13 @@ export function EncounterList({ mode }: Props) {
                         )}
                         {queueMode && (
                           <TableCell sx={{ whiteSpace: "nowrap" }}>
-                            {v.hold && <HoldStatusBadge status={v.hold} usernameSuffix={usernameSuffix} />}
+                            {v.hold && (
+                              <HoldStatusBadge
+                                status={v.hold}
+                                usernameSuffix={usernameSuffix}
+                                awaitingOcshr={v.reason === "OCSHR pending"}
+                              />
+                            )}
                           </TableCell>
                         )}
                         {mode === "completed" && (

@@ -25,10 +25,18 @@ describe("holdPill", () => {
       "In review by physician4@tanuh_uat_local",
     );
   });
-  it("says you for the viewer and Waiting for nobody, with no tooltip", () => {
+  it("says you for the viewer and Waiting for review for nobody, with no tooltip", () => {
     expect(holdPill({ kind: "mine", since: new Date(2026, 10, 23, 14, 5).toISOString() }, suffix)).toEqual({
       label: "In review by you",
     });
-    expect(holdPill({ kind: "waiting" }, suffix)).toEqual({ label: "Waiting" });
+    expect(holdPill({ kind: "waiting" }, suffix)).toEqual({ label: "Waiting for review" });
+  });
+  it("says Waiting for OCSHR result for a case that is not handed out until its result arrives", () => {
+    expect(holdPill({ kind: "waiting" }, suffix, { awaitingOcshr: true })).toEqual({
+      label: "Waiting for OCSHR result",
+    });
+    // A hold is named as before, whatever the case waits for.
+    const since = new Date(2026, 10, 23, 14, 5).toISOString();
+    expect(holdPill({ kind: "mine", since }, suffix, { awaitingOcshr: true }).label).toBe("In review by you");
   });
 });

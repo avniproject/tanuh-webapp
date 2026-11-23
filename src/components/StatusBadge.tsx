@@ -11,6 +11,7 @@ import LockOutlinedIcon from "@mui/icons-material/LockOutlined";
 import LockOpenOutlinedIcon from "@mui/icons-material/LockOpenOutlined";
 import PersonOutlineIcon from "@mui/icons-material/PersonOutline";
 import HourglassEmptyOutlinedIcon from "@mui/icons-material/HourglassEmptyOutlined";
+import ScheduleOutlinedIcon from "@mui/icons-material/ScheduleOutlined";
 import type { HoldStatus } from "@/api/caseHold";
 import {
   MODEL_RESULT_VALUES,
@@ -274,10 +275,20 @@ const HOLD_PILL: Record<HoldStatus["kind"], { ink: string; fill: string; icon: S
 };
 
 // Who is working on a case right now, on one line. Another physician is named without the organisation's
-// `usernameSuffix`; the tooltip gives their full username and when they took the case.
-export function HoldStatusBadge({ status, usernameSuffix }: { status: HoldStatus; usernameSuffix?: string }) {
-  const { label, tooltip } = holdPill(status, usernameSuffix);
-  const { ink, fill, icon } = HOLD_PILL[status.kind];
+// `usernameSuffix`; the tooltip gives their full username and when they took the case. A case waiting for its OCSHR
+// result cannot be taken yet, so it shows a clock in place of the open lock.
+export function HoldStatusBadge({
+  status,
+  usernameSuffix,
+  awaitingOcshr = false,
+}: {
+  status: HoldStatus;
+  usernameSuffix?: string;
+  awaitingOcshr?: boolean;
+}) {
+  const { label, tooltip } = holdPill(status, usernameSuffix, { awaitingOcshr });
+  const { ink, fill } = HOLD_PILL[status.kind];
+  const icon = status.kind === "waiting" && awaitingOcshr ? ScheduleOutlinedIcon : HOLD_PILL[status.kind].icon;
   const pill = <Pill label={label} ink={ink} fill={fill} icon={icon} testId="hold-status" state={status.kind} />;
   if (!tooltip) return pill;
   // The tooltip needs an element that takes its ref and handlers, which Pill does not.

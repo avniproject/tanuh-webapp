@@ -20,6 +20,7 @@ import {
   Typography,
 } from "@mui/material";
 import LockOutlinedIcon from "@mui/icons-material/LockOutlined";
+import ArrowForwardIcon from "@mui/icons-material/ArrowForward";
 import { differenceInYears, format, parseISO } from "date-fns";
 import { useNavigate } from "react-router-dom";
 import {
@@ -86,6 +87,8 @@ import {
   RISK,
 } from "./diagnosisMapping";
 import { MediaImg } from "@/components/MediaImg";
+import { takeNextFromQueue } from "@/components/usePendingQueue";
+import { pageAfterComplete } from "./completeAndNext";
 import { useAsync } from "@/hooks/useAsync";
 
 // One of the two: a review's page (/review/:encounterUuid) or a screening's (/case/:screeningUuid, tanuh-webapp#5).
@@ -236,6 +239,10 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
   }, [form, storageKey]);
 
   const [submitting, setSubmitting] = useState(false);
+  // PE-249: the review was sent with Complete and review next case, so the next case opens once it is saved.
+  const [andNext, setAndNext] = useState(false);
+  // Set once the review and any follow-ups are saved and the next case is being taken.
+  const [opening, setOpening] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
   // The review this page saved. From then on the page is read-only: only the follow-ups can still be missing.
   const [saved, setSaved] = useState<EncounterApiResponse | null>(null);
@@ -399,8 +406,18 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
   const canSubmit =
     missingPhotoVerdicts.length === 0 && !diagnosisMissing && !subTypeMissing && !highestRiskMissing;
 
-  const submit = async () => {
+  // Once the review is saved: back to the list, or on to the next case (PE-249).
+  const leave = async (next: boolean) => {
+    if (next) setOpening(true);
+    const after = await pageAfterComplete(next, () => takeNextFromQueue(viewer));
+    if (mounted.current) {
+      navigate(after.path, { replace: after.replace, state: after.takeFailed ? { takeFailed: true } : undefined });
+    }
+  };
+
+  const submit = async (next: boolean) => {
     if (readOnly || !canSubmit) return;
+    setAndNext(next);
     // tanuh-webapp#5: without a booked review the submit creates one. A program screening never gets here: its page
     // is either its booked review's or read-only.
     const review = loaded.review;
@@ -546,7 +563,7 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
           return;
         }
       }
-      if (mounted.current) navigate("/pending");
+      await leave(next);
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setSubmitError(message);
@@ -563,7 +580,7 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
       const outcome = await bookHighRiskFollowUps(saved, unbooked);
       setUnbooked(outcome.failed);
       setSubmitError(outcome.problem);
-      if (!outcome.problem && mounted.current) navigate("/pending");
+      if (!outcome.problem) await leave(andNext);
     } finally {
       setSubmitting(false);
     }
@@ -904,18 +921,35 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
               {submitting ? "Booking…" : "Book the follow-ups again"}
             </Button>
           ) : (
-            <Button
-              variant="contained"
-              size="large"
-              disabled={submitting || releasing || !canSubmit || saved !== null}
-              onClick={submit}
-              sx={{
-                minWidth: { xs: "100%", sm: 160 },
-                width: { xs: "100%", sm: "auto" },
-              }}
-            >
-              {submitting ? "Submitting…" : "Complete"}
-            </Button>
+            <Stack direction={{ xs: "column", sm: "row" }} spacing={2} sx={{ width: { xs: "100%", sm: "auto" } }}>
+              <Button
+                variant="contained"
+                size="large"
+                disabled={submitting || releasing || !canSubmit || saved !== null}
+                onClick={() => void submit(false)}
+                data-testid="complete-button"
+                sx={{
+                  minWidth: { xs: "100%", sm: 160 },
+                  width: { xs: "100%", sm: "auto" },
+                }}
+              >
+                {submitting && !andNext ? "Submitting…" : "Complete"}
+              </Button>
+              {/* PE-249: where the review queue is on, the physician can go straight on to the next case. */}
+              {loaded.queueOn && (
+                <Button
+                  variant="contained"
+                  size="large"
+                  endIcon={<ArrowForwardIcon />}
+                  disabled={submitting || releasing || !canSubmit || saved !== null}
+                  onClick={() => void submit(true)}
+                  data-testid="complete-and-next-button"
+                  sx={{ width: { xs: "100%", sm: "auto" }, whiteSpace: "nowrap" }}
+                >
+                  {submitting && andNext ? (opening ? "Opening next case…" : "Submitting…") : "Complete and review next case"}
+                </Button>
+              )}
+            </Stack>
           )}
         </Stack>
       )}

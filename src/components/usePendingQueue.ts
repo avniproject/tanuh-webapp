@@ -14,7 +14,15 @@ import {
   type EncounterWithLocation,
 } from "@/api/impl";
 import { getProgramEncountersWithLocation, readSubjects } from "@/api/programList";
-import { chooseGroup, heldByViewer, reviewedToday, waitingCounts, type GroupCounts } from "@/api/queueChoice";
+import { takeCase, type TakeResult } from "@/api/caseHold";
+import {
+  chooseGroup,
+  heldByViewer,
+  reviewedToday,
+  takeNextCase,
+  waitingCounts,
+  type GroupCounts,
+} from "@/api/queueChoice";
 import { isPlanned, selectQueueRows, type QueueRow } from "@/api/queueRows";
 import type { SubjectApiResponse } from "@/api/types";
 import { serverNow } from "@/auth/serverClock";
@@ -199,6 +207,20 @@ export async function loadPendingQueue(viewer: string): Promise<PendingQueue> {
     unread,
     ...counted(rows, reviews, screenings, viewer, now),
   };
+}
+
+/**
+ * Review next case from the review page (PE-249, Complete and review next case): the queue read afresh, and the case
+ * the list's button would take. The taken review's uuid; null when no case could be taken. Fails as `loadPendingQueue`
+ * and `takeNextCase` do.
+ */
+export async function takeNextFromQueue(
+  viewer: string,
+  take: (row: QueueRow) => Promise<TakeResult> = (row) => takeCase(row, viewer),
+): Promise<string | null> {
+  invalidateEncounterSweeps();
+  const fresh = await loadPendingQueue(viewer);
+  return takeNextCase(fresh.rows, fresh.reviewed, viewer, fresh.now, take, fresh.held);
 }
 
 // What the tiles, Reviewed today, the Next case line and Continue case show for these rows.

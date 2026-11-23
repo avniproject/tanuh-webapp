@@ -48,6 +48,7 @@ import {
   refreshPendingQueue,
   refreshQueue,
   startQueueRefresh,
+  takeNextFromQueue,
   type PendingQueue,
   type RefreshGate,
 } from "./usePendingQueue";
@@ -212,6 +213,41 @@ describe("loadPendingQueue", () => {
     given();
     m.getCatchment.mockRejectedValue(new Error("place list cut short"));
     await expect(loadPendingQueue("dr.a")).rejects.toThrow("place list cut short");
+  });
+});
+
+describe("takeNextFromQueue", () => {
+  beforeEach(() => {
+    Object.values(m).forEach((f) => f.mockReset());
+  });
+
+  // The review page's Complete and review next case: the same pick as the list's Review next case button.
+  it("reads the queue afresh and takes the oldest waiting case of the chosen group", async () => {
+    given({
+      screenings: [screening("sNew", "p1", 5), screening("sOld", "p2", 1)],
+      patients: new Map([
+        ["p1", patient("p1", "v1")],
+        ["p2", patient("p2", "v1")],
+      ]),
+      inPlaces: ["sNew", "sOld"],
+    });
+    const take = vi.fn().mockResolvedValue({ reviewUuid: "r-old" });
+    expect(await takeNextFromQueue("dr.a", take)).toBe("r-old");
+    expect(take).toHaveBeenCalledTimes(1);
+    expect(queueRowKey(take.mock.calls[0][0] as QueueRow)).toBe("sOld");
+  });
+
+  it("is null, and takes nothing, when no case is waiting", async () => {
+    given();
+    const take = vi.fn();
+    expect(await takeNextFromQueue("dr.a", take)).toBeNull();
+    expect(take).not.toHaveBeenCalled();
+  });
+
+  it("fails when the queue cannot be read", async () => {
+    given();
+    m.getCatchment.mockRejectedValue(new Error("places unreadable"));
+    await expect(takeNextFromQueue("dr.a", vi.fn())).rejects.toThrow("places unreadable");
   });
 });
 
