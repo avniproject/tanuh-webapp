@@ -31,7 +31,7 @@ import type { EncounterWithLocation } from "@/api/impl";
 import { readSubjects } from "@/api/programList";
 import { getCatchment } from "@/api/catchment";
 import { holdDetail, takeCase, type HoldStatus } from "@/api/caseHold";
-import { takeNextCase } from "@/api/queueChoice";
+import { nextAndHeld, takeNextCase } from "@/api/queueChoice";
 import {
   filterQueueRows,
   narrowQueueRows,
@@ -86,14 +86,7 @@ import { LocationFilter } from "./LocationFilter";
 import { FacilityFilter } from "./FacilityFilter";
 import { NextCasePanel } from "./NextCasePanel";
 import { CategoryBadge, HoldStatusBadge, ModelResultBadge, QueueGroupBadge } from "./StatusBadge";
-import {
-  chosenPlace,
-  placeScreenings,
-  placesToRead,
-  readReviewsByPlace,
-  usePendingQueue,
-  type PendingQueue,
-} from "./usePendingQueue";
+import { chosenPlace, placeScreenings, placesToRead, readReviewsByPlace, usePendingQueue } from "./usePendingQueue";
 
 interface Props {
   mode: "pending" | "completed";
@@ -326,14 +319,15 @@ export function EncounterList({ mode }: Props) {
 
   // Review next case. Every press reads the queue again from the server; the viewer's own case is continued, else the
   // oldest waiting case of the group they have reviewed least is taken, moving on past any case someone else took
-  // first. When nothing can be taken the panel says nothing is waiting, until the queue on screen changes. The button
-  // is never disabled for want of cases: the tab's light refresh shows takes, releases and lapsed holds, but only a full
-  // read, which a press makes, finds new cases.
+  // first. The button is never disabled for want of cases: the tab's light refresh shows takes, releases and lapsed
+  // holds, but only a full read, which a press makes, finds new cases.
   const filtered = !!(patientLocationUuid || referralUuid);
   const [taking, setTaking] = useState(false);
   const [takeFailed, setTakeFailed] = useState(false);
-  // The queue a press that took nothing left on screen; a refresh that lands after it replaces it.
-  const [exhaustedOn, setExhaustedOn] = useState<PendingQueue | null>(null);
+  // The cases the last press was refused, or failed, on. Until the next press reads the queue in full, the panel's
+  // next-case line and Continue case leave them out, so a refresh does not offer a case a press would only be refused
+  // on again. After a press that took nothing, that is every case it tried, so the line says nothing is waiting.
+  const [passedOver, setPassedOver] = useState<ReadonlySet<string>>(() => new Set());
 
   // PE-249: the queue's own read, unfiltered by the list's choices (D7): what the tiles count and the button takes.
   // It refreshes itself while the tab is open, except during a press.
@@ -351,22 +345,20 @@ export function EncounterList({ mode }: Props) {
   const handleTake = useCallback(async () => {
     setTaking(true);
     setTakeFailed(false);
-    setExhaustedOn(null);
+    setPassedOver(new Set());
+    const passed = new Set<string>();
     try {
       const fresh = await reloadQueue();
       if (!mounted.current) return;
       // The case the viewer holds is taken again first, which renews the hold before its page opens (FW12).
-      let tried = 0;
       const reviewUuid = await takeNextCase(
         fresh.rows,
         fresh.reviewed,
         viewer,
         fresh.now,
-        (row) => {
-          tried += 1;
-          return takeCase(row, viewer);
-        },
+        (row) => takeCase(row, viewer),
         fresh.held,
+        passed,
       );
       if (!mounted.current) return;
       if (reviewUuid) {
@@ -375,18 +367,19 @@ export function EncounterList({ mode }: Props) {
       }
       // Nothing could be taken. The fresh read already shows on the tiles and in Reviewed today; when cases were tried
       // and refused, read again so they show who holds them, and the list follows.
-      setExhaustedOn(fresh);
-      if (tried > 0) {
-        const after = await reloadQueue();
-        if (!mounted.current) return;
-        setExhaustedOn(after);
+      setPassedOver(passed);
+      if (passed.size > 0) {
+        await reloadQueue();
         // With a place or referral facility chosen the list narrows booked reviews by its own read, so it is read too.
-        if (filtered) setListVersion((v) => v + 1);
+        if (filtered && mounted.current) setListVersion((v) => v + 1);
       }
     } catch (err) {
       // The physician sees a plain message; the detail goes to the console (FW15).
       console.error("Review next case failed", err);
-      if (mounted.current) setTakeFailed(true);
+      if (mounted.current) {
+        setPassedOver(passed);
+        setTakeFailed(true);
+      }
     } finally {
       if (mounted.current) setTaking(false);
     }
@@ -641,7 +634,10 @@ export function EncounterList({ mode }: Props) {
   // screen, since only those patients are read.
   const listedCount = pendingFromScreenings ? (pendingRows?.length ?? 0) : pageData.totalElements;
   // The case the viewer holds, by the Case ID the list shows for it.
-  const held = queueMode ? queueData?.held : undefined;
+  // The next group and the case to continue, without the cases the last press passed over.
+  const shown =
+    queueMode && queueData ? nextAndHeld(queueData.rows, queueData.reviewed, passedOver, viewer, queueData.now) : null;
+  const held = shown?.held;
   const heldView =
     held && queueData ? queueRowView(held, queueData.subjects.get(queueRowSubjectId(held)), viewer, queueData.now) : null;
   // The listed rows whose location, within the physician's places, could not be checked against the chosen patient
@@ -687,7 +683,7 @@ export function EncounterList({ mode }: Props) {
         {queueMode && queueData && (
           <NextCasePanel
             reviewed={queueData.reviewed}
-            next={exhaustedOn === queueData ? null : queueData.next}
+            next={shown ? shown.next : null}
             held={heldView ? { caseId: heldView.caseId ?? null } : null}
             busy={taking}
             failed={takeFailed}

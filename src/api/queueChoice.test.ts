@@ -1,8 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CachedEncounter } from "./encounters";
 import type { EncounterWithLocation } from "./impl";
-import { chooseGroup, heldByViewer, nextCaseIn, nextCaseLine, reviewedToday, takeNextCase, waitingCounts } from "./queueChoice";
-import type { QueueRow } from "./queueRows";
+import {
+  chooseGroup,
+  heldByViewer,
+  nextAndHeld,
+  nextCaseIn,
+  nextCaseLine,
+  reviewedToday,
+  takeNextCase,
+  waitingCounts,
+} from "./queueChoice";
+import { queueRowKey, type QueueRow } from "./queueRows";
 import type { TakeResult } from "./caseHold";
 import { classify, signalsOf } from "./caseSignals";
 import {
@@ -212,6 +221,21 @@ describe("takeNextCase", () => {
     });
   });
 
+  it("records the cases it passed over, refused or failed, and not the one it took", async () => {
+    const logged = vi.spyOn(console, "error").mockImplementation(() => {});
+    const held = row("m1", 0, true, { by: "dr.a", modifiedMinute: 25 });
+    const rows = [held, row("f1", 1, true), row("f2", 2, true), row("a1", 3, false)];
+    const take = vi.fn(async (r: QueueRow): Promise<TakeResult> => {
+      if (key(r) === "f1") throw new Error("503");
+      if (key(r) === "a1") return { reviewUuid: "rev-a1" };
+      return { refused: "reviewed" };
+    });
+    const passedOver = new Set<string>();
+    await expect(takeNextCase(rows, none, "dr.a", NOW, take, held, passedOver)).resolves.toBe("rev-a1");
+    expect([...passedOver].sort()).toEqual(["f1", "f2", "r-m1"]);
+    logged.mockRestore();
+  });
+
   // FW12: Continue case renews the hold before the page opens, so the physician keeps the case for ten more minutes.
   describe("continuing the case the physician holds", () => {
     const mine = () => row("m1", 0, true, { by: "dr.a", modifiedMinute: 25 });
@@ -243,5 +267,25 @@ describe("takeNextCase", () => {
       expect(logged).toHaveBeenCalledTimes(1);
       logged.mockRestore();
     });
+  });
+});
+
+// After a press, the cases it passed over are left out of the next-case line and Continue case until the next press
+// reads the queue again: a light refresh still lists them, and a press would only be refused on them again.
+describe("nextAndHeld", () => {
+  const none = { "FLW marked": 0, "AI marked": 0, "Safety sample": 0 };
+  const held = row("m1", 0, true, { by: "dr.a", modifiedMinute: 25 });
+  const rows = [held, row("f1", 1, true), row("a1", 2, false)];
+
+  it("is the queue's own next group and held case when no case was passed over", () => {
+    const shown = nextAndHeld(rows, none, new Set(), "dr.a", NOW);
+    expect(shown.next).toBe(chooseGroup(none, waitingCounts(rows, "dr.a", NOW)));
+    expect(shown.next).toBe("FLW marked");
+    expect(shown.held && queueRowKey(shown.held)).toBe("r-m1");
+  });
+
+  it("leaves out the cases the last press passed over", () => {
+    expect(nextAndHeld(rows, none, new Set(["f1", "r-m1"]), "dr.a", NOW)).toEqual({ next: "AI marked", held: undefined });
+    expect(nextAndHeld(rows, none, new Set(["f1", "a1"]), "dr.a", NOW).next).toBeNull();
   });
 });

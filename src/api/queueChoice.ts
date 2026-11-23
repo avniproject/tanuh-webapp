@@ -79,12 +79,30 @@ export function heldByViewer(rows: QueueRow[], viewer: string, now: Date): Queue
 }
 
 /**
+ * The next group and the case to continue, as the panel shows them, leaving out the cases the last press passed over
+ * (refused or failed). A light refresh still lists such a case, for instance one refused because its screening has a
+ * review the queue's read missed, and a press would only be refused on it again. The next press reads the queue in
+ * full and tries every case afresh.
+ */
+export function nextAndHeld(
+  rows: QueueRow[],
+  reviewed: GroupCounts,
+  passedOver: ReadonlySet<string>,
+  viewer: string,
+  now: Date,
+): { next: QueueGroup | null; held: QueueRow | undefined } {
+  const left = passedOver.size > 0 ? rows.filter((r) => !passedOver.has(queueRowKey(r))) : rows;
+  return { next: chooseGroup(reviewed, waitingCounts(left, viewer, now)), held: heldByViewer(left, viewer, now) };
+}
+
+/**
  * Review next case (PE-249): the oldest waiting case of the group chosen by `chooseGroup`, taken with `take`. A refused
  * case moves on to the next waiting case of that group; a group whose cases are all refused is set aside and the group
  * is chosen again from the rest. `held`, the case the viewer already holds, is taken again first, so Continue case
  * renews the hold before the page opens (FW12); when it cannot be, the press goes on to the waiting cases. A case whose
  * take fails is logged and passed over like a refusal, so one broken case cannot stop every press (FW1). The taken
  * review's uuid; null once every candidate is refused; one error when nothing was taken and at least one take failed.
+ * The keys of the cases refused or failed go into `passedOver`, when given, for `nextAndHeld`.
  */
 export async function takeNextCase(
   rows: QueueRow[],
@@ -93,15 +111,19 @@ export async function takeNextCase(
   now: Date,
   take: (row: QueueRow) => Promise<TakeResult>,
   held?: QueueRow,
+  passedOver?: Set<string>,
 ): Promise<string | null> {
   let failures = 0;
   let firstFailure: unknown;
   const attempt = async (row: QueueRow): Promise<string | null> => {
     try {
       const result = await take(row);
-      return "reviewUuid" in result ? result.reviewUuid : null;
+      if ("reviewUuid" in result) return result.reviewUuid;
+      passedOver?.add(queueRowKey(row));
+      return null;
     } catch (err) {
       console.error(`Review next case: could not take case ${queueRowKey(row)}`, err);
+      passedOver?.add(queueRowKey(row));
       failures += 1;
       firstFailure ??= err;
       return null;
