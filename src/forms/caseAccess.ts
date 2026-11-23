@@ -65,3 +65,14 @@ export function decideSubmit(
   const since = hold && hold.by === viewer ? hold.since : now.toISOString();
   return { kind: "send", markers: { [IN_REVIEW_BY_CONCEPT.name]: viewer, [IN_REVIEW_SINCE_CONCEPT.name]: since } };
 }
+
+/**
+ * The answers a case page shows: a completed review's recorded ones; else, on a page the hold locks (someone else
+ * has the case, or it is waiting), the empty form, so the viewer's unsent draft is not read as the holder's work;
+ * else the viewer's draft. The draft itself is kept, and comes back when the viewer takes the case again.
+ */
+export function formToShow<F>(access: CaseAccess, forms: { stored: F | null; draft: F | null; empty: F }): F {
+  if (forms.stored) return forms.stored;
+  if (access.notice && access.notice.kind !== "mine") return forms.empty;
+  return forms.draft ?? forms.empty;
+}

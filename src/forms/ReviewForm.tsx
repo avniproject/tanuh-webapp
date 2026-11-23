@@ -65,7 +65,7 @@ import {
 } from "@/constants/tanuhConcepts";
 import { CategoryBadge, ModelResultBadge } from "@/components/StatusBadge";
 import { computeAgreement } from "./agreement";
-import { caseNoticeText, decideCaseAccess, decideSubmit } from "./caseAccess";
+import { caseNoticeText, decideCaseAccess, decideSubmit, formToShow } from "./caseAccess";
 import { bookHighRiskFollowUps, type FollowUp } from "./followUps";
 import {
   collectPhotos,
@@ -253,7 +253,6 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
     () => (loaded?.review && isCompleted(loaded.review) ? prefillFromCompleted(loaded.review) : null),
     [loaded],
   );
-  const effectiveForm = prefilled ?? form ?? emptyForm;
   useEffect(() => {
     if (!prefilled) return;
     setForm(null);
@@ -271,7 +270,17 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
   const presentPhotos = useMemo<number[]>(() => photos.map((p) => p.slot), [photos]);
 
   if (loadError) return <Alert severity="error">{loadError}</Alert>;
-  if (page && isRefused(page)) return <Alert severity="error">You are not authorised to view this case.</Alert>;
+  if (page && isRefused(page))
+    return (
+      <Stack spacing={3}>
+        {onBack && (
+          <Stack direction="row" alignItems="center">
+            <BackButton onBack={onBack} />
+          </Stack>
+        )}
+        <Alert severity="error">You are not authorised to view this case.</Alert>
+      </Stack>
+    );
   if (!loaded || loaded.redirect)
     return (
       <Box sx={{ p: 4, display: "flex", justifyContent: "center" }}>
@@ -301,6 +310,8 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
   const readOnly = completed || isLegacy || saved !== null || !!loaded.unavailable || access.locked;
   // Once saved, the hold is over: the review is completed.
   const notice = saved === null ? access.notice : null;
+  // A page the hold locks shows the empty form rather than the viewer's own unsent draft, which stays stored.
+  const effectiveForm = formToShow(access, { stored: prefilled, draft: form, empty: emptyForm });
   // A completed review shows what was RECORDED. Re-deriving from the current
   // diagnosisMapping would silently rewrite how past reviews read whenever the
   // mapping table changes (it already changed once — the OSMF row).
@@ -574,22 +585,7 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
   return (
     <Stack spacing={3}>
       <Stack direction="row" alignItems="center" spacing={1}>
-        {onBack && (
-          <Button
-            onClick={onBack}
-            size="large"
-            sx={{
-              minWidth: 0,
-              px: { xs: 1, sm: 1.5 },
-              fontSize: { xs: 24, sm: 28 },
-              lineHeight: 1,
-              flexShrink: 0,
-            }}
-            aria-label="Back"
-          >
-            ←
-          </Button>
-        )}
+        {onBack && <BackButton onBack={onBack} />}
         <Typography
           variant="h5"
           sx={{
@@ -912,6 +908,25 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
         </Stack>
       )}
     </Stack>
+  );
+}
+
+function BackButton({ onBack }: { onBack: () => void }) {
+  return (
+    <Button
+      onClick={onBack}
+      size="large"
+      sx={{
+        minWidth: 0,
+        px: { xs: 1, sm: 1.5 },
+        fontSize: { xs: 24, sm: 28 },
+        lineHeight: 1,
+        flexShrink: 0,
+      }}
+      aria-label="Back"
+    >
+      ←
+    </Button>
   );
 }
 

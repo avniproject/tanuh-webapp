@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { EncounterApiResponse } from "@/api/types";
-import { caseNoticeText, decideCaseAccess, decideSubmit } from "./caseAccess";
+import { caseNoticeText, decideCaseAccess, decideSubmit, formToShow } from "./caseAccess";
 
 const t0 = new Date("2026-11-23T10:00:00Z");
 const later = (min: number) => new Date(t0.getTime() + min * 60_000);
@@ -74,6 +74,42 @@ describe("decideCaseAccess", () => {
 
   it("never opens a case to a viewer with no name", () => {
     expect(decideCaseAccess(true, { review: heldBy("dr.a", t0) }, "", later(1)).locked).toBe(true);
+  });
+});
+
+// Fix round 1: a page locked by the hold showed the viewer's own unsent draft, read as the holder's work.
+describe("formToShow", () => {
+  const forms = { stored: null, draft: "draft", empty: "empty" };
+
+  it("shows the empty form, not the viewer's draft, on a page the hold locks", () => {
+    const other = decideCaseAccess(true, { review: heldBy("dr.b", t0) }, "dr.a", later(1));
+    const waiting = decideCaseAccess(true, { review: booked }, "dr.a", t0);
+    const lapsed = decideCaseAccess(true, { review: heldBy("dr.a", t0) }, "dr.a", later(10));
+    const noReview = decideCaseAccess(true, {}, "dr.a", t0);
+    for (const access of [other, waiting, lapsed, noReview]) expect(formToShow(access, forms)).toBe("empty");
+  });
+
+  it("shows the holder their draft, or the empty form when they have none", () => {
+    const mine = decideCaseAccess(true, { review: heldBy("dr.a", t0) }, "dr.a", later(1));
+    expect(formToShow(mine, forms)).toBe("draft");
+    expect(formToShow(mine, { ...forms, draft: null })).toBe("empty");
+  });
+
+  it("shows a completed review's recorded answers", () => {
+    const completed = decideCaseAccess(true, { review: completedBy("dr.b", t0) }, "dr.a", later(6));
+    expect(formToShow(completed, { ...forms, stored: "stored" })).toBe("stored");
+  });
+
+  it("is as today when the organisation has no review queue", () => {
+    const off = decideCaseAccess(false, { review: heldBy("dr.b", t0) }, "dr.a", later(1));
+    expect(formToShow(off, forms)).toBe("draft");
+    expect(formToShow(off, { ...forms, draft: null })).toBe("empty");
+    expect(formToShow(off, { ...forms, stored: "stored" })).toBe("stored");
+  });
+
+  it("keeps today's draft on an unavailable case, which the hold does not lock", () => {
+    const unavailable = decideCaseAccess(true, { unavailable: "This screening was deleted, so it cannot be reviewed." }, "dr.a", t0);
+    expect(formToShow(unavailable, forms)).toBe("draft");
   });
 });
 
