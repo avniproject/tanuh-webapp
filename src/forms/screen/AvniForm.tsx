@@ -305,7 +305,8 @@ export function AvniForm({
           })}
         </Box>
 
-        <Stack spacing={2} sx={{ flexGrow: 1, minWidth: 0, width: "100%", maxWidth: 860 }}>
+        {/* The sections fill the width left of the section list, so the panel's right edge meets the cards above. */}
+        <Stack spacing={2} sx={{ flexGrow: 1, minWidth: 0, width: "100%" }}>
           {sections.map(({ page, progress: p }, i) => (
             <Section key={page.uuid} index={i + 1} page={page} notApplicable={p.notApplicable}>
               {page.elements.filter((e) => !e.parentUuid).map((e) => (isQuestionGroup(e) ? group(e) : field(e)))}

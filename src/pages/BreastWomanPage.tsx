@@ -7,6 +7,7 @@ import { useAuth } from "@/auth/authContext";
 import { BREAST_OBS, BREAST_VISITS, CLINICIAN_FORMS, type ClinicianFormKey } from "@/breast/breastConcepts";
 import { formVisitFor, placeName, riskClassOf, type FormStatus } from "@/breast/breastList";
 import { deleteDraft, loadDraft, saveDraft, type DraftScope } from "@/breast/drafts";
+import { prefillPlaces } from "@/breast/places";
 import { submitClinicianForm } from "@/breast/submit";
 import { Card, FormStatusPill, Pill, PillButton, RiskPill } from "@/breast/ui";
 import { loadWomanCase, registryOf, ruleSubject, visitAnswers, type WomanCase } from "@/breast/womanCase";
@@ -224,10 +225,15 @@ export function BreastWomanPage() {
         form={woman.forms[formKey]}
         subject={subject}
         draft={visit}
-        initialAnswers={kept?.answers ?? visitAnswers(submitted, registry).answers}
+        initialAnswers={
+          kept?.answers ??
+          (submitted
+            ? visitAnswers(submitted, registry).answers
+            : prefillPlaces(allElements(woman.forms[formKey]), woman.placesOf, {}))
+        }
         placesOf={woman.placesOf}
         placesFailed={woman.placesFailed}
-        submitLabel={submitted ? "Update in Avni" : CLINICIAN_FORMS[formKey].submit}
+        submitLabel={submitted ? "Update" : CLINICIAN_FORMS[formKey].submit}
         savedNote={
           submitted
             ? `Submitted to Avni on ${format(new Date(submitted["Encounter date time"]!), "d MMM yyyy")}`

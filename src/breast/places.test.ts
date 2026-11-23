@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { ConceptDef } from "@/forms/engine/formDef";
-import { placesFor } from "./places";
+import { placesFor, prefillPlaces } from "./places";
 
 const nodes = [
   { uuid: "s", name: "Karnataka", type: "State", parentUuid: null },
@@ -33,5 +33,21 @@ describe("placesFor", () => {
   });
   it("offers every place when the question names no type", () => {
     expect(placesFor(concept(undefined), nodes, types)).toHaveLength(4);
+  });
+});
+
+describe("prefillPlaces", () => {
+  const el = (uuid: string, typeUuids: unknown, dataType = "Location") =>
+    ({ uuid: `el-${uuid}`, parentUuid: null, concept: { ...concept(typeUuids), uuid, dataType } }) as never;
+  const placesOf = (e: { concept: ConceptDef }) => placesFor(e.concept, nodes, types);
+
+  it("fills a place question with the one place the clinician's area has for it", () => {
+    expect(prefillPlaces([el("inst", ["MC"])], placesOf, {})).toEqual({ inst: "m1" });
+  });
+  it("leaves it to be picked when her area has several, or none", () => {
+    expect(prefillPlaces([el("inst", ["MC", "DH"]), el("other", ["UNKNOWN"])], placesOf, {})).toEqual({});
+  });
+  it("never replaces an answer already there, and ignores other kinds of question", () => {
+    expect(prefillPlaces([el("inst", ["MC"]), el("n", ["MC"], "Numeric")], placesOf, { inst: "d1" })).toEqual({ inst: "d1" });
   });
 });
