@@ -8,8 +8,6 @@ import { QueueGroupBadge } from "./StatusBadge";
 interface Props {
   // The viewer's finished reviews today, by group.
   reviewed: GroupCounts;
-  // Cases nobody holds, by group and in total.
-  waiting: GroupCounts & { total: number };
   // The group the button would take from; null shows that nothing is waiting.
   next: QueueGroup | null;
   // The case the viewer holds, if any: the button continues it.
@@ -20,8 +18,9 @@ interface Props {
 }
 
 // PE-249: the only way to start a review. The physician holds one case at a time, so while they hold one the button
-// continues it.
-export function NextCasePanel({ reviewed, waiting, next, held, busy, error, onTake }: Props) {
+// continues it. It is enabled whenever it is not busy: every press reads the queue again, so cases that arrived and
+// holds that lapsed since the tab opened are found by pressing it.
+export function NextCasePanel({ reviewed, next, held, busy, error, onTake }: Props) {
   const label = held ? `Continue case ${held.caseId ?? ""}`.trim() : "Review next case";
   return (
     <Stack
@@ -37,7 +36,7 @@ export function NextCasePanel({ reviewed, waiting, next, held, busy, error, onTa
             variant="contained"
             size="large"
             endIcon={busy ? <CircularProgress size={18} color="inherit" /> : <ArrowForwardIcon />}
-            disabled={busy || (!held && waiting.total === 0)}
+            disabled={busy}
             onClick={onTake}
             data-testid="next-case-button"
             sx={{ px: 3, py: 1.25, fontSize: "1.05rem", fontWeight: 700 }}

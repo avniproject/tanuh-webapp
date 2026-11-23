@@ -34,6 +34,7 @@ import { takeCase, type HoldStatus } from "@/api/caseHold";
 import { takeNextCase } from "@/api/queueChoice";
 import {
   filterQueueRows,
+  narrowQueueRows,
   queueRowSubjectId,
   rowHoldStatus,
   rowReason,
@@ -331,7 +332,8 @@ export function EncounterList({ mode }: Props) {
 
   // Review next case. Every press reads the queue again from the server; the viewer's own case is continued, else the
   // oldest waiting case of the group they have reviewed least is taken, moving on past any case someone else took
-  // first. When every candidate is refused the queue is read again and the panel says nothing is waiting.
+  // first. When nothing can be taken the panel says nothing is waiting, until the next press. The button is never
+  // disabled for want of cases: the tab does not re-read on its own, so a press is how new cases and lapsed holds show.
   const filtered = !!(patientLocationUuid || referralUuid);
   const [taking, setTaking] = useState(false);
   const [takeError, setTakeError] = useState<string | null>(null);
@@ -346,17 +348,23 @@ export function EncounterList({ mode }: Props) {
         navigate(`/review/${fresh.held.review.encounterUuid}`);
         return;
       }
-      const reviewUuid = await takeNextCase(fresh.rows, fresh.reviewed, viewer, fresh.now, (row) =>
-        takeCase(row, viewer),
-      );
+      let tried = 0;
+      const reviewUuid = await takeNextCase(fresh.rows, fresh.reviewed, viewer, fresh.now, (row) => {
+        tried += 1;
+        return takeCase(row, viewer);
+      });
       if (reviewUuid) {
         navigate(`/review/${reviewUuid}`);
         return;
       }
+      // Nothing could be taken. The fresh read already shows on the tiles and in Reviewed today; when cases were tried
+      // and refused, read again so they show who holds them, and the list follows.
       setExhausted(true);
-      await reloadQueue();
-      // With a place or referral facility chosen the list narrows booked reviews by its own read, so it is read again.
-      if (filtered) setListVersion((v) => v + 1);
+      if (tried > 0) {
+        await reloadQueue();
+        // With a place or referral facility chosen the list narrows booked reviews by its own read, so it is read too.
+        if (filtered) setListVersion((v) => v + 1);
+      }
     } catch (err) {
       setTakeError(err instanceof Error ? err.message : String(err));
     } finally {
@@ -377,14 +385,11 @@ export function EncounterList({ mode }: Props) {
     if (referralUuid && referral?.uuid !== referralUuid) return null;
     const { catchment, subjects } = queueData;
     const place = patientLocationUuid && catchment.contains(patientLocationUuid) ? patientLocationUuid : null;
-    const bookedListed = place || referralUuid ? new Set(pageData.content.map((e) => e.encounterUuid)) : null;
-    const placesUnder = place ? catchment.placesUnder(place) : null;
-    const chain = referralUuid ? referral?.chain : undefined;
-    return queueData.rows.filter((row) => {
-      if (row.kind === "booked") return !bookedListed || bookedListed.has(row.review.encounterUuid);
-      const at = subjects.get(row.screening["Subject ID"])?.["Location ID"];
-      if (placesUnder && !(at && placesUnder.has(at))) return false;
-      return !chain || inSubtree(row.screening.observations?.[PLACE_OF_REFERRAL_CONCEPT.name], chain);
+    return narrowQueueRows(queueData.rows, {
+      bookedListed: place || referralUuid ? new Set(pageData.content.map((e) => e.encounterUuid)) : null,
+      placesUnder: place ? catchment.placesUnder(place) : null,
+      referralChain: referralUuid && referral ? referral.chain : null,
+      subjects,
     });
   }, [queueMode, queueData, pageData, patientLocationUuid, referralUuid, referral]);
 
@@ -479,6 +484,11 @@ export function EncounterList({ mode }: Props) {
     [reviewPairing, screeningInfo],
   );
 
+  // PE-249: in the queue, sorting by opinion is offered only where the Worker's opinion column shows; a stored
+  // "By opinion" then reads as By group.
+  const sorts = queueMode && modelOn !== true ? SORTS.filter((s) => s.value !== "opinion") : SORTS;
+  const sort: PendingSort = sorts.some((s) => s.value === state.sort) ? state.sort : "group";
+
   const views = useMemo<RowView[] | null>(() => {
     if (modelOn === null) return null;
     if (mode === "pending" && queueOn === null) return null;
@@ -496,7 +506,7 @@ export function EncounterList({ mode }: Props) {
 
     if (queueMode) {
       if (!queueListed || !queueData) return null;
-      return filterQueueRows(sortQueueRows(queueListed, state.sort), state.queueGroup)
+      return filterQueueRows(sortQueueRows(queueListed, sort), state.queueGroup)
         .map((row) => queueRowView(row, queueData.subjects.get(queueRowSubjectId(row)), viewer, queueData.now))
         .filter(matchesSearch);
     }
@@ -542,6 +552,7 @@ export function EncounterList({ mode }: Props) {
     queueListed,
     queueData,
     viewer,
+    sort,
     state.queueGroup,
     pendingFromScreenings,
     pendingRows,
@@ -655,7 +666,6 @@ export function EncounterList({ mode }: Props) {
         {queueMode && queueData && (
           <NextCasePanel
             reviewed={queueData.reviewed}
-            waiting={queueData.waiting}
             next={exhausted ? null : queueData.next}
             held={heldView ? { caseId: heldView.caseId ?? null } : null}
             busy={taking}
@@ -831,12 +841,12 @@ export function EncounterList({ mode }: Props) {
               <ToggleButtonGroup
                 exclusive
                 size="small"
-                value={state.sort}
+                value={sort}
                 onChange={(_, v: PendingSort | null) => {
                   if (v) update({ sort: v, page: 0 });
                 }}
               >
-                {SORTS.map((s) => (
+                {sorts.map((s) => (
                   <ToggleButton key={s.value} value={s.value} sx={{ px: 2, textTransform: "none", fontWeight: 600 }}>
                     {s.label}
                   </ToggleButton>

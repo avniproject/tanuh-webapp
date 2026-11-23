@@ -3,6 +3,7 @@ import type { CachedEncounter } from "./encounters";
 import type { EncounterWithLocation } from "./impl";
 import {
   filterQueueRows,
+  narrowQueueRows,
   queueRowDate,
   queueRowKey,
   queueRowSubjectId,
@@ -12,7 +13,7 @@ import {
   sortQueueRows,
   type QueueRow,
 } from "./queueRows";
-import { IN_REVIEW_BY_CONCEPT, IN_REVIEW_SINCE_CONCEPT, OCSHR_RESULT_CONCEPT, RANDOM_SAMPLE_ID_CONCEPT, REVIEWED_ORAL_SCREENING_CONCEPT } from "@/constants/tanuhConcepts";
+import { IN_REVIEW_BY_CONCEPT, IN_REVIEW_SINCE_CONCEPT, OCSHR_RESULT_CONCEPT, PLACE_OF_REFERRAL_CONCEPT, RANDOM_SAMPLE_ID_CONCEPT, REVIEWED_ORAL_SCREENING_CONCEPT } from "@/constants/tanuhConcepts";
 
 const t = (minute: number) => new Date(Date.UTC(2026, 9, 7, 10, minute)).toISOString();
 const NOW = new Date(Date.UTC(2026, 9, 7, 10, 30));
@@ -162,5 +163,51 @@ describe("sort and filter", () => {
     expect(keys(filterQueueRows(withPending, "flw")).sort()).toEqual(["flw", "flwOld"]);
     expect(keys(filterQueueRows(withPending, "ai"))).toEqual(["ai"]);
     expect(keys(filterQueueRows(withPending, "safety"))).toEqual(["safety"]);
+  });
+});
+
+// PE-249: the list's location and referral filters over the queue's rows (the counts and the button ignore them).
+describe("narrowQueueRows", () => {
+  const referredTo = (s: CachedEncounter, place: Record<string, string>) => {
+    s.observations = { ...s.observations, [PLACE_OF_REFERRAL_CONCEPT.name]: place };
+    return s;
+  };
+  // Two booked reviews (no screening paired) and three screenings, each on its own patient.
+  const rows = selectQueueRows(
+    [bookedRow("rIn", "pb1"), bookedRow("rOut", "pb2")],
+    [
+      referredTo(ready("sVillage", "p1", 1), { District: "D1", "Taluka Hospital": "H1" }),
+      referredTo(ready("sOther", "p2", 2), { District: "D1", "Taluka Hospital": "H2" }),
+      ready("sNoPatient", "p3", 3),
+    ],
+    [],
+  );
+  const subjects = new Map([
+    ["p1", { "Location ID": "village-1" }],
+    ["p2", { "Location ID": "village-9" }],
+  ]);
+  const none = { bookedListed: null, placesUnder: null, referralChain: null, subjects };
+
+  it("keeps every row when nothing is chosen", () => {
+    expect(keys(narrowQueueRows(rows, none))).toEqual(["rIn", "rOut", "sVillage", "sOther", "sNoPatient"]);
+  });
+
+  it("keeps a screening row only when its patient lives in the chosen place or below it", () => {
+    const narrowed = narrowQueueRows(rows, { ...none, placesUnder: new Set(["taluka-1", "village-1"]) });
+    expect(keys(narrowed).filter((k) => k.startsWith("s"))).toEqual(["sVillage"]);
+  });
+
+  it("keeps a booked row only when the list's own filtered read returned it", () => {
+    const narrowed = narrowQueueRows(rows, { ...none, bookedListed: new Set(["rIn"]) });
+    expect(keys(narrowed)).toEqual(["rIn", "sVillage", "sOther", "sNoPatient"]);
+  });
+
+  it("keeps a screening row only when its place of referral lies in the chosen facility, and leaves booked rows to the read", () => {
+    const narrowed = narrowQueueRows(rows, {
+      ...none,
+      bookedListed: new Set(["rIn", "rOut"]),
+      referralChain: { District: "D1", "Taluka Hospital": "H1" },
+    });
+    expect(keys(narrowed)).toEqual(["rIn", "rOut", "sVillage"]);
   });
 });

@@ -90,7 +90,7 @@ export async function loadPendingQueue(viewer: string): Promise<PendingQueue> {
     catchment.tops.length > 0
       ? candidates.flatMap((r) => (r.kind === "screening" ? [r.screening["Subject ID"]] : []))
       : [];
-  const read = await readSubjects(toRead);
+  const read = toRead.length > 0 ? await readSubjects(toRead) : new Map<string, SubjectApiResponse | null>();
   const subjects = new Map<string, SubjectApiResponse>();
   let unread = 0;
   const rows = candidates.filter((row) => {

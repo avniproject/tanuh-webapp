@@ -1,4 +1,5 @@
-import { QUEUE_GROUPS, WORKER_OPINION, type QueueGroup } from "@/constants/tanuhConcepts";
+import { PLACE_OF_REFERRAL_CONCEPT, QUEUE_GROUPS, WORKER_OPINION, type QueueGroup } from "@/constants/tanuhConcepts";
+import { inSubtree } from "./address";
 import { classify, isReady, signalsOf, type CaseClass } from "./caseSignals";
 import { holdStatus, type HoldStatus } from "./caseHold";
 import {
@@ -139,4 +140,28 @@ export function sortQueueRows(rows: QueueRow[], sort: QueueSort): QueueRow[] {
 export function filterQueueRows(rows: QueueRow[], filter: QueueGroupFilter): QueueRow[] {
   if (filter === "all") return rows;
   return rows.filter((r) => rowReason(r) === GROUP_OF_FILTER[filter]);
+}
+
+export interface QueueNarrowing {
+  // The booked reviews the list's own filtered read returned; null when no place or referral facility is chosen.
+  bookedListed: ReadonlySet<string> | null;
+  // The chosen place and every covered place below it; null when no place is chosen.
+  placesUnder: ReadonlySet<string> | null;
+  // The chosen referral facility's place chain; null when none is chosen.
+  referralChain: Record<string, string> | null;
+  // The screening rows' patients, by subject uuid.
+  subjects: ReadonlyMap<string, { "Location ID"?: string }>;
+}
+
+// The list's location and referral filters over the queue's rows (PE-249). The server's filtered read decides a booked
+// row; a screening row goes by its patient's place and by its own place of referral, as the old list did.
+export function narrowQueueRows(rows: QueueRow[], n: QueueNarrowing): QueueRow[] {
+  return rows.filter((row) => {
+    if (row.kind === "booked") return !n.bookedListed || n.bookedListed.has(row.review.encounterUuid);
+    if (n.placesUnder) {
+      const at = n.subjects.get(row.screening["Subject ID"])?.["Location ID"];
+      if (!at || !n.placesUnder.has(at)) return false;
+    }
+    return !n.referralChain || inSubtree(row.screening.observations?.[PLACE_OF_REFERRAL_CONCEPT.name], n.referralChain);
+  });
 }
