@@ -162,7 +162,8 @@ export async function listVisitsFor(
 export interface UpsertEncounterBody {
   "Encounter type": string;
   "Subject ID": string;
-  "Encounter date time": string;
+  // null keeps a planned visit planned (a hold write).
+  "Encounter date time": string | null;
   // The PUT overwrites the schedule window with whatever is sent, null
   // included — completing a scheduled visit must send its dates back.
   "Earliest scheduled date"?: string | null;
