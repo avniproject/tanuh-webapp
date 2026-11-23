@@ -86,6 +86,7 @@ import {
   NON_HOMOGENEOUS_LEUKOPLAKIA,
   RISK,
 } from "./diagnosisMapping";
+import { ScreeningSignals } from "@/components/ScreeningSignals";
 import { MediaImg } from "@/components/MediaImg";
 import { takeNextFromQueue } from "@/components/usePendingQueue";
 import { pageAfterComplete } from "./completeAndNext";
@@ -668,6 +669,8 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
         </Alert>
       )}
 
+      {loaded.queueOn && <ScreeningSignals screening={loaded.screening} />}
+
       <Grid container spacing={2}>
         <Grid size={{ xs: 12, md: 6 }}>
           <RegDetailsCard subject={loaded.subject} screening={loaded.screening} />
@@ -679,7 +682,7 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
           <SymptomsCard screening={loaded.screening} />
         </Grid>
         {/* tanuh-webapp#5: what the high-risk model said, beside the photos. Nothing in the form is filled from it. */}
-        {modelOn && (
+        {modelOn && !loaded.queueOn && (
           <Grid size={{ xs: 12, md: 6 }}>
             <ModelPanel screening={loaded.screening} />
           </Grid>

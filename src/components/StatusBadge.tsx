@@ -235,7 +235,8 @@ function Pill({ label, ink, fill, testId, state, icon: Icon }: {
 
 // PE-249's three review groups: orange (Adam's choice after his own test, in place of the ticket screen's amber), violet
 // and teal.
-const QUEUE_GROUP_COLOURS: Record<QueueGroup, { ink: string; fill: string }> = {
+// eslint-disable-next-line react-refresh/only-export-components -- a constant shared with ScreeningSignals
+export const QUEUE_GROUP_COLOURS: Record<QueueGroup, { ink: string; fill: string }> = {
   "FLW marked": { ink: "#9a3412", fill: "#ffedd5" },
   "AI marked": { ink: "#5b21b6", fill: "#ede9fe" },
   "Safety sample": { ink: "#115e59", fill: "#ccfbf1" },
