@@ -5,6 +5,7 @@ import {
   type CatchmentLocationNode,
   type CatchmentLocationsResponse,
 } from "@/api/impl";
+import { getCatchment, type Catchment } from "@/api/catchment";
 
 interface Props {
   value: string | null;
@@ -20,24 +21,25 @@ interface Props {
 
 interface LoadState {
   tree: CatchmentLocationsResponse | null;
+  catchment: Catchment | null;
   error: string | null;
 }
 
 export function LocationFilter({ value, onChange, types }: Props) {
-  const [state, setState] = useState<LoadState>({ tree: null, error: null });
+  const [state, setState] = useState<LoadState>({ tree: null, catchment: null, error: null });
   const [reloadKey, setReloadKey] = useState(0);
 
   useEffect(() => {
     let cancelled = false;
-    setState({ tree: null, error: null });
-    getCatchmentLocations()
-      .then((tree) => {
-        if (!cancelled) setState({ tree, error: null });
+    setState({ tree: null, catchment: null, error: null });
+    Promise.all([getCatchmentLocations(), getCatchment()])
+      .then(([tree, catchment]) => {
+        if (!cancelled) setState({ tree, catchment, error: null });
       })
       .catch((err: unknown) => {
         if (cancelled) return;
         const message = err instanceof Error ? err.message : String(err);
-        setState({ tree: null, error: message });
+        setState({ tree: null, catchment: null, error: message });
       });
     return () => {
       cancelled = true;
@@ -45,12 +47,18 @@ export function LocationFilter({ value, onChange, types }: Props) {
   }, [reloadKey]);
 
   const indexed = useMemo(() => {
-    if (!state.tree) return null;
-    let nodes = state.tree.nodes;
+    if (!state.tree || !state.catchment) return null;
+    // Only places the physician covers; ancestors above their catchment drop out
+    // and a covered place under an uncovered parent becomes a root.
+    const { covered } = state.catchment;
+    const coveredNodes = state.tree.nodes
+      .filter((n) => covered.has(n.uuid))
+      .map((n) => (n.parentUuid && !covered.has(n.parentUuid) ? { ...n, parentUuid: null } : n));
+    let nodes = coveredNodes;
     if (types && types.length > 0) {
       const allowed = new Set(types);
-      const byUuidAll = new Map(state.tree.nodes.map((n) => [n.uuid, n]));
-      nodes = state.tree.nodes
+      const byUuidAll = new Map(coveredNodes.map((n) => [n.uuid, n]));
+      nodes = coveredNodes
         .filter((n) => allowed.has(n.type))
         .map((n) => {
           // Re-parent to the nearest kept ancestor; with none, the node
@@ -77,7 +85,7 @@ export function LocationFilter({ value, onChange, types }: Props) {
       list.sort((a, b) => a.name.localeCompare(b.name));
     }
     return { byUuid, byParent };
-  }, [state.tree, types]);
+  }, [state.tree, state.catchment, types]);
 
   // Build the chain from root → deepest-selected by walking parents from `value`.
   // If value is null, the chain is empty.
@@ -118,7 +126,7 @@ export function LocationFilter({ value, onChange, types }: Props) {
     );
   }
 
-  if (state.tree && state.tree.nodes.length === 0) {
+  if (state.tree && state.catchment && state.catchment.covered.size === 0) {
     return (
       <Alert severity="info" sx={{ flex: 1 }}>
         No locations available to filter — your account has no catchment assigned.
