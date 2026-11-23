@@ -13,7 +13,8 @@ export function CaseDetail() {
 
   return (
     <Box>
-      <ReviewForm screeningUuid={screeningUuid} onBack={() => navigate(-1)} />
+      {/* Keyed by the case, so moving from one case to another starts a fresh form, with its own draft (FW4). */}
+      <ReviewForm key={screeningUuid} screeningUuid={screeningUuid} onBack={() => navigate(-1)} />
     </Box>
   );
 }

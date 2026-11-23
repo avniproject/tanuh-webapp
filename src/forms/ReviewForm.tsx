@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type ReactNode } from "react";
+import { useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import {
   Alert,
   Box,
@@ -109,7 +109,8 @@ interface LoadedState {
   // PE-249 (D3): whether the organisation has the review queue. Known before the page shows, so it never shows
   // editable and then locks.
   queueOn: boolean;
-  // When the page was read, by the server's clock (FW2): the hold is judged against it, so it does not lock mid-review.
+  // When the page was read, by the server's clock (FW2): the hold is judged against it, so it does not lock
+  // mid-review.
   loadedAt: Date;
 }
 
@@ -246,6 +247,14 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
   useEffect(() => {
     if (loaded?.redirect) navigate(`/review/${loaded.redirect}`, { replace: true });
   }, [loaded, navigate]);
+  // A save or release still running when the physician leaves the page must not navigate afterwards (FW4).
+  const mounted = useRef(true);
+  useEffect(() => {
+    mounted.current = true;
+    return () => {
+      mounted.current = false;
+    };
+  }, []);
 
   // A completed review always renders from its STORED observations — an
   // in-progress draft left in sessionStorage (e.g. someone else completed the
@@ -536,7 +545,7 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
           return;
         }
       }
-      navigate("/pending");
+      if (mounted.current) navigate("/pending");
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       setSubmitError(message);
@@ -553,7 +562,7 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
       const outcome = await bookHighRiskFollowUps(saved, unbooked);
       setUnbooked(outcome.failed);
       setSubmitError(outcome.problem);
-      if (!outcome.problem) navigate("/pending");
+      if (!outcome.problem && mounted.current) navigate("/pending");
     } finally {
       setSubmitting(false);
     }
@@ -566,11 +575,12 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
     setReleaseError(null);
     try {
       await releaseCase(loaded.review.ID, viewer);
-      navigate("/pending");
+      if (mounted.current) navigate("/pending");
     } catch (err) {
-      setReleaseError(`Could not release the case: ${err instanceof Error ? err.message : String(err)}`);
+      const message = err instanceof Error ? err.message : String(err);
+      if (mounted.current) setReleaseError(`Could not release the case: ${message}`);
     } finally {
-      setReleasing(false);
+      if (mounted.current) setReleasing(false);
     }
   };
 

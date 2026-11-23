@@ -12,7 +12,8 @@ export function ReviewDetail() {
 
   return (
     <Box>
-      <ReviewForm encounterUuid={encounterUuid} onBack={() => navigate(-1)} />
+      {/* Keyed by the case, so moving from one case to another starts a fresh form, with its own draft (FW4). */}
+      <ReviewForm key={encounterUuid} encounterUuid={encounterUuid} onBack={() => navigate(-1)} />
     </Box>
   );
 }
