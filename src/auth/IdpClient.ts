@@ -16,6 +16,10 @@ export interface IdpClient {
   // here would not affect the in-flight request (defaults are merged before
   // interceptors run), so each request must be stamped directly.
   attachAuthHeader(config: InternalAxiosRequestConfig): Promise<void>;
+
+  // The current token, refreshed when it is about to expire. Sent as a bearer token to
+  // services other than Avni that accept Avni's tokens, such as the data quality service.
+  getToken(): Promise<string>;
   signOut(): Promise<void>;
   getUsername(): string | null;
 

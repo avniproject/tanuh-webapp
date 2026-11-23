@@ -83,7 +83,7 @@ export class CognitoClient implements IdpClient {
     await this.getToken();
   }
 
-  private async getToken(): Promise<string> {
+  async getToken(): Promise<string> {
     const session = await fetchAuthSession();
     const token = session.tokens?.idToken?.toString();
     if (!token) throw new Error("NO_ID_TOKEN");

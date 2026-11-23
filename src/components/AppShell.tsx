@@ -1,12 +1,18 @@
 import { AppBar, Avatar, Box, Button, Link, Stack, Toolbar, Typography } from "@mui/material";
-import { Outlet, useNavigate } from "react-router-dom";
+import { Outlet, useLocation, useNavigate } from "react-router-dom";
 import tanuhLogo from "@/assets/logo.png";
 import { useAuth } from "@/auth/authContext";
+import { isPhysician, isProgrammeManager } from "@/auth/roles";
 
 export function AppShell() {
   const navigate = useNavigate();
   const { state, signOut } = useAuth();
+  const { pathname } = useLocation();
   const username = state.status === "ready" ? state.user.name || state.user.username : "";
+  // The Data Quality screens are wider than the review screens, and a user who may open both
+  // gets a link to each in the header.
+  const dataQuality = pathname.startsWith("/data-quality");
+  const both = state.status === "ready" && isPhysician(state.user) && isProgrammeManager(state.user);
 
   return (
     <Box sx={{ minHeight: "100vh", bgcolor: "background.default", display: "flex", flexDirection: "column" }}>
@@ -43,9 +49,19 @@ export function AppShell() {
                 display: { xs: "none", sm: "block" },
               }}
             >
-              Clinician Review
+              {dataQuality ? "Data Quality" : "Clinician Review"}
             </Typography>
           </Stack>
+          {both && (
+            <Stack direction="row" spacing={1} sx={{ ml: { xs: 1, sm: 3 } }}>
+              <Button size="small" variant={dataQuality ? "text" : "outlined"} onClick={() => navigate("/pending")}>
+                Reviews
+              </Button>
+              <Button size="small" variant={dataQuality ? "outlined" : "text"} onClick={() => navigate("/data-quality")}>
+                Data Quality
+              </Button>
+            </Stack>
+          )}
           <Box sx={{ flexGrow: 1 }} />
           {username && (
             <Stack direction="row" alignItems="center" spacing={{ xs: 0.5, sm: 1.5 }}>
@@ -64,7 +80,7 @@ export function AppShell() {
         component="main"
         sx={{
           p: { xs: 1.5, sm: 3 },
-          maxWidth: 1200,
+          maxWidth: dataQuality ? 1600 : 1200,
           mx: "auto",
           width: "100%",
           flexGrow: 1,

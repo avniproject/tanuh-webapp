@@ -10,7 +10,12 @@ import { ReviewDetail } from "@/pages/ReviewDetail";
 import { CaseDetail } from "@/pages/CaseDetail";
 import { NotAuthorized } from "@/pages/NotAuthorized";
 import { LoginPage } from "@/pages/LoginPage";
-import { isPhysician } from "@/auth/roles";
+import { isPhysician, isProgrammeManager } from "@/auth/roles";
+import { DataQualityLayout } from "@/dataQuality/DataQualityLayout";
+import { Dimensions } from "@/dataQuality/views/Dimensions";
+import { Guide } from "@/dataQuality/views/Guide";
+import { HealthCheck } from "@/dataQuality/views/HealthCheck";
+import { Workers } from "@/dataQuality/views/Workers";
 
 function ListLayout({ children }: { children: React.ReactNode }) {
   const { pathname } = useLocation();
@@ -69,57 +74,85 @@ function GatedRoutes() {
   if (state.status === "needs_login") {
     return <LoginPage />;
   }
-  if (!isPhysician(state.user)) {
+  // Physicians see the review screens and programme managers the Data Quality screens; a user
+  // in both groups sees both, and the app opens on the reviews.
+  const physician = isPhysician(state.user);
+  const programmeManager = isProgrammeManager(state.user);
+  if (!physician && !programmeManager) {
     return <NotAuthorized />;
   }
+  const home = physician ? "/pending" : "/data-quality/health";
   return (
     <Routes>
       <Route element={<AppShell />}>
-        <Route index element={<Navigate to="/pending" replace />} />
-        <Route
-          path="/pending"
-          element={
-            <ListLayout>
-              <ReviewListPage mode="pending" />
-            </ListLayout>
-          }
-        />
-        <Route
-          path="/completed"
-          element={
-            <ListLayout>
-              <ReviewListPage mode="completed" />
-            </ListLayout>
-          }
-        />
-        <Route
-          path="/review/:encounterUuid"
-          element={
-            // Scoped boundary: a review whose data breaks rendering degrades to
-            // this message while the list tabs keep working. "Back to reviews"
-            // is a full navigation on purpose — it also resets the boundary.
-            <ErrorBoundary
-              title="This review can't be displayed."
-              description="The rest of the app still works. Reload to try again, or go back to the review list and report this case to your administrator."
-              action={<Button href="/pending">Back to reviews</Button>}
-            >
-              <ReviewDetail />
-            </ErrorBoundary>
-          }
-        />
-        <Route
-          path="/case/:screeningUuid"
-          element={
-            <ErrorBoundary
-              title="This case can't be displayed."
-              description="The rest of the app still works. Reload to try again, or go back to the review list and report this case to your administrator."
-              action={<Button href="/pending">Back to reviews</Button>}
-            >
-              <CaseDetail />
-            </ErrorBoundary>
-          }
-        />
-        <Route path="*" element={<Navigate to="/pending" replace />} />
+        <Route index element={<Navigate to={home} replace />} />
+        {physician && (
+          <>
+            <Route
+              path="/pending"
+              element={
+                <ListLayout>
+                  <ReviewListPage mode="pending" />
+                </ListLayout>
+              }
+            />
+            <Route
+              path="/completed"
+              element={
+                <ListLayout>
+                  <ReviewListPage mode="completed" />
+                </ListLayout>
+              }
+            />
+            <Route
+              path="/review/:encounterUuid"
+              element={
+                // Scoped boundary: a review whose data breaks rendering degrades to
+                // this message while the list tabs keep working. "Back to reviews"
+                // is a full navigation on purpose — it also resets the boundary.
+                <ErrorBoundary
+                  title="This review can't be displayed."
+                  description="The rest of the app still works. Reload to try again, or go back to the review list and report this case to your administrator."
+                  action={<Button href="/pending">Back to reviews</Button>}
+                >
+                  <ReviewDetail />
+                </ErrorBoundary>
+              }
+            />
+            <Route
+              path="/case/:screeningUuid"
+              element={
+                <ErrorBoundary
+                  title="This case can't be displayed."
+                  description="The rest of the app still works. Reload to try again, or go back to the review list and report this case to your administrator."
+                  action={<Button href="/pending">Back to reviews</Button>}
+                >
+                  <CaseDetail />
+                </ErrorBoundary>
+              }
+            />
+          </>
+        )}
+        {programmeManager && (
+          <Route
+            path="/data-quality"
+            element={
+              <ErrorBoundary
+                title="Data Quality can't be displayed."
+                description="The rest of the app still works. Reload to try again, or report this to your administrator."
+              >
+                <DataQualityLayout />
+              </ErrorBoundary>
+            }
+          >
+            <Route index element={<Navigate to="health" replace />} />
+            <Route path="health" element={<HealthCheck />} />
+            <Route path="workers" element={<Workers />} />
+            <Route path="dimensions" element={<Dimensions />} />
+            <Route path="guide" element={<Guide />} />
+          </Route>
+        )}
+        <Route path="*" element={<Navigate to={home} replace />} />
       </Route>
     </Routes>
   );

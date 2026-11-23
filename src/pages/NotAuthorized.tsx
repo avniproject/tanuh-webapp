@@ -8,7 +8,8 @@ export function NotAuthorized() {
       <Stack spacing={2} alignItems="center">
         <Typography variant="h5">Not authorised</Typography>
         <Typography color="text.secondary" sx={{ maxWidth: 480 }}>
-          Your account does not have the Physician role. If you believe this is wrong, contact your administrator.
+          Your account is in neither the Physician nor the Programme Manager user group. If you believe this is wrong,
+          contact your administrator.
         </Typography>
         <Button variant="outlined" onClick={signOut}>
           Sign out
