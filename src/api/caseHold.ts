@@ -43,7 +43,11 @@ export type ReviewLike = {
   audit?: { "Last modified at"?: string };
 };
 
-export type HoldStatus = { kind: "waiting" } | { kind: "mine"; since: string } | { kind: "other"; by: string };
+// `since` on another physician's hold is when they took the case; only holdDetail gives it.
+export type HoldStatus =
+  | { kind: "waiting" }
+  | { kind: "mine"; since: string }
+  | { kind: "other"; by: string; since?: string };
 
 export function readHold(review: ReviewLike): Hold | undefined {
   const by = review.observations?.[IN_REVIEW_BY_CONCEPT.name];
@@ -68,6 +72,14 @@ export function holdStatus(review: ReviewLike | undefined, viewer: string, now: 
   const hold = readHold(review);
   if (!hold || !isLiveHold(hold, now)) return { kind: "waiting" };
   return hold.by === viewer ? { kind: "mine", since: hold.since } : { kind: "other", by: hold.by };
+}
+
+// The hold status, with the time another physician took the case, for the list's Status pill.
+export function holdDetail(review: ReviewLike | undefined, viewer: string, now: Date): HoldStatus {
+  const status = holdStatus(review, viewer, now);
+  if (status.kind !== "other" || !review) return status;
+  const since = readHold(review)?.since;
+  return since ? { ...status, since } : status;
 }
 
 export function decideTake(

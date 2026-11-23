@@ -6,6 +6,9 @@ import WarningAmberOutlinedIcon from "@mui/icons-material/WarningAmberOutlined";
 import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline";
 import RemoveCircleOutlineIcon from "@mui/icons-material/RemoveCircleOutline";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
+import LockOutlinedIcon from "@mui/icons-material/LockOutlined";
+import LockOpenOutlinedIcon from "@mui/icons-material/LockOpenOutlined";
+import PersonOutlineIcon from "@mui/icons-material/PersonOutline";
 import type { HoldStatus } from "@/api/caseHold";
 import {
   MODEL_RESULT_VALUES,
@@ -13,6 +16,7 @@ import {
   type ModelResultValue,
   type QueueGroup,
 } from "@/constants/tanuhConcepts";
+import { holdPill } from "./holdPill";
 
 // Status pills for the high-risk model's values on a screening (tanuh-webapp#4). Colour + icon + text (never colour
 // alone); red is reserved for High Risk. The result tooltips are Fathima's prototype copy (PE-96 attachment) verbatim.
@@ -185,13 +189,14 @@ export function ModelResultBadge({ value }: { value: string | undefined }) {
 }
 
 // A plain pill: text on a pale fill of its own colour, so the label carries the meaning and the colour only groups it.
-function Pill({ label, ink, fill, testId, state, wrap }: {
+// It never wraps; an icon, when given, goes before the text.
+function Pill({ label, ink, fill, testId, state, icon: Icon }: {
   label: string;
   ink: string;
   fill: string;
   testId: string;
   state: string;
-  wrap?: boolean;
+  icon?: SvgIconComponent;
 }) {
   return (
     <Box
@@ -199,7 +204,9 @@ function Pill({ label, ink, fill, testId, state, wrap }: {
       data-testid={testId}
       data-state={state}
       sx={{
-        display: "inline-block",
+        display: Icon ? "inline-flex" : "inline-block",
+        alignItems: "center",
+        gap: 0.5,
         px: 1,
         py: 0.25,
         borderRadius: 999,
@@ -208,9 +215,10 @@ function Pill({ label, ink, fill, testId, state, wrap }: {
         lineHeight: 1.6,
         color: ink,
         bgcolor: fill,
-        ...(wrap ? { whiteSpace: "normal", overflowWrap: "anywhere" } : { whiteSpace: "nowrap" }),
+        whiteSpace: "nowrap",
       }}
     >
+      {Icon && <Icon sx={{ fontSize: 14 }} aria-hidden />}
       {label}
     </Box>
   );
@@ -236,15 +244,25 @@ export function QueueGroupBadge({ value }: { value: QueueGroup }) {
   );
 }
 
-// Who is working on a case right now. Usernames have no break point, so this pill wraps anywhere.
-export function HoldStatusBadge({ status }: { status: HoldStatus }) {
-  if (status.kind === "waiting") {
-    return <Pill label="Waiting" ink="#475569" fill="#f1f5f9" testId="hold-status" state="waiting" wrap />;
-  }
-  if (status.kind === "mine") {
-    return <Pill label="In review by you" ink="#1d4ed8" fill="#dbeafe" testId="hold-status" state="mine" wrap />;
-  }
+const HOLD_PILL: Record<HoldStatus["kind"], { ink: string; fill: string; icon: SvgIconComponent }> = {
+  waiting: { ink: "#475569", fill: "#f1f5f9", icon: LockOpenOutlinedIcon },
+  mine: { ink: "#1d4ed8", fill: "#dbeafe", icon: PersonOutlineIcon },
+  other: { ink: "#b91c1c", fill: "#fee2e2", icon: LockOutlinedIcon },
+};
+
+// Who is working on a case right now, on one line. Another physician is named without the organisation's
+// `usernameSuffix`; the tooltip gives their full username and when they took the case.
+export function HoldStatusBadge({ status, usernameSuffix }: { status: HoldStatus; usernameSuffix?: string }) {
+  const { label, tooltip } = holdPill(status, usernameSuffix);
+  const { ink, fill, icon } = HOLD_PILL[status.kind];
+  const pill = <Pill label={label} ink={ink} fill={fill} icon={icon} testId="hold-status" state={status.kind} />;
+  if (!tooltip) return pill;
+  // The tooltip needs an element that takes its ref and handlers, which Pill does not.
   return (
-    <Pill label={`In review by ${status.by}`} ink="#b91c1c" fill="#fee2e2" testId="hold-status" state="other" wrap />
+    <Tooltip title={tooltip} arrow enterTouchDelay={0}>
+      <Box component="span" tabIndex={0} sx={{ display: "inline-flex" }}>
+        {pill}
+      </Box>
+    </Tooltip>
   );
 }

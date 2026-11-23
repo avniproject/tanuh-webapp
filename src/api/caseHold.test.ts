@@ -17,6 +17,7 @@ import {
   confirmTake,
   createReviewVisit,
   decideTake,
+  holdDetail,
   holdPatch,
   holdBody,
   holdStatus,
@@ -90,6 +91,14 @@ describe("holds", () => {
         holdStatus({ ...r, observations: { "In review by": "dr.b", "In review since": t0.toISOString() } }, "dr.a", t0),
       ).toEqual({ kind: "waiting" });
     }
+  });
+
+  // The list's Status pill shows when another physician took the case; holdStatus itself is unchanged.
+  it("holdDetail adds when another physician took the case, and is holdStatus otherwise", () => {
+    expect(holdDetail(heldBy("dr.b", t0), "dr.a", t0)).toEqual({ kind: "other", by: "dr.b", since: t0.toISOString() });
+    expect(holdDetail(heldBy("dr.a", t0), "dr.a", t0)).toEqual({ kind: "mine", since: t0.toISOString() });
+    expect(holdDetail(heldBy("dr.b", minus(t0, 11)), "dr.a", t0)).toEqual({ kind: "waiting" });
+    expect(holdDetail(undefined, "dr.a", t0)).toEqual({ kind: "waiting" });
   });
 
   it("decideTake refuses a completed, cancelled or deleted review and a live hold by someone else, and takes an expired or own one", () => {

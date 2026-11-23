@@ -30,13 +30,12 @@ import { endOfDay, format, parseISO } from "date-fns";
 import type { EncounterWithLocation } from "@/api/impl";
 import { readSubjects } from "@/api/programList";
 import { getCatchment } from "@/api/catchment";
-import { takeCase, type HoldStatus } from "@/api/caseHold";
+import { holdDetail, takeCase, type HoldStatus } from "@/api/caseHold";
 import { takeNextCase } from "@/api/queueChoice";
 import {
   filterQueueRows,
   narrowQueueRows,
   queueRowSubjectId,
-  rowHoldStatus,
   rowReason,
   sortQueueRows,
   type QueueGroupFilter,
@@ -234,7 +233,8 @@ function queueRowView(row: QueueRow, subject: SubjectApiResponse | undefined, vi
     opinion: screening?.workerOpinion,
     modelResult: screening ? readModelResult(obs) : undefined,
     reason: rowReason(row),
-    hold: rowHoldStatus(row, viewer, now),
+    // As rowHoldStatus, with when another physician took the case for the pill's tooltip.
+    hold: holdDetail(row.stored, viewer, now),
   };
   if (row.kind === "screening") {
     return {
@@ -265,6 +265,8 @@ export function EncounterList({ mode }: Props) {
   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
   const { state: auth } = useAuth();
   const viewer = auth.status === "ready" ? auth.user.username : "";
+  // Usernames are shown without the organisation's suffix (PE-249).
+  const usernameSuffix = auth.status === "ready" ? auth.user.usernameSuffix : undefined;
 
   // tanuh-webapp#4: the sort, filters, date range, Case ID search and page are kept for the session, per sign-in, so
   // they survive opening a case and coming back; sign-out clears them.
@@ -1081,7 +1083,7 @@ export function EncounterList({ mode }: Props) {
                           <Typography variant="body2" sx={{ color: "text.secondary", fontWeight: 500 }}>
                             Status:
                           </Typography>
-                          <HoldStatusBadge status={v.hold} />
+                          <HoldStatusBadge status={v.hold} usernameSuffix={usernameSuffix} />
                         </Stack>
                       )}
                       {mode === "completed" && (
@@ -1164,7 +1166,9 @@ export function EncounterList({ mode }: Props) {
                           <ReasonCell reason={v.reason} />
                         </TableCell>
                       )}
-                      {queueMode && <TableCell>{v.hold && <HoldStatusBadge status={v.hold} />}</TableCell>}
+                      {queueMode && (
+                        <TableCell>{v.hold && <HoldStatusBadge status={v.hold} usernameSuffix={usernameSuffix} />}</TableCell>
+                      )}
                       {mode === "completed" && (
                         <TableCell sx={{ color: "text.primary" }}>
                           {v.reviewedOn ? format(parseISO(v.reviewedOn), "dd MMM yyyy") : "—"}

@@ -14,6 +14,8 @@ export interface MeResponse {
   name: string;
   organisationName?: string;
   organisationId?: number;
+  // The organisation's username suffix, e.g. "tanuh_uat_local" for "physician4@tanuh_uat_local".
+  usernameSuffix?: string;
   catchmentName?: string;
   myUserGroups?: UserGroupEntry[];
 }
