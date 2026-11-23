@@ -26,6 +26,10 @@ const orgChildren = new Map<string, string[]>([
 ]);
 
 describe("buildCatchment", () => {
+  it("fails closed when the org place list is empty but the tree has places", () => {
+    expect(() => buildCatchment(tree([node("state", "State", null)]), new Map())).toThrow();
+  });
+
   it("covers a district and everything below it, not the state above", () => {
     const c = buildCatchment(
       tree([
@@ -106,6 +110,11 @@ describe("readOrgChildren", () => {
     expect(new Date(params.now as string).getTime()).toBeGreaterThan(Date.now());
     await readOrgChildren();
     expect(get).toHaveBeenCalledTimes(2);
+  });
+
+  it("rejects a response without a numeric totalPages", async () => {
+    get.mockResolvedValue({ data: { content: [row("a", "p")] } });
+    await expect(readOrgChildren()).rejects.toThrow();
   });
 
   it("clears the memo on failure and rethrows", async () => {

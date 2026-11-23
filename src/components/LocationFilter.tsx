@@ -129,7 +129,7 @@ export function LocationFilter({ value, onChange, types }: Props) {
   if (state.tree && state.catchment && state.catchment.covered.size === 0) {
     return (
       <Alert severity="info" sx={{ flex: 1 }}>
-        No locations available to filter — your account has no catchment assigned.
+        No places are assigned to your account.
       </Alert>
     );
   }

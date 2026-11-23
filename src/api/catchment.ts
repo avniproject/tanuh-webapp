@@ -41,6 +41,9 @@ async function fetchOrgChildren(): Promise<Map<string, string[]>> {
     const { data } = await http.get<OrgLocationPage>("/api/locations", {
       params: { lastModifiedDateTime: "2000-01-01T00:00:00.000Z", now, size: PAGE_SIZE, page },
     });
+    if (!Number.isFinite(data.totalPages)) {
+      throw new Error("The place list came back without a page count");
+    }
     totalPages = data.totalPages;
     for (const row of data.content) {
       const parent = row.Parent?.ID;
@@ -64,6 +67,11 @@ export function readOrgChildren(): Promise<Map<string, string[]>> {
 }
 
 export function buildCatchment(tree: CatchmentLocationsResponse, children: Map<string, string[]>): Catchment {
+  // A tree with places but an org list with none means the list was cut short;
+  // every place would then look like a leaf and count as covered.
+  if (tree.nodes.length > 0 && children.size === 0) {
+    throw new Error("The place list came back empty");
+  }
   const inTree = new Set(tree.nodes.map((n) => n.uuid));
   const memo = new Map<string, boolean>();
   const isCovered = (uuid: string): boolean => {
