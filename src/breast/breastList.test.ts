@@ -103,6 +103,15 @@ describe("buildBreastCases", () => {
     expect(reason({})).toBe("FLW decision");
   });
 
+  it("reads the risk class whether Avni returns it as one answer or as a list of one", () => {
+    // The screening's decision rule writes it as a list (value: [riskClass]), so the API can return ["HIGH RISK"].
+    const risk = (value: unknown) => build([screening("w", 1, referred({ "PS Risk Class": value }))])[0];
+    expect(risk(["HIGH RISK"]).risk).toBe("HIGH RISK");
+    expect(risk(["HIGH RISK"]).reason).toBe("AI high risk");
+    expect(risk(["LOW RISK"]).risk).toBe("LOW RISK");
+    expect(risk(undefined).risk).toBeNull();
+  });
+
   it("reads the hospital from the picker, else the typed name", () => {
     const hospital = (obs: Record<string, unknown>) => build([screening("w", 1, referred(obs))])[0].hospital;
     // The server lists the place itself first, then each parent up to the State (ConceptService.checkAndReturnLocationAddress).

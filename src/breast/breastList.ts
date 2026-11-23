@@ -45,9 +45,19 @@ function subjectId(screening: EncounterApiResponse): string {
   return match ? match[1] : screening["Subject ID"].slice(0, 8);
 }
 
+/**
+ * The model's risk class on a screening. The form's decision rule writes it as a list of one answer,
+ * so the API may return "HIGH RISK" or ["HIGH RISK"]; both are read.
+ */
+export function riskClassOf(obs: Record<string, unknown>): typeof HIGH_RISK | typeof LOW_RISK | null {
+  const raw = obs[BREAST_OBS.riskClass];
+  const value = Array.isArray(raw) ? raw[0] : raw;
+  return value === HIGH_RISK || value === LOW_RISK ? value : null;
+}
+
 function reasonOf(obs: Record<string, unknown>): ReferralReason {
   if (obs[BREAST_OBS.anySymptoms] === "Yes") return "Red-flag symptom";
-  if (obs[BREAST_OBS.riskClass] === HIGH_RISK) return "AI high risk";
+  if (riskClassOf(obs) === HIGH_RISK) return "AI high risk";
   return "FLW decision";
 }
 
@@ -92,7 +102,6 @@ export function buildBreastCases(
     .sort((a, b) => b["Encounter date time"]!.localeCompare(a["Encounter date time"]!))
     .map((s) => {
       const obs = s.observations ?? {};
-      const risk = obs[BREAST_OBS.riskClass];
       const age = obs[BREAST_OBS.age];
       return {
         screeningUuid: s.ID,
@@ -100,7 +109,7 @@ export function buildBreastCases(
         subjectId: subjectId(s),
         screenedOn: s["Encounter date time"]!,
         age: typeof age === "number" ? age : null,
-        risk: risk === HIGH_RISK || risk === LOW_RISK ? risk : null,
+        risk: riskClassOf(obs),
         hospital: placeName(obs[BREAST_OBS.facility]) ?? text(obs[BREAST_OBS.otherFacility]),
         reason: reasonOf(obs),
         assessment: status(s, riskAssessments, "assessment", drafts),

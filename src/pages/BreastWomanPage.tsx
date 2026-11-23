@@ -5,7 +5,7 @@ import { Link as RouterLink, useParams } from "react-router-dom";
 import { invalidateEncounterSweeps, listEncounters, patchEncounter, scheduleEncounter, submitEncounter } from "@/api/encounters";
 import { useAuth } from "@/auth/authContext";
 import { BREAST_OBS, BREAST_VISITS, CLINICIAN_FORMS, type ClinicianFormKey } from "@/breast/breastConcepts";
-import { formVisitFor, placeName, type FormStatus } from "@/breast/breastList";
+import { formVisitFor, placeName, riskClassOf, type FormStatus } from "@/breast/breastList";
 import { deleteDraft, loadDraft, saveDraft, type DraftScope } from "@/breast/drafts";
 import { submitClinicianForm } from "@/breast/submit";
 import { Card, FormStatusPill, Pill, PillButton, RiskPill } from "@/breast/ui";
@@ -53,7 +53,7 @@ function ModelPanel({ woman }: { woman: WomanCase }) {
       <Typography component="h3" sx={{ mb: 0.5, fontFamily: CR.font, fontSize: 16, fontWeight: 600, color: CR.heading }}>
         Risk and referral · calculated by form rule
       </Typography>
-      <ModelLine label="PS Risk Class" value={<RiskPill risk={(obs[BREAST_OBS.riskClass] as string) ?? null} />} />
+      <ModelLine label="PS Risk Class" value={<RiskPill risk={riskClassOf(obs)} />} />
       <ModelLine label="PS Risk Probability" value={typeof probability === "number" ? `${(probability * 100).toFixed(1)}%` : "Not calculated"} />
       <ModelLine label="PS Risk Model" value={typeof model === "string" ? model : "Not recorded"} />
       <ModelLine label="Referral decision" value={obs[BREAST_OBS.refer] === "Yes" ? "Referred" : "Not referred"} />
@@ -261,7 +261,7 @@ export function BreastWomanPage() {
           <Typography component="h1" sx={{ fontFamily: CR.font, fontSize: 24, fontWeight: 600, color: CR.heading }}>
             Subject {subjectId}
           </Typography>
-          <RiskPill risk={(obs[BREAST_OBS.riskClass] as string) ?? null} prefix="AI · " />
+          <RiskPill risk={riskClassOf(obs)} prefix="AI · " />
           {hospital && <Pill tone="idle">Referred to {hospital}</Pill>}
         </Stack>
         <Typography sx={{ mt: 0.75, fontFamily: CR.font, fontSize: 14, color: CR.textSecondary }}>
