@@ -81,6 +81,7 @@ import {
 import { RISK } from "@/forms/diagnosisMapping";
 import { useAsync } from "@/hooks/useAsync";
 import { useAuth } from "@/auth/authContext";
+import { shortUsername } from "@/auth/username";
 import { LocationFilter } from "./LocationFilter";
 import { FacilityFilter } from "./FacilityFilter";
 import { NextCasePanel } from "./NextCasePanel";
@@ -663,24 +664,12 @@ export function EncounterList({ mode }: Props) {
       : null;
 
   // The model's three columns show wherever the org has the model; without it the v1.12.2 columns apply unchanged.
-  // Badges never wrap: "Non Suspicious" with its AI mark needs about 17% and "Safety sample" about 14% of a desktop
-  // table, or they run into the next column.
   // PE-249: in the queue the old Group column gives way to Reason and Status, and the row button only views.
   const showModel = modelOn === true;
   const showGroup = showModel && !queueMode;
   const viewOnly = mode === "completed" || queueMode;
-  const none = { opinion: "0", model: "0", group: "0", reason: "0", status: "0" };
-  const widths = queueMode
-    ? showModel
-      ? { ...none, sno: "4%", caseId: "11%", date: "13%", village: "9%", hw: "10%", opinion: "9%", model: "15%", reason: "11%", status: "11%", on: "0", by: "0", action: "7%" }
-      : { ...none, sno: "5%", caseId: "14%", date: "17%", village: "12%", hw: "13%", reason: "13%", status: "17%", on: "0", by: "0", action: "9%" }
-    : mode === "pending"
-      ? showModel
-        ? { ...none, sno: "4%", caseId: "11%", date: "14%", village: "10%", hw: "11%", opinion: "10%", model: "17%", group: "14%", on: "0", by: "0", action: "9%" }
-        : { ...none, sno: "6%", caseId: "16%", date: "22%", village: "18%", hw: "16%", on: "0", by: "0", action: "14%" }
-      : showModel
-        ? { ...none, sno: "3%", caseId: "8%", date: "10%", village: "7%", hw: "8%", opinion: "7%", model: "17%", group: "14%", on: "8%", by: "10%", action: "8%" }
-        : { ...none, sno: "6%", caseId: "12%", date: "16%", village: "13%", hw: "13%", on: "13%", by: "14%", action: "7%" };
+  // PE-249: the queue and the completed list name a health worker without the organisation's suffix.
+  const shortHealthWorker = queueMode || mode === "completed";
 
   const handleRiskOnlyChange = (checked: boolean) => update({ riskOnly: checked, page: 0 });
   const handleReferralChange = (uuid: string | null) => update({ referral: uuid, page: 0 });
@@ -1108,92 +1097,112 @@ export function EncounterList({ mode }: Props) {
               })}
             </Stack>
           ) : (
-            <Table size="small" sx={{ tableLayout: "fixed" }}>
-              <TableHead>
-                <TableRow sx={{ "& th": { fontWeight: 700, color: "text.primary", fontSize: "0.95rem", backgroundColor: "grey.100" } }}>
-                  <TableCell sx={{ width: widths.sno }}>S.No</TableCell>
-                  <TableCell sx={{ width: widths.caseId }}>Case ID</TableCell>
-                  <TableCell sx={{ width: widths.date }}>Screening date</TableCell>
-                  <TableCell sx={{ width: widths.village }}>Village</TableCell>
-                  <TableCell sx={{ width: widths.hw }}>Health worker</TableCell>
-                  {showModel && <TableCell sx={{ width: widths.opinion }}>Worker's opinion</TableCell>}
-                  {/* Badges never wrap, so their columns must fit them (fixed table layout clips nothing). */}
-                  {showModel && <TableCell sx={{ width: widths.model, whiteSpace: "nowrap" }}>Model</TableCell>}
-                  {showGroup && <TableCell sx={{ width: widths.group, whiteSpace: "nowrap" }}>Group</TableCell>}
-                  {queueMode && <TableCell sx={{ width: widths.reason, whiteSpace: "nowrap" }}>Reason</TableCell>}
-                  {queueMode && <TableCell sx={{ width: widths.status }}>Status</TableCell>}
-                  {mode === "completed" && <TableCell sx={{ width: widths.on }}>Reviewed on</TableCell>}
-                  {mode === "completed" && <TableCell sx={{ width: widths.by }}>Reviewed by</TableCell>}
-                  <TableCell sx={{ width: widths.action }} aria-hidden />
-                </TableRow>
-              </TableHead>
-              <TableBody>
-                {visibleRows.map((v: RowView, index: number) => {
-                  const serialNumber = effectivePageIndex * PAGE_SIZE + index + 1;
-                  return (
-                    <TableRow
-                      key={v.key}
-                      hover
-                      onClick={() => navigate(v.href)}
-                      sx={{ cursor: "pointer" }}
-                    >
-                      <TableCell sx={{ color: "text.secondary" }}>{serialNumber}</TableCell>
-                      <TableCell sx={{ color: "text.primary" }}>{v.caseId || "—"}</TableCell>
-                      <TableCell sx={{ color: "text.primary" }}>
-                        {v.screeningDate ? format(parseISO(v.screeningDate), "dd MMM yyyy, h:mm a") : "—"}
-                      </TableCell>
-                      <TableCell sx={{ color: "text.primary" }}>
-                        {v.village || "—"}
-                      </TableCell>
-                      {/* Usernames (anmuser@tanuh_uat) have no break point; without this they
-                          overflow the fixed-width cell into the badge column. */}
-                      <TableCell sx={{ color: "text.primary", overflowWrap: "anywhere" }}>
-                        {v.healthWorker || "—"}
-                      </TableCell>
-                      {showModel && <TableCell sx={{ color: "text.primary" }}>{v.opinion || "—"}</TableCell>}
-                      {showModel && (
-                        <TableCell sx={{ whiteSpace: "nowrap" }}>
-                          <ModelResultBadge value={v.modelResult} />
-                        </TableCell>
-                      )}
-                      {showGroup && (
-                        <TableCell sx={{ whiteSpace: "nowrap" }}>
-                          <CategoryBadge value={v.group} />
-                        </TableCell>
-                      )}
-                      {queueMode && (
+            // Columns take the width their content needs and cells do not wrap; a window too narrow for the table
+            // scrolls it sideways instead of squashing the columns.
+            <Box sx={{ overflowX: "auto" }}>
+              <Table size="small" sx={{ tableLayout: "auto", "& .MuiTableCell-root": { px: 2, py: 1.25 } }}>
+                <TableHead>
+                  <TableRow
+                    sx={{
+                      "& th": {
+                        fontWeight: 700,
+                        color: "text.primary",
+                        fontSize: "0.95rem",
+                        backgroundColor: "grey.100",
+                        whiteSpace: "nowrap",
+                      },
+                    }}
+                  >
+                    <TableCell>S.No</TableCell>
+                    <TableCell>Case ID</TableCell>
+                    <TableCell>Screening date</TableCell>
+                    <TableCell>Village</TableCell>
+                    <TableCell>Health worker</TableCell>
+                    {showModel && <TableCell>Worker's opinion</TableCell>}
+                    {showModel && <TableCell>Model</TableCell>}
+                    {showGroup && <TableCell>Group</TableCell>}
+                    {queueMode && <TableCell>Reason</TableCell>}
+                    {queueMode && <TableCell>Status</TableCell>}
+                    {mode === "completed" && <TableCell>Reviewed on</TableCell>}
+                    {mode === "completed" && <TableCell>Reviewed by</TableCell>}
+                    <TableCell aria-hidden />
+                  </TableRow>
+                </TableHead>
+                <TableBody>
+                  {visibleRows.map((v: RowView, index: number) => {
+                    const serialNumber = effectivePageIndex * PAGE_SIZE + index + 1;
+                    return (
+                      <TableRow
+                        key={v.key}
+                        hover
+                        onClick={() => navigate(v.href)}
+                        sx={{ cursor: "pointer" }}
+                      >
+                        <TableCell sx={{ color: "text.secondary" }}>{serialNumber}</TableCell>
+                        <TableCell sx={{ color: "text.primary", whiteSpace: "nowrap" }}>{v.caseId || "—"}</TableCell>
                         <TableCell sx={{ color: "text.primary", whiteSpace: "nowrap" }}>
-                          <ReasonCell reason={v.reason} />
+                          {v.screeningDate ? format(parseISO(v.screeningDate), "dd MMM yyyy, h:mm a") : "—"}
                         </TableCell>
-                      )}
-                      {queueMode && (
-                        <TableCell>{v.hold && <HoldStatusBadge status={v.hold} usernameSuffix={usernameSuffix} />}</TableCell>
-                      )}
-                      {mode === "completed" && (
-                        <TableCell sx={{ color: "text.primary" }}>
-                          {v.reviewedOn ? format(parseISO(v.reviewedOn), "dd MMM yyyy") : "—"}
+                        <TableCell sx={{ color: "text.primary", whiteSpace: "nowrap" }}>
+                          {v.village || "—"}
                         </TableCell>
-                      )}
-                      {mode === "completed" && (
-                        <TableCell sx={{ color: "text.primary" }}>{v.reviewedBy || "—"}</TableCell>
-                      )}
-                      <TableCell>
-                        <Button
-                          size="small"
-                          startIcon={viewOnly ? <VisibilityIcon /> : <RateReviewIcon />}
-                          onClick={(event) => {
-                            event.stopPropagation();
-                            navigate(v.href);
-                          }}
+                        <TableCell
+                          sx={{ color: "text.primary", whiteSpace: "nowrap" }}
+                          title={shortHealthWorker && v.healthWorker ? v.healthWorker : undefined}
                         >
-                          {viewOnly ? "View" : "Review"}
-                        </Button>
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
+                          {v.healthWorker
+                            ? shortHealthWorker
+                              ? shortUsername(v.healthWorker, usernameSuffix)
+                              : v.healthWorker
+                            : "—"}
+                        </TableCell>
+                        {showModel && <TableCell sx={{ color: "text.primary" }}>{v.opinion || "—"}</TableCell>}
+                        {showModel && (
+                          <TableCell sx={{ whiteSpace: "nowrap" }}>
+                            <ModelResultBadge value={v.modelResult} />
+                          </TableCell>
+                        )}
+                        {showGroup && (
+                          <TableCell sx={{ whiteSpace: "nowrap" }}>
+                            <CategoryBadge value={v.group} />
+                          </TableCell>
+                        )}
+                        {queueMode && (
+                          <TableCell sx={{ color: "text.primary", whiteSpace: "nowrap" }}>
+                            <ReasonCell reason={v.reason} />
+                          </TableCell>
+                        )}
+                        {queueMode && (
+                          <TableCell sx={{ whiteSpace: "nowrap" }}>
+                            {v.hold && <HoldStatusBadge status={v.hold} usernameSuffix={usernameSuffix} />}
+                          </TableCell>
+                        )}
+                        {mode === "completed" && (
+                          <TableCell sx={{ color: "text.primary" }}>
+                            {v.reviewedOn ? format(parseISO(v.reviewedOn), "dd MMM yyyy") : "—"}
+                          </TableCell>
+                        )}
+                        {mode === "completed" && (
+                          <TableCell sx={{ color: "text.primary" }}>{v.reviewedBy || "—"}</TableCell>
+                        )}
+                        <TableCell>
+                          <Button
+                            size="small"
+                            startIcon={viewOnly ? <VisibilityIcon /> : <RateReviewIcon />}
+                            onClick={(event) => {
+                              event.stopPropagation();
+                              navigate(v.href);
+                            }}
+                          >
+                            {viewOnly ? "View" : "Review"}
+                          </Button>
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            </Box>
           )}
           {totalRows > PAGE_SIZE && (
             <TablePagination

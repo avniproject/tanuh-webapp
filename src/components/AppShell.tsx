@@ -6,8 +6,10 @@ import { isPhysician, isProgrammeManager } from "@/auth/roles";
 
 export function AppShell() {
   const navigate = useNavigate();
-  const { state, signOut } = useAuth();
   const { pathname } = useLocation();
+  const { state, signOut } = useAuth();
+  // The two lists use more of a wide screen; a case page keeps its narrower width.
+  const isList = pathname.startsWith("/pending") || pathname.startsWith("/completed");
   const username = state.status === "ready" ? state.user.name || state.user.username : "";
   // The Data Quality screens are wider than the review screens, and a user who may open both
   // gets a link to each in the header.
@@ -80,7 +82,7 @@ export function AppShell() {
         component="main"
         sx={{
           p: { xs: 1.5, sm: 3 },
-          maxWidth: dataQuality ? 1600 : 1200,
+          maxWidth: dataQuality || isList ? 1600 : 1200,
           mx: "auto",
           width: "100%",
           flexGrow: 1,
