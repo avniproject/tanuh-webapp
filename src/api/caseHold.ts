@@ -1,6 +1,7 @@
 import axios from "axios";
 import { addDays, endOfDay, startOfDay } from "date-fns";
 import { http } from "@/auth/httpClient";
+import { serverNow } from "@/auth/serverClock";
 import {
   ENCOUNTER_TYPE,
   IN_REVIEW_BY_CONCEPT,
@@ -23,7 +24,8 @@ export const HOLD_MS = 10 * 60 * 1000;
 
 export interface Hold {
   by: string;
-  // The browser clock when the physician took it. Only the fallback for takenAt.
+  // When the physician took it, by the server's clock as the browser reads it (serverClock.ts). Only the fallback for
+  // takenAt.
   since: string;
   // The review's server time audit["Last modified at"]; the hold write sets it.
   takenAt?: string;
@@ -185,7 +187,7 @@ async function putHold(
  * Takes a case for `viewer`: writes the hold on the case's review, creating the review first when a completed
  * screening has none. Nothing is written when the review is completed, cancelled, deleted or held by someone else.
  */
-export async function takeCase(row: QueueRow, viewer: string, now: Date = new Date()): Promise<TakeResult> {
+export async function takeCase(row: QueueRow, viewer: string, now: Date = serverNow()): Promise<TakeResult> {
   const hold: Hold = { by: viewer, since: now.toISOString() };
 
   if (row.kind === "booked") {

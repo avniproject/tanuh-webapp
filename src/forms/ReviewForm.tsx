@@ -40,6 +40,7 @@ import { getConcept, hasHighRiskModel, hasReviewQueue, type ConceptAnswer } from
 import { buildCreatedReviewBody, decideCreate, findReviewCreatedFrom } from "@/api/reviewCreate";
 import type { EncounterApiResponse, SubjectApiResponse } from "@/api/types";
 import { useAuth } from "@/auth/authContext";
+import { serverNow } from "@/auth/serverClock";
 import {
   ENCOUNTER_TYPE,
   ENCOUNTER_ID_CONCEPT,
@@ -108,7 +109,7 @@ interface LoadedState {
   // PE-249 (D3): whether the organisation has the review queue. Known before the page shows, so it never shows
   // editable and then locks.
   queueOn: boolean;
-  // When the page was read: the hold is judged against it, so it does not lock mid-review.
+  // When the page was read, by the server's clock (FW2): the hold is judged against it, so it does not lock mid-review.
   loadedAt: Date;
 }
 
@@ -166,7 +167,7 @@ async function loadReview(encounterUuid: string): Promise<CasePage> {
     provisionalDiagnosisAnswers: diagnosisConcept.answers,
     subTypeAnswers: subTypeConcept.answers,
     queueOn,
-    loadedAt: new Date(),
+    loadedAt: serverNow(),
   };
 }
 
@@ -196,7 +197,7 @@ async function loadCase(screeningUuid: string): Promise<CasePage> {
     provisionalDiagnosisAnswers: diagnosisConcept.answers,
     subTypeAnswers: subTypeConcept.answers,
     queueOn,
-    loadedAt: new Date(),
+    loadedAt: serverNow(),
   };
 }
 
@@ -414,7 +415,7 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
           listVisitsFor(review, ENCOUNTER_TYPE.physicianReviewForm.name),
         ]);
         current = fetched;
-        const decision = decideSubmit(loaded.queueOn, current, viewer, new Date());
+        const decision = decideSubmit(loaded.queueOn, current, viewer, serverNow());
         if (decision.kind === "refuse") {
           setSubmitError(
             "This review has already been completed by someone else. Go back and reopen it to see the recorded answers.",

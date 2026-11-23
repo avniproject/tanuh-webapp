@@ -6,6 +6,7 @@ import { getProgramEncountersWithLocation, readSubjects } from "@/api/programLis
 import { chooseGroup, heldByViewer, reviewedToday, waitingCounts, type GroupCounts } from "@/api/queueChoice";
 import { selectQueueRows, type QueueRow } from "@/api/queueRows";
 import type { SubjectApiResponse } from "@/api/types";
+import { serverNow } from "@/auth/serverClock";
 import { ENCOUNTER_TYPE, type QueueGroup } from "@/constants/tanuhConcepts";
 
 export interface ReviewsByPlace {
@@ -88,7 +89,8 @@ export async function loadPendingQueue(viewer: string): Promise<PendingQueue> {
     getCachedEncounters(ENCOUNTER_TYPE.physicianReviewForm.name),
   ]);
   const screenings = storedScreenings.filter((s) => !s.Voided);
-  const now = new Date();
+  // Holds are judged by the server's clock (FW2).
+  const now = serverNow();
   const candidates = selectQueueRows(booked.content, screenings, reviews, viewer, now);
   // With no places there is nothing to place, so no patient is read.
   const toRead =

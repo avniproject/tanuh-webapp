@@ -1,5 +1,6 @@
 import axios, { type AxiosInstance, type AxiosRequestConfig } from "axios";
 import type { IdpClient } from "./IdpClient";
+import { noteServerDate } from "./serverClock";
 
 // Empty baseURL means same-origin: in dev, Vite proxies upstream; in prod,
 // the bundle is served from the Avni origin itself.
@@ -9,6 +10,18 @@ export const http: AxiosInstance = axios.create({
   baseURL,
   withCredentials: true,
 });
+
+// PE-249 (FW2): every answer, a refusal included, tells the browser the server's clock (serverClock.ts).
+http.interceptors.response.use(
+  (response) => {
+    noteServerDate(response.headers?.["date"]);
+    return response;
+  },
+  (error: unknown) => {
+    if (axios.isAxiosError(error)) noteServerDate(error.response?.headers?.["date"]);
+    return Promise.reject(error);
+  },
+);
 
 let idpRef: IdpClient | null = null;
 
