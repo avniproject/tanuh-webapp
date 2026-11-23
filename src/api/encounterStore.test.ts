@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 import type { EncounterApiResponse } from "./types";
 import { trimForCache } from "./encounters";
 import {
+  AI_VERDICT_GROUP, AI_VERDICT_GROUP_CHILD, IN_REVIEW_BY_CONCEPT, IN_REVIEW_SINCE_CONCEPT, OCSHR_RESULT_CONCEPT,
+  RANDOM_SAMPLE_ID_CONCEPT,
   ANY_SUSPICIOUS_LESION_CONCEPT, MODEL_RESULT_CONCEPT, MODEL_RUN_TIME_CONCEPT, MODEL_STATUS_CONCEPT,
   MODEL_VERSION_CONCEPT, ORAL_IMAGE_GROUP, PLACE_OF_REFERRAL_CONCEPT, REVIEW_CATEGORY_CONCEPT, WORKER_OPINION,
 } from "@/constants/tanuhConcepts";
@@ -26,6 +28,39 @@ describe("trimForCache", () => {
 
     expect(trimmed.observations).toEqual(model);
     expect(trimmed.workerOpinion).toBe(WORKER_OPINION.suspicious);
+  });
+
+  it("trimForCache keeps the queue's values and derives the signals before dropping the photos", () => {
+    const screening = {
+      ID: "s2", "Subject ID": "p1", "Encounter type": "Oral Screening", Voided: false, "Encounter date time": "2026-10-06T10:00:00.000Z",
+      observations: {
+        [OCSHR_RESULT_CONCEPT.name]: "High Risk",
+        [RANDOM_SAMPLE_ID_CONCEPT.name]: 0.02,
+        [ORAL_IMAGE_GROUP.name]: [{ "Oral Image": "https://s3/1.jpg", [ANY_SUSPICIOUS_LESION_CONCEPT.name]: "Yes" }],
+        [AI_VERDICT_GROUP.name]: [{ [AI_VERDICT_GROUP_CHILD.verdict.name]: "Suspicious" }],
+      },
+      audit: { "Created at": "2026-10-06T10:00:05.000Z", "Last modified at": "2026-10-06T10:01:00.000Z", "Created by": "worker" },
+    } as unknown as EncounterApiResponse;
+
+    const trimmed = trimForCache(screening);
+
+    expect(trimmed.flwPositive).toBe(true);
+    expect(trimmed.edgeVerdict).toBe("Suspicious");
+    expect(trimmed.observations).toEqual({ [OCSHR_RESULT_CONCEPT.name]: "High Risk", [RANDOM_SAMPLE_ID_CONCEPT.name]: 0.02 });
+    expect(trimmed.observations).not.toHaveProperty(ORAL_IMAGE_GROUP.name);
+    expect(trimmed.observations).not.toHaveProperty(AI_VERDICT_GROUP.name);
+
+    const noVerdict = trimForCache({ ...screening, observations: {} } as unknown as EncounterApiResponse);
+    expect(noVerdict.edgeVerdict).toBeNull();
+
+    const review = {
+      ID: "r1", "Subject ID": "p1", "Encounter type": "Clinician Review", Voided: false,
+      observations: { [IN_REVIEW_BY_CONCEPT.name]: "dr.a", [IN_REVIEW_SINCE_CONCEPT.name]: "2026-10-07T09:00:00.000Z" },
+      audit: { "Last modified at": "2026-10-07T09:00:01.000Z" },
+    } as unknown as EncounterApiResponse;
+    const kept = trimForCache(review);
+    expect(kept.observations).toEqual(review.observations);
+    expect(kept.audit?.["Last modified at"]).toBe("2026-10-07T09:00:01.000Z");
   });
 });
 

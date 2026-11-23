@@ -1,7 +1,12 @@
 import axios from "axios";
 import { http } from "@/auth/httpClient";
 import {
+  EDGE_AI_VERDICT_CONCEPT,
   ENCOUNTER_ID_CONCEPT,
+  IN_REVIEW_BY_CONCEPT,
+  IN_REVIEW_SINCE_CONCEPT,
+  OCSHR_RESULT_CONCEPT,
+  RANDOM_SAMPLE_ID_CONCEPT,
   MODEL_RESULT_CONCEPT,
   MODEL_RUN_TIME_CONCEPT,
   MODEL_STATUS_CONCEPT,
@@ -18,6 +23,7 @@ import {
   readReviewCategory,
   type WorkerOpinion,
 } from "@/constants/tanuhConcepts";
+import { deriveEdgeVerdict, deriveFlwPositive, type EdgeVerdict } from "./caseSignals";
 import { getConcept, resetConceptCache } from "./concepts";
 import { idbDel, idbGet, idbSet } from "./idbStore";
 import { buildScheduledVisitRequest, type ScheduleEncounterBody } from "./scheduledVisit";
@@ -26,8 +32,13 @@ import type { MeResponse } from "@/auth/authContext";
 
 const EPOCH = "2000-01-01T00:00:00.000Z";
 
-// A stored row: the trimmed encounter, plus the worker's opinion worked out before the photo groups are dropped.
-export type CachedEncounter = EncounterApiResponse & { workerOpinion?: WorkerOpinion };
+// A stored row: the trimmed encounter, plus the worker's opinion and the queue's two signals worked out before the
+// photo groups are dropped. edgeVerdict is null when it was derived and there is none.
+export type CachedEncounter = EncounterApiResponse & {
+  workerOpinion?: WorkerOpinion;
+  flwPositive?: boolean;
+  edgeVerdict?: EdgeVerdict | null;
+};
 
 interface ListParams {
   encounterType: string;
@@ -363,11 +374,13 @@ export function sweepProgramEncounters(encounterType: string): Promise<Encounter
 // and AI Risk Assessment (PE-96); 3 = + the high-risk model's five values, Place of
 // referral and the worker's opinion (tanuh-webapp#4). PE-136 took Data Quality and AI
 // Risk Assessment out of 3 before it shipped; a smaller set needs no reload, since
-// nothing reads what a stored row carries beyond it. A mismatch below discards the
+// nothing reads what a stored row carries beyond it. 4 = + the review queue's values (PE-249): OCSHR Model Result,
+// Random Sample ID, Egde AI Final Verdict and the In review by / since marker, with the FLW and AI signals derived
+// before the photo groups go. A mismatch below discards the
 // persisted rows and the watermark, so the next load is one cold full sweep — the
 // intended migration.
 // ---------------------------------------------------------------------------
-const CACHE_SCHEMA = 3;
+const CACHE_SCHEMA = 4;
 const CACHED_OBS_REFS = [
   ENCOUNTER_ID_CONCEPT,
   REVIEWED_ORAL_SCREENING_CONCEPT,
@@ -377,6 +390,11 @@ const CACHED_OBS_REFS = [
   MODEL_RUN_TIME_CONCEPT,
   REVIEW_CATEGORY_CONCEPT,
   PLACE_OF_REFERRAL_CONCEPT,
+  OCSHR_RESULT_CONCEPT,
+  RANDOM_SAMPLE_ID_CONCEPT,
+  EDGE_AI_VERDICT_CONCEPT,
+  IN_REVIEW_BY_CONCEPT,
+  IN_REVIEW_SINCE_CONCEPT,
 ] as const;
 const CACHE_OVERLAP_MS = 5 * 60 * 1000;
 const CACHE_COLD_PAGE_CAP = 200; // ~20k rows; one-time cold-start guard
@@ -443,6 +461,8 @@ export function trimForCache(e: EncounterApiResponse): CachedEncounter {
     ...(e["Enrolment ID"] ? { "Enrolment ID": e["Enrolment ID"] } : {}),
     observations: obs,
     workerOpinion: deriveWorkerOpinion(e.observations ?? {}),
+    flwPositive: deriveFlwPositive(e.observations ?? {}),
+    edgeVerdict: deriveEdgeVerdict(e.observations ?? {}) ?? null,
     audit: {
       "Created at": e.audit?.["Created at"],
       "Created by": e.audit?.["Created by"],
