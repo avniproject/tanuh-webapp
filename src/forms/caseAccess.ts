@@ -1,11 +1,17 @@
 import { format, isValid, parseISO } from "date-fns";
 import { holdStatus, readHold, type ReviewLike } from "@/api/caseHold";
+import { classify, signalsOf } from "@/api/caseSignals";
 import { isCompleted } from "@/api/encounters";
 import type { EncounterApiResponse } from "@/api/types";
 import { IN_REVIEW_BY_CONCEPT, IN_REVIEW_SINCE_CONCEPT } from "@/constants/tanuhConcepts";
 
 // PE-249: what a case page says about who has the case, and whether the "In review by" hold lets the viewer edit it.
-export type CaseNotice = { kind: "mine"; since: string } | { kind: "other"; by: string } | { kind: "waiting" };
+// A waiting case's `reason` says why Review next case does not give it out (FW8): its OCSHR result is pending, or it is
+// in no review group.
+export type CaseNotice =
+  | { kind: "mine"; since: string }
+  | { kind: "other"; by: string }
+  | { kind: "waiting"; reason?: "ocshr-pending" | "no-group" };
 
 export interface CaseAccess {
   // The hold keeps the page read-only. Completed, legacy and unavailable cases are read-only for their own reasons.
@@ -13,24 +19,33 @@ export interface CaseAccess {
   notice: CaseNotice | null;
 }
 
+// A waiting case, with the reason the button does not give it out when there is one (FW8).
+function waiting(screening: { observations?: Record<string, unknown> } | undefined): CaseNotice {
+  if (!screening) return { kind: "waiting" };
+  const cls = classify(signalsOf(screening));
+  if (cls.ocshrPending) return { kind: "waiting", reason: "ocshr-pending" };
+  if (!cls.group) return { kind: "waiting", reason: "no-group" };
+  return { kind: "waiting" };
+}
+
 /**
  * With the review queue on (D3), a booked review is editable only by the physician whose hold is live on it; anyone
- * else sees who has it, or that it waits for Review next case. A screening's page with no review would create one on
- * submit, which would bypass the queue, so it waits too. Completed and unavailable cases say nothing new. With the
- * queue off the page is as before.
+ * else sees who has it, or that it waits for Review next case, or why the button does not give it out. A screening's
+ * page with no review would create one on submit, which would bypass the queue, so it waits too. Completed and
+ * unavailable cases say nothing new. With the queue off the page is as before.
  */
 export function decideCaseAccess(
   queueOn: boolean,
-  page: { review?: ReviewLike; unavailable?: string },
+  page: { review?: ReviewLike; unavailable?: string; screening?: { observations?: Record<string, unknown> } },
   viewer: string,
   now: Date,
 ): CaseAccess {
   if (!queueOn) return { locked: false, notice: null };
   if (page.unavailable) return { locked: true, notice: null };
-  if (!page.review) return { locked: true, notice: { kind: "waiting" } };
+  if (!page.review) return { locked: true, notice: waiting(page.screening) };
   if (page.review["Encounter date time"]) return { locked: true, notice: null };
   const status = holdStatus(page.review, viewer, now);
-  return { locked: status.kind !== "mine", notice: status };
+  return { locked: status.kind !== "mine", notice: status.kind === "waiting" ? waiting(page.screening) : status };
 }
 
 export function caseNoticeText(notice: CaseNotice): string {
@@ -42,6 +57,9 @@ export function caseNoticeText(notice: CaseNotice): string {
     case "other":
       return `In review by ${notice.by}`;
     case "waiting":
+      if (notice.reason === "ocshr-pending") return "Not handed out yet: this case's OCSHR result is pending.";
+      if (notice.reason === "no-group")
+        return "This case is not in a review group, so Review next case does not hand it out.";
       return "Waiting. Use Review next case on Pending Reviews to review it.";
   }
 }

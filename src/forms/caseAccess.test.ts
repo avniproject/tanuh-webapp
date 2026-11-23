@@ -113,6 +113,46 @@ describe("formToShow", () => {
   });
 });
 
+// FW8: a waiting case the button never gives says so, instead of sending the physician to the button.
+describe("a waiting case that Review next case does not give out", () => {
+  const screeningWith = (observations: Record<string, unknown>) => ({ ...booked, ID: "s1", "Encounter type": "Oral Screening", observations });
+  const ready = screeningWith({ "OCSHR Model Result": "High Risk" });
+  const pending = screeningWith({ "Egde AI Final Verdict": "Suspicious" });
+  const noGroup = screeningWith({ "OCSHR Model Result": "Not High Risk", "Egde AI Final Verdict": "Non-Suspicious" });
+
+  it("says the OCSHR result is pending when it is", () => {
+    const access = decideCaseAccess(true, { review: booked, screening: pending }, "dr.a", t0);
+    expect(access).toEqual({ locked: true, notice: { kind: "waiting", reason: "ocshr-pending" } });
+    expect(caseNoticeText(access.notice!)).toBe("Not handed out yet: this case's OCSHR result is pending.");
+  });
+
+  it("says the case is in no review group when it is not", () => {
+    const access = decideCaseAccess(true, { review: booked, screening: noGroup }, "dr.a", t0);
+    expect(access).toEqual({ locked: true, notice: { kind: "waiting", reason: "no-group" } });
+    expect(caseNoticeText(access.notice!)).toBe(
+      "This case is not in a review group, so Review next case does not hand it out.",
+    );
+  });
+
+  it("keeps the Waiting text for a case the button can give, and for a screening's page with no review", () => {
+    const access = decideCaseAccess(true, { review: booked, screening: ready }, "dr.a", t0);
+    expect(access).toEqual({ locked: true, notice: { kind: "waiting" } });
+    expect(caseNoticeText(access.notice!)).toBe("Waiting. Use Review next case on Pending Reviews to review it.");
+    expect(decideCaseAccess(true, { screening: pending }, "dr.a", t0).notice).toEqual({
+      kind: "waiting",
+      reason: "ocshr-pending",
+    });
+  });
+
+  it("leaves a held case's notice alone, and the page as today with the queue off", () => {
+    expect(decideCaseAccess(true, { review: heldBy("dr.b", t0), screening: pending }, "dr.a", later(1)).notice).toEqual({
+      kind: "other",
+      by: "dr.b",
+    });
+    expect(decideCaseAccess(false, { review: booked, screening: pending }, "dr.a", t0)).toEqual({ locked: false, notice: null });
+  });
+});
+
 describe("caseNoticeText", () => {
   it("gives the holder the time they took the case, in local time", () => {
     const since = new Date(2026, 10, 23, 9, 5).toISOString();
