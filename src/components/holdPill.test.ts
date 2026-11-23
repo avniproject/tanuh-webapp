@@ -1,6 +1,6 @@
 import { format, parseISO } from "date-fns";
 import { describe, expect, it } from "vitest";
-import { holdPill } from "./holdPill";
+import { holdPill, waitingIcon } from "./holdPill";
 
 const suffix = "tanuh_uat_local";
 
@@ -78,4 +78,12 @@ describe("holdPill", () => {
       expect(holdPill({ kind: "mine", since }, suffix, { withSince: false })).toEqual({ label: "In review by you" });
     });
   });
+});
+
+// Coordinator, 23 Nov: a never-scored case's pill must not look like waiting either.
+describe("waitingIcon, the mark on a waiting Status pill", () => {
+  it("is the open lock for a case waiting for review", () => expect(waitingIcon("review")).toBe("open-lock"));
+  it("is the clock while the OCSHR result is pending", () => expect(waitingIcon("ocshr")).toBe("clock"));
+  it("is the no-result mark when the OCSHR model will never score the case", () =>
+    expect(waitingIcon("no-ocshr")).toBe("no-result"));
 });

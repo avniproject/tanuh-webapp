@@ -12,6 +12,13 @@ const WAITING_LABEL: Record<WaitingFor, string> = {
   "no-ocshr": "No OCSHR result",
 };
 
+// The mark on a waiting Status pill: an open lock for a case Review next case can give out, a clock while its OCSHR
+// result is pending, and a no-result mark when the OCSHR model will never score it, so that pill does not look like
+// waiting either.
+export type WaitingIcon = "open-lock" | "clock" | "no-result";
+const WAITING_ICON: Record<WaitingFor, WaitingIcon> = { review: "open-lock", ocshr: "clock", "no-ocshr": "no-result" };
+export const waitingIcon = (waitingFor: WaitingFor): WaitingIcon => WAITING_ICON[waitingFor];
+
 // The Status pill's words (PE-249): another physician by their short name, with the full username, and the time they
 // took the case when it is known, in the tooltip. A case nobody holds reads as `waitingFor` says. `withSince` (the
 // case page's header, PE-250) adds the time the viewer took the case to their own hold; the list leaves it out.

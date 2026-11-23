@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { trimForCache } from "@/api/encounters";
 import type { EncounterApiResponse } from "@/api/types";
-import { listReason } from "./listReason";
+import { OCSHR_REASON_BADGE, listReason } from "./listReason";
 
 const screening = (observations: Record<string, unknown>) => ({ observations });
 
@@ -52,4 +52,11 @@ describe("listReason, the pending list's Reason and Status words", () => {
     expect(listReason("OCSHR pending", stored({ "OCSHR Model Error": "Bad image" })).reason).toBe("OCSHR not scored");
     expect(listReason("OCSHR pending", stored({ "OCSHR Call Made": "Yes" })).reason).toBe("OCSHR pending");
   });
+});
+
+describe("OCSHR_REASON_BADGE, the Reason pill for a case with no OCSHR result", () => {
+  it("keeps the hourglass and its test id for a pending case", () =>
+    expect(OCSHR_REASON_BADGE["OCSHR pending"]).toEqual({ testId: "ocshr-pending-badge", icon: "hourglass" }));
+  it("gives a never-scored case the no-result mark and its own test id", () =>
+    expect(OCSHR_REASON_BADGE["OCSHR not scored"]).toEqual({ testId: "ocshr-not-scored-badge", icon: "no-result" }));
 });

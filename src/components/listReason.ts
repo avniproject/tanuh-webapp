@@ -3,6 +3,14 @@ import type { QueueGroup } from "@/constants/tanuhConcepts";
 import type { WaitingFor } from "./holdPill";
 
 export type ListReason = QueueGroup | "OCSHR pending" | "OCSHR not scored";
+export type OcshrReason = Extract<ListReason, `OCSHR ${string}`>;
+
+// The Reason pill for a case with no OCSHR result: the hourglass while it is pending, a no-result mark when the model
+// will never score it, each with its own test id.
+export const OCSHR_REASON_BADGE: Record<OcshrReason, { testId: string; icon: "hourglass" | "no-result" }> = {
+  "OCSHR pending": { testId: "ocshr-pending-badge", icon: "hourglass" },
+  "OCSHR not scored": { testId: "ocshr-not-scored-badge", icon: "no-result" },
+};
 
 // The pending list's Reason and Status words for a queue row. rowReason calls every case with no OCSHR result "OCSHR
 // pending"; one the OCSHR model will never score (not sent, failed the quality check, or failed scoring) reads "OCSHR
