@@ -1,4 +1,11 @@
-import { PLACE_OF_REFERRAL_CONCEPT, QUEUE_GROUPS, WORKER_OPINION, type QueueGroup } from "@/constants/tanuhConcepts";
+import {
+  PLACE_OF_REFERRAL_CONCEPT,
+  QUEUE_GROUPS,
+  REVIEWED_ORAL_SCREENING_CONCEPT,
+  WORKER_OPINION,
+  readObs,
+  type QueueGroup,
+} from "@/constants/tanuhConcepts";
 import { inSubtree } from "./address";
 import { classify, isReady, signalsOf, type CaseClass } from "./caseSignals";
 import { holdStatus, type HoldStatus } from "./caseHold";
@@ -11,7 +18,9 @@ import {
 } from "./encounters";
 import type { EncounterWithLocation } from "./impl";
 
-// One row of the review queue (PE-249): a booked review, or a ready screening that has no review yet.
+// One row of the review queue (PE-249): a booked review, or a ready screening that the queue read has no booked
+// review for. A screening row's `stored` is the planned review made for it when a physician took it (FW7), which the
+// queue's booked read has not seen yet.
 export type QueueRow =
   | {
       kind: "booked";
@@ -20,7 +29,7 @@ export type QueueRow =
       screening?: CachedEncounter;
       cls?: CaseClass;
     }
-  | { kind: "screening"; screening: CachedEncounter; cls: CaseClass };
+  | { kind: "screening"; screening: CachedEncounter; cls: CaseClass; stored?: CachedEncounter };
 
 export type QueueGroupFilter = "all" | "flw" | "ai" | "safety";
 export type QueueSort = "group" | "date" | "opinion";
@@ -50,6 +59,16 @@ function reviewedScreeningIds(reviews: CachedEncounter[], screenings: CachedEnco
   }
   return ids;
 }
+
+// A review still open: not completed, cancelled or deleted.
+export const isPlanned = (r: CachedEncounter): boolean =>
+  !r["Encounter date time"] && !r["Cancel date time"] && !r.Voided;
+
+// The open review stamped with this screening, made when a physician took the case.
+const plannedReviewOf = (screening: CachedEncounter, reviews: CachedEncounter[]): CachedEncounter | undefined =>
+  reviews.find(
+    (r) => isPlanned(r) && readObs<string>(r.observations ?? {}, REVIEWED_ORAL_SCREENING_CONCEPT) === screening.ID,
+  );
 
 const createdOf = (row: Extract<QueueRow, { kind: "booked" }>): number => {
   const t = Date.parse(row.stored?.audit?.["Created at"] ?? row.review.earliestScheduledDate ?? "");
@@ -95,7 +114,7 @@ export function selectQueueRows(
   for (const s of liveScreenings) {
     if (paired.has(s.ID) || reviewed.has(s.ID)) continue;
     const cls = classify(signalsOf(s));
-    if (isReady(cls)) rows.push({ kind: "screening", screening: s, cls });
+    if (isReady(cls)) rows.push({ kind: "screening", screening: s, cls, stored: plannedReviewOf(s, reviews) });
   }
   return rows;
 }
@@ -116,8 +135,9 @@ export function rowReason(row: QueueRow): QueueGroup | "OCSHR pending" | undefin
   return row.cls.ocshrPending ? "OCSHR pending" : row.cls.group;
 }
 
+// Who holds the case, from its review: a booked row's own, or the one made for a screening row when it was taken.
 export function rowHoldStatus(row: QueueRow, viewer: string, now: Date): HoldStatus {
-  return row.kind === "booked" ? holdStatus(row.stored, viewer, now) : { kind: "waiting" };
+  return holdStatus(row.stored, viewer, now);
 }
 
 const groupRank = (row: QueueRow): number => {

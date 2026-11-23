@@ -1,6 +1,12 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { getCatchment, type Catchment } from "@/api/catchment";
-import { getCachedEncounters, invalidateEncounterSweeps, isProgramEncounter, type CachedEncounter } from "@/api/encounters";
+import {
+  getCachedEncounters,
+  invalidateCachedEncounters,
+  invalidateEncounterSweeps,
+  isProgramEncounter,
+  type CachedEncounter,
+} from "@/api/encounters";
 import {
   getAllEncountersWithLocation,
   getEncounterUuidsInLocation,
@@ -9,7 +15,7 @@ import {
 } from "@/api/impl";
 import { getProgramEncountersWithLocation, readSubjects } from "@/api/programList";
 import { chooseGroup, heldByViewer, reviewedToday, waitingCounts, type GroupCounts } from "@/api/queueChoice";
-import { selectQueueRows, type QueueRow } from "@/api/queueRows";
+import { isPlanned, selectQueueRows, type QueueRow } from "@/api/queueRows";
 import type { SubjectApiResponse } from "@/api/types";
 import { serverNow } from "@/auth/serverClock";
 import { ENCOUNTER_TYPE, type QueueGroup } from "@/constants/tanuhConcepts";
@@ -122,6 +128,11 @@ export interface PendingQueue {
   catchment: Catchment;
   // Every case in the physician's places, whatever the list's filters (D7).
   rows: QueueRow[];
+  // What the last full load read, kept so a light refresh can rebuild the rows from fresh reviews alone: the booked
+  // reviews in the physician's places, the live screenings, and the screenings it placed and listed.
+  booked: EncounterWithLocation[];
+  screenings: CachedEncounter[];
+  placed: ReadonlySet<string>;
   // The patients of the screening rows that are listed.
   subjects: ReadonlyMap<string, SubjectApiResponse>;
   // Cases left out because they could not be placed, or their patient could not be read.
@@ -178,18 +189,110 @@ export async function loadPendingQueue(viewer: string): Promise<PendingQueue> {
     subjects.set(row.screening["Subject ID"], subject);
     return true;
   });
-  const reviewed = reviewedToday(reviews, screenings, viewer, now);
-  const waiting = waitingCounts(rows, viewer, now);
   return {
     catchment,
     rows,
+    booked: booked.content,
+    screenings,
+    placed: new Set(rows.flatMap((r) => (r.kind === "screening" ? [r.screening.ID] : []))),
     subjects,
     unread,
-    waiting,
-    reviewed,
-    next: chooseGroup(reviewed, waiting),
-    held: heldByViewer(rows, viewer, now),
-    now,
+    ...counted(rows, reviews, screenings, viewer, now),
+  };
+}
+
+// What the tiles, Reviewed today, the Next case line and Continue case show for these rows.
+function counted(rows: QueueRow[], reviews: CachedEncounter[], screenings: CachedEncounter[], viewer: string, now: Date) {
+  const reviewed = reviewedToday(reviews, screenings, viewer, now);
+  const waiting = waitingCounts(rows, viewer, now);
+  return { waiting, reviewed, next: chooseGroup(reviewed, waiting), held: heldByViewer(rows, viewer, now), now };
+}
+
+/**
+ * The queue rebuilt from fresh reviews, without reading anything else again (PE-249 follow-up): who holds each case,
+ * judged at `now`, so a lapsed hold is waiting again; cases whose screening now has a completed review drop out, as
+ * does a booked review that is itself over, which a full load would no longer read; the tiles, Reviewed today, the
+ * next group and the case the viewer holds follow. Only cases the last full load placed are kept, so a refresh never
+ * lists a case nobody has placed; its patients, places and unread count stay as they were.
+ */
+export function refreshQueue(queue: PendingQueue, reviews: CachedEncounter[], viewer: string, now: Date): PendingQueue {
+  const byId = new Map(reviews.map((r) => [r.ID, r]));
+  const booked = queue.booked.filter((b) => {
+    const stored = byId.get(b.encounterUuid);
+    return !stored || isPlanned(stored);
+  });
+  const rows = selectQueueRows(booked, queue.screenings, reviews, viewer, now).filter(
+    (row) => row.kind === "booked" || queue.placed.has(row.screening.ID),
+  );
+  return { ...queue, rows, ...counted(rows, reviews, queue.screenings, viewer, now) };
+}
+
+/** A light refresh's read: only what changed in the review store since its last read, judged by the server's clock. */
+export async function refreshPendingQueue(queue: PendingQueue, viewer: string): Promise<PendingQueue> {
+  // Drops only the in-memory copy; the stored reviews and their watermark stay, so this reads the changes alone.
+  invalidateCachedEncounters();
+  const reviews = await getCachedEncounters(ENCOUNTER_TYPE.physicianReviewForm.name);
+  return refreshQueue(queue, reviews, viewer, serverNow());
+}
+
+// Shared by the full loads and the light refreshes of one pending tab.
+export interface RefreshGate {
+  // The latest read's ticket: only that read may land.
+  latest: number;
+  // Full loads and refreshes still reading.
+  reading: number;
+  // A Review next case press is running.
+  paused: boolean;
+  // The queue on screen; none while a full load runs, or after one failed.
+  queue: PendingQueue | null;
+}
+
+/**
+ * One light refresh, unless a full load, a press or another refresh is running, or no queue has loaded. It takes a
+ * ticket like a full load, so a full load or press that starts while it reads wins. A failed refresh leaves the queue
+ * on screen as it is.
+ */
+export async function lightRefresh(
+  gate: RefreshGate,
+  viewer: string,
+  land: (queue: PendingQueue) => void,
+): Promise<void> {
+  const queue = gate.queue;
+  if (!queue || gate.reading > 0 || gate.paused) return;
+  const ticket = ++gate.latest;
+  gate.reading += 1;
+  try {
+    const fresh = await refreshPendingQueue(queue, viewer);
+    if (ticket === gate.latest) land(fresh);
+  } catch (err) {
+    console.warn("Could not refresh the pending reviews", err);
+  } finally {
+    gate.reading -= 1;
+  }
+}
+
+export const QUEUE_REFRESH_MS = 15_000;
+
+/**
+ * Calls `refresh` every 15 seconds while the page is visible, and at once when it becomes visible again or the window
+ * regains focus. Gives the function that stops it.
+ */
+export function startQueueRefresh(
+  refresh: () => void,
+  doc: EventTarget & { visibilityState: string },
+  win: EventTarget,
+  everyMs: number = QUEUE_REFRESH_MS,
+): () => void {
+  const ifVisible = () => {
+    if (doc.visibilityState === "visible") refresh();
+  };
+  const timer = setInterval(ifVisible, everyMs);
+  doc.addEventListener("visibilitychange", ifVisible);
+  win.addEventListener("focus", ifVisible);
+  return () => {
+    clearInterval(timer);
+    doc.removeEventListener("visibilitychange", ifVisible);
+    win.removeEventListener("focus", ifVisible);
   };
 }
 
@@ -197,37 +300,66 @@ const messageOf = (err: unknown) => (err instanceof Error ? err.message : String
 
 /**
  * The queue for the pending tab, loaded when `enabled`. `reload` drops the encounter caches and reads everything
- * again, as the button does on every press; its errors go to the caller and leave the loaded queue in place.
+ * again, as the button does on every press; its errors go to the caller and leave the loaded queue in place. While the
+ * tab is open the queue is refreshed lightly from the review store (`lightRefresh`), except while `paused`, which the
+ * list sets for the length of a Review next case press.
  */
-export function usePendingQueue(enabled: boolean, viewer: string) {
+export function usePendingQueue(enabled: boolean, viewer: string, paused = false) {
   const [state, setState] = useState<{ data: PendingQueue | null; error: string | null }>({ data: null, error: null });
-  // Only the latest load may land; an older one finishing late is dropped.
-  const latest = useRef(0);
+  // Only the latest load or refresh may land; an older one finishing late is dropped.
+  const gate = useRef<RefreshGate>({ latest: 0, reading: 0, paused: false, queue: null });
+
+  useEffect(() => {
+    gate.current.paused = paused;
+  }, [paused]);
+
+  const land = useCallback((data: PendingQueue) => {
+    gate.current.queue = data;
+    setState({ data, error: null });
+  }, []);
 
   useEffect(() => {
     if (!enabled) return;
-    const ticket = ++latest.current;
+    const g = gate.current;
+    const ticket = ++g.latest;
+    g.queue = null;
+    g.reading += 1;
     setState({ data: null, error: null });
-    loadPendingQueue(viewer).then(
-      (data) => {
-        if (ticket === latest.current) setState({ data, error: null });
-      },
-      (err: unknown) => {
-        if (ticket === latest.current) setState({ data: null, error: messageOf(err) });
-      },
-    );
+    loadPendingQueue(viewer)
+      .then(
+        (data) => {
+          if (ticket === g.latest) land(data);
+        },
+        (err: unknown) => {
+          if (ticket === g.latest) setState({ data: null, error: messageOf(err) });
+        },
+      )
+      .finally(() => {
+        g.reading -= 1;
+      });
     return () => {
-      latest.current += 1;
+      g.latest += 1;
     };
-  }, [enabled, viewer]);
+  }, [enabled, viewer, land]);
+
+  useEffect(() => {
+    if (!enabled) return;
+    return startQueueRefresh(() => void lightRefresh(gate.current, viewer, land), document, window);
+  }, [enabled, viewer, land]);
 
   const reload = useCallback(async (): Promise<PendingQueue> => {
     invalidateEncounterSweeps();
-    const ticket = ++latest.current;
-    const data = await loadPendingQueue(viewer);
-    if (ticket === latest.current) setState({ data, error: null });
-    return data;
-  }, [viewer]);
+    const g = gate.current;
+    const ticket = ++g.latest;
+    g.reading += 1;
+    try {
+      const data = await loadPendingQueue(viewer);
+      if (ticket === g.latest) land(data);
+      return data;
+    } finally {
+      g.reading -= 1;
+    }
+  }, [viewer, land]);
 
   return { ...state, reload };
 }

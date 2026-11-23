@@ -1,10 +1,15 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Catchment } from "@/api/catchment";
 import type { CachedEncounter } from "@/api/encounters";
 import type { EncounterWithLocation } from "@/api/impl";
-import { queueRowKey } from "@/api/queueRows";
+import { queueRowKey, rowHoldStatus, type QueueRow } from "@/api/queueRows";
 import type { SubjectApiResponse } from "@/api/types";
-import { OCSHR_RESULT_CONCEPT } from "@/constants/tanuhConcepts";
+import {
+  IN_REVIEW_BY_CONCEPT,
+  IN_REVIEW_SINCE_CONCEPT,
+  OCSHR_RESULT_CONCEPT,
+  REVIEWED_ORAL_SCREENING_CONCEPT,
+} from "@/constants/tanuhConcepts";
 
 const m = vi.hoisted(() => ({
   getCatchment: vi.fn(),
@@ -13,11 +18,13 @@ const m = vi.hoisted(() => ({
   getProgram: vi.fn(),
   readSubjects: vi.fn(),
   lookup: vi.fn(),
+  invalidate: vi.fn(),
 }));
 vi.mock("@/api/catchment", () => ({ getCatchment: () => m.getCatchment() }));
 vi.mock("@/api/encounters", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/api/encounters")>()),
   getCachedEncounters: (type: string) => m.getCachedEncounters(type),
+  invalidateCachedEncounters: () => m.invalidate(),
   invalidateEncounterSweeps: vi.fn(),
 }));
 vi.mock("@/api/impl", async (importOriginal) => ({
@@ -30,7 +37,19 @@ vi.mock("@/api/programList", () => ({
   readSubjects: (ids: string[]) => m.readSubjects(ids),
 }));
 
-import { chosenPlace, loadPendingQueue, placeScreenings, placesToRead, readReviewsByPlace } from "./usePendingQueue";
+import {
+  chosenPlace,
+  lightRefresh,
+  loadPendingQueue,
+  placeScreenings,
+  placesToRead,
+  readReviewsByPlace,
+  refreshPendingQueue,
+  refreshQueue,
+  startQueueRefresh,
+  type PendingQueue,
+  type RefreshGate,
+} from "./usePendingQueue";
 
 const at = (minute: number) => new Date(Date.UTC(2026, 10, 23, 9, minute)).toISOString();
 
@@ -74,6 +93,7 @@ function given({
   booked = [] as EncounterWithLocation[],
   programRows = program([]),
   screenings = [] as CachedEncounter[],
+  reviews = [] as CachedEncounter[],
   patients = new Map<string, SubjectApiResponse | null>(),
   inPlaces = [] as string[],
   complete = true,
@@ -83,7 +103,7 @@ function given({
   m.getAll.mockResolvedValue(standalone(booked));
   m.getProgram.mockResolvedValue(programRows);
   m.getCachedEncounters.mockImplementation((type: string) =>
-    Promise.resolve(type === "Oral Screening" ? screenings : []),
+    Promise.resolve(type === "Oral Screening" ? screenings : reviews),
   );
   m.readSubjects.mockImplementation((ids: string[]) =>
     Promise.resolve(new Map(ids.map((id) => [id, patients.has(id) ? patients.get(id)! : null]))),
@@ -287,5 +307,254 @@ describe("placesToRead", () => {
   });
   it("reads nothing for a physician with no places", () => {
     expect(placesToRead(catchment([], []), "v1")).toEqual([]);
+  });
+});
+
+// PE-249 follow-up: the pending tab follows takes, releases, submits and lapsed holds without a reload.
+describe("refreshQueue", () => {
+  const LOAD = new Date(Date.UTC(2026, 10, 23, 9, 30));
+  beforeEach(() => {
+    Object.values(m).forEach((f) => f.mockReset());
+    vi.useFakeTimers();
+    vi.setSystemTime(LOAD);
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  // A review of patient `p` written at `minute`, open unless `done`.
+  const reviewOf = (id: string, p: string, minute: number, obs: Record<string, unknown>, done = false): CachedEncounter =>
+    ({
+      ID: id,
+      "Subject ID": p,
+      Voided: false,
+      "Encounter type": "Clinician Review Form",
+      "Encounter date time": done ? at(minute) : null,
+      "Cancel date time": null,
+      "Earliest scheduled date": at(0),
+      observations: obs,
+      audit: { "Created at": at(minute), "Last modified at": at(minute) },
+    }) as unknown as CachedEncounter;
+  const takenBy = (screeningId: string, by: string, minute: number) => ({
+    [REVIEWED_ORAL_SCREENING_CONCEPT.name]: screeningId,
+    [IN_REVIEW_BY_CONCEPT.name]: by,
+    [IN_REVIEW_SINCE_CONCEPT.name]: at(minute),
+  });
+  const rowOf = (q: PendingQueue, key: string) => q.rows.find((r) => queueRowKey(r) === key) as QueueRow;
+
+  // Two ready FLW-marked screenings in the physician's places, and nothing taken.
+  async function loaded(extra: Parameters<typeof given>[0] = {}) {
+    given({
+      screenings: [screening("s1", "p1", 1), screening("s2", "p2", 2)],
+      patients: new Map([
+        ["p1", patient("p1", "v1")],
+        ["p2", patient("p2", "v1")],
+      ]),
+      inPlaces: ["s1", "s2"],
+      ...extra,
+    });
+    return loadPendingQueue("dr.a");
+  }
+
+  it("shows a case another physician took through a new review, and frees it once the hold lapses", async () => {
+    const q = await loaded();
+    expect(q.waiting.total).toBe(2);
+    const reviews = [reviewOf("d1", "p1", 29, takenBy("s1", "dr.b", 29))];
+
+    const taken = refreshQueue(q, reviews, "dr.a", LOAD);
+    expect(rowHoldStatus(rowOf(taken, "s1"), "dr.a", taken.now)).toEqual({ kind: "other", by: "dr.b" });
+    expect(taken.waiting).toMatchObject({ "FLW marked": 1, total: 1 });
+    expect(taken.next).toBe("FLW marked");
+    expect(taken.now).toBe(LOAD);
+
+    // Ten minutes after the take, judged by the clock at the refresh.
+    const lapsed = refreshQueue(q, reviews, "dr.a", new Date(Date.UTC(2026, 10, 23, 9, 39)));
+    expect(rowHoldStatus(rowOf(lapsed, "s1"), "dr.a", lapsed.now)).toEqual({ kind: "waiting" });
+    expect(lapsed.waiting.total).toBe(2);
+  });
+
+  it("drops a case whose screening now has a completed review, counts it in Reviewed today, and keeps the load's patients, places and unread count", async () => {
+    const q = await loaded();
+    const done = reviewOf("d1", "p1", 29, takenBy("s1", "dr.a", 20), true);
+    const r = refreshQueue(q, [done], "dr.a", LOAD);
+    expect(r.rows.map(queueRowKey)).toEqual(["s2"]);
+    expect(r.reviewed["FLW marked"]).toBe(1);
+    expect(r.waiting.total).toBe(1);
+    expect(r.subjects).toBe(q.subjects);
+    expect(r.catchment).toBe(q.catchment);
+    expect(r.unread).toBe(q.unread);
+  });
+
+  it("gives the case the viewer holds as the one to continue, and no next group when nothing waits", async () => {
+    const q = await loaded();
+    expect(q.held).toBeUndefined();
+    const r = refreshQueue(
+      q,
+      [reviewOf("d1", "p1", 29, takenBy("s1", "dr.a", 29)), reviewOf("d2", "p2", 29, takenBy("s2", "dr.b", 29))],
+      "dr.a",
+      LOAD,
+    );
+    expect(r.held && queueRowKey(r.held)).toBe("s1");
+    expect(r.waiting.total).toBe(0);
+    expect(r.next).toBeNull();
+  });
+
+  it("adds no case the last full load did not place, and keeps its booked reviews", async () => {
+    // sDone was reviewed at the load, so it was never placed; its review is deleted before the refresh.
+    const doneReview = reviewOf("dDone", "pDone", 5, takenBy("sDone", "dr.b", 5), true);
+    const q = await loaded({
+      booked: [review("rA")],
+      screenings: [screening("s1", "p1", 1), screening("sOut", "pOut", 2), screening("sDone", "pDone", 3)],
+      reviews: [doneReview],
+      inPlaces: ["s1", "sDone"],
+    });
+    expect(q.rows.map(queueRowKey).sort()).toEqual(["rA", "s1"]);
+    const r = refreshQueue(q, [{ ...doneReview, Voided: true }], "dr.a", LOAD);
+    expect(r.rows.map(queueRowKey).sort()).toEqual(["rA", "s1"]);
+  });
+
+  // A full load reads only booked reviews still planned, so the refresh does not keep one that is over.
+  it("drops a booked review that is now completed, cancelled or deleted, and keeps one the store does not have", async () => {
+    const q = await loaded({ booked: [review("rDone"), review("rCancelled"), review("rDeleted"), review("rUnseen")] });
+    expect(q.rows.map(queueRowKey).sort()).toEqual(["rCancelled", "rDeleted", "rDone", "rUnseen", "s1", "s2"]);
+    const done = reviewOf("rDone", "pb-rDone", 29, {}, true);
+    const cancelled = { ...reviewOf("rCancelled", "pb-rCancelled", 29, {}), "Cancel date time": at(29) };
+    const deleted = { ...reviewOf("rDeleted", "pb-rDeleted", 29, {}), Voided: true };
+    const r = refreshQueue(q, [done, cancelled, deleted], "dr.a", LOAD);
+    expect(r.rows.map(queueRowKey).sort()).toEqual(["rUnseen", "s1", "s2"]);
+  });
+});
+
+describe("refreshPendingQueue", () => {
+  beforeEach(() => {
+    Object.values(m).forEach((f) => f.mockReset());
+  });
+
+  it("reads only the review store's delta: no booked reviews by place, no place lookups, no patients", async () => {
+    given({
+      booked: [review("rA")],
+      screenings: [screening("s1", "p1", 1)],
+      patients: new Map([["p1", patient("p1", "v1")]]),
+      inPlaces: ["s1"],
+    });
+    const q = await loadPendingQueue("dr.a");
+    Object.values(m).forEach((f) => f.mockClear());
+
+    const r = await refreshPendingQueue(q, "dr.a");
+    expect(m.invalidate).toHaveBeenCalledTimes(1);
+    expect(m.getCachedEncounters.mock.calls).toEqual([["Clinician Review Form"]]);
+    expect(m.invalidate.mock.invocationCallOrder[0]).toBeLessThan(m.getCachedEncounters.mock.invocationCallOrder[0]);
+    for (const read of [m.getCatchment, m.getAll, m.getProgram, m.lookup, m.readSubjects]) expect(read).not.toHaveBeenCalled();
+    expect(r.rows.map(queueRowKey).sort()).toEqual(["rA", "s1"]);
+  });
+});
+
+describe("lightRefresh", () => {
+  let queue: PendingQueue;
+  beforeEach(async () => {
+    Object.values(m).forEach((f) => f.mockReset());
+    given({ screenings: [screening("s1", "p1", 1)], patients: new Map([["p1", patient("p1", "v1")]]), inPlaces: ["s1"] });
+    queue = await loadPendingQueue("dr.a");
+    Object.values(m).forEach((f) => f.mockClear());
+  });
+  const gate = (over: Partial<RefreshGate> = {}): RefreshGate => ({ latest: 1, reading: 0, paused: false, queue, ...over });
+
+  it("lands the refreshed queue when nothing else is reading", async () => {
+    const g = gate();
+    const land = vi.fn();
+    await lightRefresh(g, "dr.a", land);
+    expect(land).toHaveBeenCalledTimes(1);
+    expect((land.mock.calls[0][0] as PendingQueue).rows.map(queueRowKey)).toEqual(["s1"]);
+    expect(g).toMatchObject({ latest: 2, reading: 0 });
+  });
+
+  it("does not run during a full load or a Review next case press, or before a queue has loaded", async () => {
+    const land = vi.fn();
+    for (const g of [gate({ reading: 1 }), gate({ paused: true }), gate({ queue: null })]) {
+      await lightRefresh(g, "dr.a", land);
+      expect(g.latest).toBe(1);
+    }
+    expect(m.getCachedEncounters).not.toHaveBeenCalled();
+    expect(land).not.toHaveBeenCalled();
+  });
+
+  it("gives way to a full load or press that starts while it reads", async () => {
+    let answer: (reviews: CachedEncounter[]) => void = () => {};
+    m.getCachedEncounters.mockReturnValue(new Promise<CachedEncounter[]>((resolve) => (answer = resolve)));
+    const g = gate();
+    const land = vi.fn();
+    const running = lightRefresh(g, "dr.a", land);
+    expect(g.reading).toBe(1);
+    // A second refresh while one is reading does nothing.
+    await lightRefresh(g, "dr.a", land);
+    expect(m.getCachedEncounters).toHaveBeenCalledTimes(1);
+    // A full load starts: it takes the next ticket.
+    g.latest += 1;
+    answer([]);
+    await running;
+    expect(land).not.toHaveBeenCalled();
+    expect(g.reading).toBe(0);
+  });
+
+  it("leaves the queue as it is when the read fails", async () => {
+    const warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+    m.getCachedEncounters.mockRejectedValue(new Error("offline"));
+    const g = gate();
+    const land = vi.fn();
+    await expect(lightRefresh(g, "dr.a", land)).resolves.toBeUndefined();
+    expect(land).not.toHaveBeenCalled();
+    expect(g.reading).toBe(0);
+    expect(warn).toHaveBeenCalled();
+    warn.mockRestore();
+  });
+});
+
+describe("startQueueRefresh", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+  const page = (visibilityState: string) => Object.assign(new EventTarget(), { visibilityState });
+
+  it("refreshes every 15 seconds while the page is visible, and not while it is hidden", () => {
+    const doc = page("visible");
+    const refresh = vi.fn();
+    const stop = startQueueRefresh(refresh, doc, new EventTarget());
+    vi.advanceTimersByTime(14_999);
+    expect(refresh).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(1);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    doc.visibilityState = "hidden";
+    vi.advanceTimersByTime(45_000);
+    expect(refresh).toHaveBeenCalledTimes(1);
+    stop();
+  });
+
+  it("refreshes at once when the page becomes visible again or the window regains focus", () => {
+    const doc = page("hidden");
+    const win = new EventTarget();
+    const refresh = vi.fn();
+    const stop = startQueueRefresh(refresh, doc, win);
+    doc.dispatchEvent(new Event("visibilitychange"));
+    expect(refresh).not.toHaveBeenCalled();
+    doc.visibilityState = "visible";
+    doc.dispatchEvent(new Event("visibilitychange"));
+    expect(refresh).toHaveBeenCalledTimes(1);
+    win.dispatchEvent(new Event("focus"));
+    expect(refresh).toHaveBeenCalledTimes(2);
+    stop();
+  });
+
+  it("stops when the tab is left", () => {
+    const doc = page("visible");
+    const win = new EventTarget();
+    const refresh = vi.fn();
+    startQueueRefresh(refresh, doc, win)();
+    vi.advanceTimersByTime(60_000);
+    doc.dispatchEvent(new Event("visibilitychange"));
+    win.dispatchEvent(new Event("focus"));
+    expect(refresh).not.toHaveBeenCalled();
   });
 });

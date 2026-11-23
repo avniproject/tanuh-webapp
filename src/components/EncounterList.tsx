@@ -86,7 +86,14 @@ import { LocationFilter } from "./LocationFilter";
 import { FacilityFilter } from "./FacilityFilter";
 import { NextCasePanel } from "./NextCasePanel";
 import { CategoryBadge, HoldStatusBadge, ModelResultBadge, QueueGroupBadge } from "./StatusBadge";
-import { chosenPlace, placeScreenings, placesToRead, readReviewsByPlace, usePendingQueue } from "./usePendingQueue";
+import {
+  chosenPlace,
+  placeScreenings,
+  placesToRead,
+  readReviewsByPlace,
+  usePendingQueue,
+  type PendingQueue,
+} from "./usePendingQueue";
 
 interface Props {
   mode: "pending" | "completed";
@@ -314,19 +321,22 @@ export function EncounterList({ mode }: Props) {
   const queueMode = mode === "pending" && queueOn === true;
   const pendingFromScreenings = mode === "pending" && queueOn === false && modelOn === true;
 
-  // PE-249: the queue's own read, unfiltered by the list's choices (D7): what the tiles count and the button takes.
-  const queue = usePendingQueue(queueMode, viewer);
-  const queueData = queue.data;
-  const reloadQueue = queue.reload;
-
   // Review next case. Every press reads the queue again from the server; the viewer's own case is continued, else the
   // oldest waiting case of the group they have reviewed least is taken, moving on past any case someone else took
-  // first. When nothing can be taken the panel says nothing is waiting, until the next press. The button is never
-  // disabled for want of cases: the tab does not re-read on its own, so a press is how new cases and lapsed holds show.
+  // first. When nothing can be taken the panel says nothing is waiting, until the queue on screen changes. The button
+  // is never disabled for want of cases: the tab's light refresh shows takes, releases and lapsed holds, but only a full
+  // read, which a press makes, finds new cases.
   const filtered = !!(patientLocationUuid || referralUuid);
   const [taking, setTaking] = useState(false);
   const [takeFailed, setTakeFailed] = useState(false);
-  const [exhausted, setExhausted] = useState(false);
+  // The queue a press that took nothing left on screen; a refresh that lands after it replaces it.
+  const [exhaustedOn, setExhaustedOn] = useState<PendingQueue | null>(null);
+
+  // PE-249: the queue's own read, unfiltered by the list's choices (D7): what the tiles count and the button takes.
+  // It refreshes itself while the tab is open, except during a press.
+  const queue = usePendingQueue(queueMode, viewer, taking);
+  const queueData = queue.data;
+  const reloadQueue = queue.reload;
   // A press still running when the physician leaves the list must not navigate, or set state, afterwards (FW4).
   const mounted = useRef(true);
   useEffect(() => {
@@ -338,7 +348,7 @@ export function EncounterList({ mode }: Props) {
   const handleTake = useCallback(async () => {
     setTaking(true);
     setTakeFailed(false);
-    setExhausted(false);
+    setExhaustedOn(null);
     try {
       const fresh = await reloadQueue();
       if (!mounted.current) return;
@@ -362,11 +372,13 @@ export function EncounterList({ mode }: Props) {
       }
       // Nothing could be taken. The fresh read already shows on the tiles and in Reviewed today; when cases were tried
       // and refused, read again so they show who holds them, and the list follows.
-      setExhausted(true);
+      setExhaustedOn(fresh);
       if (tried > 0) {
-        await reloadQueue();
+        const after = await reloadQueue();
+        if (!mounted.current) return;
+        setExhaustedOn(after);
         // With a place or referral facility chosen the list narrows booked reviews by its own read, so it is read too.
-        if (filtered && mounted.current) setListVersion((v) => v + 1);
+        if (filtered) setListVersion((v) => v + 1);
       }
     } catch (err) {
       // The physician sees a plain message; the detail goes to the console (FW15).
@@ -684,7 +696,7 @@ export function EncounterList({ mode }: Props) {
         {queueMode && queueData && (
           <NextCasePanel
             reviewed={queueData.reviewed}
-            next={exhausted ? null : queueData.next}
+            next={exhaustedOn === queueData ? null : queueData.next}
             held={heldView ? { caseId: heldView.caseId ?? null } : null}
             busy={taking}
             failed={takeFailed}

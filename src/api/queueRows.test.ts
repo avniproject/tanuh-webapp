@@ -104,6 +104,31 @@ describe("selectQueueRows", () => {
     s.Voided = true;
     expect(selectQueueRows([], [s], [])).toEqual([]);
   });
+
+  // A case another physician took through a review created for it shows as theirs before the next full load.
+  it("gives a screening row the planned review stamped with its screening, and the row shows that review's hold", () => {
+    const taken = planned("d1", "p1", 20, {
+      [REVIEWED_ORAL_SCREENING_CONCEPT.name]: "s1",
+      [IN_REVIEW_BY_CONCEPT.name]: "dr-a",
+      [IN_REVIEW_SINCE_CONCEPT.name]: t(28),
+    });
+    taken.audit = { "Created at": t(20), "Last modified at": t(28) };
+    const rows = selectQueueRows([], [ready("s1", "p1", 1)], [taken], "dr-b", NOW);
+    expect(rows).toHaveLength(1);
+    expect(rows[0]).toMatchObject({ kind: "screening", stored: taken });
+    expect(rowHoldStatus(rows[0], "dr-b", NOW)).toEqual({ kind: "other", by: "dr-a" });
+    expect(rowHoldStatus(rows[0], "dr-a", NOW)).toEqual({ kind: "mine", since: t(28) });
+  });
+  it("gives a screening row no review that is cancelled, deleted, unstamped or stamped with another screening", () => {
+    const stamped = (id: string, stamp: string) => planned(id, "p1", 20, { [REVIEWED_ORAL_SCREENING_CONCEPT.name]: stamp });
+    const cancelled = stamped("c", "s1");
+    cancelled["Cancel date time"] = t(21);
+    const deleted = stamped("v", "s1");
+    deleted.Voided = true;
+    const rows = selectQueueRows([], [ready("s1", "p1", 1)], [cancelled, deleted, stamped("o", "s2"), planned("u", "p1", 20)]);
+    expect(keys(rows)).toEqual(["s1"]);
+    expect(rows[0].stored).toBeUndefined();
+  });
 });
 
 describe("row helpers", () => {
