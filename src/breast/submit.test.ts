@@ -126,6 +126,7 @@ describe("submitClinicianForm", () => {
   const deps = (over: Partial<SubmitDeps> = {}): SubmitDeps => ({
     create: vi.fn().mockResolvedValue(enc({ ID: "saved" })),
     patch: vi.fn().mockResolvedValue(enc({ ID: "saved" })),
+    findSubmitted: vi.fn().mockResolvedValue(null),
     schedule: vi.fn().mockResolvedValue(undefined),
     onSaved: vi.fn(),
     ...over,
@@ -139,6 +140,18 @@ describe("submitClinicianForm", () => {
     expect(d.patch).not.toHaveBeenCalled();
     expect(d.onSaved).toHaveBeenCalledTimes(1);
     expect(d.schedule).not.toHaveBeenCalled();
+  });
+
+  it("refuses to create over a form someone has submitted since the page was opened", async () => {
+    const d = deps({ findSubmitted: vi.fn().mockResolvedValue(enc({ ID: "theirs", "Encounter date time": "2026-11-22T00:00:00.000Z" })) });
+    const result = await submitClinicianForm(input(), d);
+    expect(result).toEqual({
+      ok: false,
+      stale: true,
+      message: "This form has been submitted for her since you opened this page, in another tab or by a colleague. Nothing was saved. Your answers are kept as a draft; the page now shows what is in Avni.",
+    });
+    expect(d.create).not.toHaveBeenCalled();
+    expect(d.onSaved).not.toHaveBeenCalled();
   });
 
   it("updates an existing visit through the partial update, never the full replace", async () => {

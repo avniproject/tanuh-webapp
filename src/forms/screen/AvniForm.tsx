@@ -14,6 +14,7 @@ interface Props {
   draft: VisitDraft;
   initialAnswers: Answers;
   places: PlaceOption[];
+  placesFailed: boolean;
   submitLabel: string;
   /** Under the progress bar: "Draft saved just now", "Submitted to Avni", … */
   savedNote: string | null;
@@ -100,6 +101,7 @@ export function AvniForm({
   draft,
   initialAnswers,
   places,
+  placesFailed,
   submitLabel,
   savedNote,
   readOnly,
@@ -159,6 +161,7 @@ export function AvniForm({
         status={view.statuses.get(statusKey(element.uuid, row))}
         disabled={readOnly || submitting}
         places={places}
+        placesFailed={placesFailed}
         required={attempted && missingKeys.has(statusKey(element.uuid, row))}
         onChange={(v) => (group ? setRow(group, row!, element.concept.uuid, v) : set(element.concept.uuid, v))}
       />

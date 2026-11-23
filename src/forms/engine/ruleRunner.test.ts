@@ -56,7 +56,7 @@ describe("runFormRules on the Breast Cancer Risk Assessment form", () => {
     expect(st.value as number).toBeGreaterThan(40);
   });
 
-  it("leaves a question out when its rule throws, and still answers for the others", () => {
+  it("shows a question whose rule throws, flagged, as Avni's own apps do, and still answers for the others", () => {
     const broken = {
       ...risk,
       pages: risk.pages.map((p) => ({
@@ -64,9 +64,12 @@ describe("runFormRules on the Breast Cancer Risk Assessment form", () => {
         elements: p.elements.map((e) => (e.uuid === cycles.uuid ? { ...e, rule: "({params}) => { throw new Error('boom'); }" } : e)),
       })),
     };
-    const st = runFormRules(broken, {}, subject(menopause("No")), draft);
-    expect(isVisible(st, cycles)).toBe(false);
+    // The screening says the question does not apply; with its rule broken it must not vanish, or a
+    // mandatory question could be skipped without anyone knowing.
+    const st = runFormRules(broken, {}, subject(menopause("Yes")), draft);
+    expect(isVisible(st, cycles)).toBe(true);
+    expect(st.get(cycles.uuid)?.failed).toBe(true);
     expect(st.size).toBeGreaterThan(50);
-    expect(isVisible(st, allElements(risk).find((e) => !e.rule)!)).toBe(true);
+    expect(st.get(allElements(risk).find((e) => !e.rule)!.uuid)?.failed).toBeUndefined();
   });
 });

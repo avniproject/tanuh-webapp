@@ -20,6 +20,8 @@ export interface FieldProps {
   disabled: boolean;
   /** Places a Location question offers. */
   places: PlaceOption[];
+  /** The list of places could not be read from Avni. */
+  placesFailed: boolean;
   /** Shown under the control: the question was left unanswered at a submit attempt. */
   required: boolean;
   id: string;
@@ -212,7 +214,7 @@ function DateField({ value, onChange, disabled, id }: FieldProps) {
   );
 }
 
-function PlaceField({ value, onChange, disabled, id, places }: FieldProps) {
+function PlaceField({ value, onChange, disabled, id, places, placesFailed }: FieldProps) {
   const known = typeof value === "string" && places.some((p) => p.uuid === value);
   return (
     <Box>
@@ -233,7 +235,9 @@ function PlaceField({ value, onChange, disabled, id, places }: FieldProps) {
       </Box>
       {places.length === 0 && (
         <Typography sx={{ mt: 0.5, fontFamily: CR.font, fontSize: 13, color: CR.textSecondary }}>
-          No hospital is listed in your area in Avni, so this cannot be chosen here.
+          {placesFailed
+            ? "The list of hospitals could not be loaded, so this cannot be chosen now. Reload to try again."
+            : "No hospital is listed in your area in Avni, so this cannot be chosen here."}
         </Typography>
       )}
     </Box>
@@ -319,6 +323,11 @@ export function Field(props: FieldProps) {
       {fromScreening && (
         <Typography sx={{ mb: 0.75, fontFamily: CR.font, fontSize: 13, color: CR.textSecondary }}>
           Asked because of an answer given at screening.
+        </Typography>
+      )}
+      {status?.failed && (
+        <Typography role="status" sx={{ mb: 0.75, fontFamily: CR.font, fontSize: 13, color: "#8a5a00" }}>
+          This question's rule could not be run, so it is shown in case it applies. Tell your administrator.
         </Typography>
       )}
       <Control {...props} />

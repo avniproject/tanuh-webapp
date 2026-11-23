@@ -62,6 +62,13 @@ describe("drafts", () => {
     expect(s.getItem("unrelated")).toBe("kept");
   });
 
+  it("says whether the draft was really kept, so the screen never claims a save that failed", () => {
+    const s = memoryStorage();
+    expect(saveDraft(s, me, "scr-1", "assessment", { c1: "a1" })).toBe(true);
+    const full: Storage = { ...s, setItem: () => { throw new Error("QuotaExceededError"); } };
+    expect(saveDraft(full, me, "scr-1", "assessment", { c1: "a2" })).toBe(false);
+  });
+
   it("treats a damaged entry as no draft", () => {
     const s = memoryStorage();
     saveDraft(s, me, "scr-1", "assessment", { c1: "a1" });

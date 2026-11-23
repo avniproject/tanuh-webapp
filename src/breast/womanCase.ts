@@ -24,6 +24,8 @@ export interface WomanCase {
   /** She has been screened again since; the list shows that later screening. */
   newerScreening: boolean;
   places: PlaceOption[];
+  /** The hospital list could not be read, as against being empty. */
+  placesFailed: boolean;
 }
 
 const KEYS: VisitKey[] = ["screening", "assessment", "clinician"];
@@ -31,7 +33,7 @@ const KEYS: VisitKey[] = ["screening", "assessment", "clinician"];
 // Hospitals and centres, as against the places people live in.
 const isFacility = (type: string): boolean => /hospital|centre|center/i.test(type) && !/public health|sub cent/i.test(type);
 
-async function facilities(): Promise<PlaceOption[]> {
+async function facilities(): Promise<PlaceOption[] | null> {
   try {
     const { nodes } = await getCatchmentLocations();
     return nodes
@@ -39,7 +41,7 @@ async function facilities(): Promise<PlaceOption[]> {
       .map((n) => ({ uuid: n.uuid, name: n.name, type: n.type }))
       .sort((a, b) => a.name.localeCompare(b.name));
   } catch {
-    return []; // the form says no hospital is listed; every other question still works
+    return null; // the form says the list could not be loaded; every other question still works
   }
 }
 
@@ -74,7 +76,8 @@ export async function loadWomanCase(screeningUuid: string): Promise<WomanCase> {
     newerScreening: visits.screening.some(
       (s) => s["Encounter date time"] != null && s["Encounter date time"] > screening["Encounter date time"]!,
     ),
-    places,
+    places: places ?? [],
+    placesFailed: places === null,
   };
 }
 

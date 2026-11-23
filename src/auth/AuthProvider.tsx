@@ -97,7 +97,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       clearCatchmentCache();
       clearEncounterCacheScope();
       clearListStates(window.sessionStorage); // sessionStorage survives the reload below
-      clearDrafts(window.localStorage); // an unfinished breast form stays on no shared computer
+      clearDrafts(window.localStorage); // unfinished breast forms are dropped on an explicit sign-out (not when a session runs out)
       await state.idp.signOut();
       setState({ status: "loading" });
       window.location.reload();

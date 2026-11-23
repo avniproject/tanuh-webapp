@@ -2,10 +2,10 @@ import { Box, ButtonBase, CircularProgress, Stack, Typography } from "@mui/mater
 import { format } from "date-fns";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link as RouterLink, useParams } from "react-router-dom";
-import { invalidateEncounterSweeps, patchEncounter, scheduleEncounter, submitEncounter } from "@/api/encounters";
+import { invalidateEncounterSweeps, listEncounters, patchEncounter, scheduleEncounter, submitEncounter } from "@/api/encounters";
 import { useAuth } from "@/auth/authContext";
 import { BREAST_OBS, BREAST_VISITS, CLINICIAN_FORMS, type ClinicianFormKey } from "@/breast/breastConcepts";
-import { placeName, type FormStatus } from "@/breast/breastList";
+import { formVisitFor, placeName, type FormStatus } from "@/breast/breastList";
 import { deleteDraft, loadDraft, saveDraft, type DraftScope } from "@/breast/drafts";
 import { submitClinicianForm } from "@/breast/submit";
 import { Card, FormStatusPill, Pill, PillButton, RiskPill } from "@/breast/ui";
@@ -99,8 +99,8 @@ export function BreastWomanPage() {
   // the clinician left the page or changed step within the delay.
   const keepDraft = useCallback(
     (formKey: ClinicianFormKey, answers: Answers) => {
-      saveDraft(window.localStorage, scope, screeningUuid, formKey, answers);
-      setDraftSaved((d) => (d[formKey] ? d : { ...d, [formKey]: new Date().toISOString() }));
+      const kept = saveDraft(window.localStorage, scope, screeningUuid, formKey, answers);
+      setDraftSaved((d) => (!!d[formKey] === kept ? d : { ...d, [formKey]: kept ? new Date().toISOString() : "" }));
     },
     [scope, screeningUuid],
   );
@@ -165,6 +165,14 @@ export function BreastWomanPage() {
       },
       {
         create: (body) => submitEncounter(null, body),
+        findSubmitted: async () => {
+          const now = await listEncounters({
+            encounterType: BREAST_VISITS[formKey].name,
+            subjectId: woman.subject.ID,
+            size: 100,
+          });
+          return formVisitFor(woman.screening, now.content);
+        },
         patch: patchEncounter,
         schedule: scheduleEncounter,
         onSaved: () => {
@@ -177,6 +185,11 @@ export function BreastWomanPage() {
     setSubmitting(false);
     if (!result.ok) {
       setError(result.message);
+      if (result.stale) {
+        drafts.current = {};
+        setWoman(null);
+        setReload((n) => n + 1);
+      }
       return;
     }
     setNotice(result.warning ?? `${CLINICIAN_FORMS[formKey].title} saved to Avni.`);
@@ -207,6 +220,7 @@ export function BreastWomanPage() {
         draft={visit}
         initialAnswers={kept?.answers ?? visitAnswers(submitted, registry)}
         places={woman.places}
+        placesFailed={woman.placesFailed}
         submitLabel={submitted ? "Update in Avni" : CLINICIAN_FORMS[formKey].submit}
         savedNote={
           submitted

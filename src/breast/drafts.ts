@@ -1,6 +1,8 @@
 // A clinician's unfinished form, kept in this browser only. Avni has no server-side draft, so a
 // draft does not follow the clinician to another computer. It is scoped to the organisation and
 // the clinician, dropped when the form is submitted, and all drafts are dropped on sign-out.
+// Closing the browser or a session running out does not drop them: the same clinician signing in
+// again finds them, and so would anyone else using that browser profile with that login.
 import type { Answers } from "@/forms/engine/answers";
 import { isBlank } from "@/forms/engine/answers";
 import type { ClinicianFormKey } from "./breastConcepts";
@@ -37,17 +39,19 @@ export function saveDraft(
   screeningUuid: string,
   form: ClinicianFormKey,
   answers: Answers,
-): void {
+): boolean {
   const k = key(scope, screeningUuid, form);
   try {
     if (!hasAnswer(answers)) {
       storage.removeItem(k);
-      return;
+      return false;
     }
     const draft: Draft = { answers, savedAt: new Date().toISOString() };
     storage.setItem(k, JSON.stringify(draft));
+    return true;
   } catch {
     // Storage full or switched off: the form still works, it just is not kept across a reload.
+    return false;
   }
 }
 

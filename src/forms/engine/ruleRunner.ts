@@ -38,7 +38,7 @@ export interface ElementStatus {
   /** Answer uuids the rule takes off the list. */
   hiddenAnswers: string[];
   errors: string[];
-  /** The question's rule threw, so it is left out without the form having decided to hide it. */
+  /** The question's rule threw: it is shown, and the screen says its rule could not be run. */
   failed?: boolean;
 }
 
@@ -152,10 +152,11 @@ function runOne(element: ElementDef, entity: any, cache: Map<string, any>, row?:
       errors: (st.validationErrors ?? []).map((m: unknown) => String(m)),
     };
   } catch (e) {
-    // As in Avni's own data entry app: a rule that fails leaves its question out, and the rest of
-    // the form goes on working.
+    // As in Avni's own apps (avni-webapp RuleEvaluationService.js: a failed rule returns null and the
+    // question keeps its default, visible): the question stays on the form and stays mandatory. It
+    // is flagged so the screen can say so. Hiding it would let an incomplete form be submitted.
     console.error(`Rule failed for "${element.name}"`, e);
-    return { ...HIDDEN, failed: true };
+    return { ...SHOWN, failed: true };
   }
 }
 

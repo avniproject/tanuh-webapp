@@ -36,12 +36,17 @@ export interface SubmitInput {
 export interface SubmitDeps {
   create: (body: UpsertEncounterBody) => Promise<EncounterApiResponse>;
   patch: (uuid: string, body: PatchEncounterBody) => Promise<EncounterApiResponse>;
+  /** Read from Avni now: the submitted visit of this form that answers the screening, if any. */
+  findSubmitted: () => Promise<EncounterApiResponse | null>;
   schedule: (visit: ScheduleEncounterBody) => Promise<void>;
   /** Called once the form is in Avni: drop the draft, refresh the lists. */
   onSaved: () => void;
 }
 
-export type SubmitResult = { ok: true; warning: string | null } | { ok: false; message: string };
+export type SubmitResult =
+  | { ok: true; warning: string | null }
+  /** `stale`: Avni holds a submission the page did not know of; the page should reload. */
+  | { ok: false; message: string; stale?: boolean };
 
 export type Submission =
   | { kind: "create"; body: UpsertEncounterBody }
@@ -118,6 +123,16 @@ function failure(err: unknown): string {
 export async function submitClinicianForm(input: SubmitInput, deps: SubmitDeps): Promise<SubmitResult> {
   const submission = buildSubmission(input);
   try {
+    // A create is keyed on the screening, so it would replace a submission made after this page
+    // was opened (another tab, a colleague). Look first, and refuse, as the oral review does.
+    if (submission.kind === "create" && (await deps.findSubmitted())) {
+      return {
+        ok: false,
+        stale: true,
+        message:
+          "This form has been submitted for her since you opened this page, in another tab or by a colleague. Nothing was saved. Your answers are kept as a draft; the page now shows what is in Avni.",
+      };
+    }
     if (submission.kind === "create") await deps.create(submission.body);
     else await deps.patch(submission.uuid, submission.body);
   } catch (err) {
