@@ -5,7 +5,11 @@ import {
   ENCOUNTER_ID_CONCEPT,
   IN_REVIEW_BY_CONCEPT,
   IN_REVIEW_SINCE_CONCEPT,
+  OCSHR_CALL_MADE_CONCEPT,
+  OCSHR_ERROR_CONCEPT,
   OCSHR_RESULT_CONCEPT,
+  OCSHR_STATUS_CONCEPT,
+  QC_STATUS_CONCEPT,
   RANDOM_SAMPLE_ID_CONCEPT,
   MODEL_RESULT_CONCEPT,
   MODEL_RUN_TIME_CONCEPT,
@@ -393,11 +397,12 @@ export function sweepProgramEncounters(encounterType: string): Promise<Encounter
 // Risk Assessment out of 3 before it shipped; a smaller set needs no reload, since
 // nothing reads what a stored row carries beyond it. 4 = + the review queue's values (PE-249): OCSHR Model Result,
 // Random Sample ID, Egde AI Final Verdict and the In review by / since marker, with the FLW and AI signals derived
-// before the photo groups go. A mismatch below discards the
+// before the photo groups go. 5 = + OCSHR Call Made, OCSHR Model Status, OCSHR Model Error and QC status (PE-250), so
+// the list can tell a case the OCSHR model will never score from one still pending. A mismatch below discards the
 // persisted rows and the watermark, so the next load is one cold full sweep — the
 // intended migration.
 // ---------------------------------------------------------------------------
-const CACHE_SCHEMA = 4;
+const CACHE_SCHEMA = 5;
 const CACHED_OBS_REFS = [
   ENCOUNTER_ID_CONCEPT,
   REVIEWED_ORAL_SCREENING_CONCEPT,
@@ -412,6 +417,10 @@ const CACHED_OBS_REFS = [
   EDGE_AI_VERDICT_CONCEPT,
   IN_REVIEW_BY_CONCEPT,
   IN_REVIEW_SINCE_CONCEPT,
+  OCSHR_CALL_MADE_CONCEPT,
+  OCSHR_STATUS_CONCEPT,
+  OCSHR_ERROR_CONCEPT,
+  QC_STATUS_CONCEPT,
 ] as const;
 const CACHE_OVERLAP_MS = 5 * 60 * 1000;
 const CACHE_COLD_PAGE_CAP = 200; // ~20k rows; one-time cold-start guard

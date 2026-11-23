@@ -76,7 +76,6 @@ import {
   REVIEW_CONCEPTS,
   readModelResult,
   readObs,
-  type QueueGroup,
 } from "@/constants/tanuhConcepts";
 import { RISK } from "@/forms/diagnosisMapping";
 import { useAsync } from "@/hooks/useAsync";
@@ -85,6 +84,8 @@ import { shortUsername } from "@/auth/username";
 import { LocationFilter } from "./LocationFilter";
 import { FacilityFilter } from "./FacilityFilter";
 import { NextCasePanel } from "./NextCasePanel";
+import type { WaitingFor } from "./holdPill";
+import { listReason, type ListReason } from "./listReason";
 import { CategoryBadge, HoldStatusBadge, ModelResultBadge, OcshrPendingBadge, QueueGroupBadge } from "./StatusBadge";
 import { chosenPlace, placeScreenings, placesToRead, readReviewsByPlace, usePendingQueue } from "./usePendingQueue";
 
@@ -161,8 +162,10 @@ interface RowView {
   group?: string;
   reviewedOn?: string | null;
   reviewedBy?: string | null;
-  // PE-249: why the case is in the queue, and who is working on it.
-  reason?: QueueGroup | "OCSHR pending";
+  // PE-249: why the case is in the queue, and who is working on it. `waitingFor` gives the Status pill's words when
+  // nobody has the case.
+  reason?: ListReason;
+  waitingFor?: WaitingFor;
   hold?: HoldStatus;
 }
 
@@ -226,7 +229,7 @@ function queueRowView(row: QueueRow, subject: SubjectApiResponse | undefined, vi
     healthWorker: screening?.audit?.["Created by"],
     opinion: screening?.workerOpinion,
     modelResult: screening ? readModelResult(obs) : undefined,
-    reason: rowReason(row),
+    ...listReason(rowReason(row), screening),
     // As rowHoldStatus, with when another physician took the case for the pill's tooltip.
     hold: holdDetail(row.stored, viewer, now),
   };
@@ -249,7 +252,7 @@ function queueRowView(row: QueueRow, subject: SubjectApiResponse | undefined, vi
 
 function ReasonCell({ reason }: { reason: RowView["reason"] }) {
   if (!reason) return <Typography component="span" color="text.secondary">—</Typography>;
-  if (reason === "OCSHR pending") return <OcshrPendingBadge />;
+  if (reason === "OCSHR pending" || reason === "OCSHR not scored") return <OcshrPendingBadge label={reason} />;
   return <QueueGroupBadge value={reason} />;
 }
 
@@ -1080,7 +1083,7 @@ export function EncounterList({ mode }: Props) {
                           <HoldStatusBadge
                             status={v.hold}
                             usernameSuffix={usernameSuffix}
-                            awaitingOcshr={v.reason === "OCSHR pending"}
+                            waitingFor={v.waitingFor}
                           />
                         </Stack>
                       )}
@@ -1187,7 +1190,7 @@ export function EncounterList({ mode }: Props) {
                               <HoldStatusBadge
                                 status={v.hold}
                                 usernameSuffix={usernameSuffix}
-                                awaitingOcshr={v.reason === "OCSHR pending"}
+                                waitingFor={v.waitingFor}
                               />
                             )}
                           </TableCell>

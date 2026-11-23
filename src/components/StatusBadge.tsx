@@ -19,7 +19,7 @@ import {
   type ModelResultValue,
   type QueueGroup,
 } from "@/constants/tanuhConcepts";
-import { holdPill } from "./holdPill";
+import { holdPill, type WaitingFor } from "./holdPill";
 import { QUEUE_GROUP_COLOURS } from "./queueGroupColours";
 
 // Status pills for the high-risk model's values on a screening (tanuh-webapp#4). Colour + icon + text (never colour
@@ -247,16 +247,17 @@ export function QueueGroupBadge({ value }: { value: QueueGroup }) {
   );
 }
 
-// A listed case that is not handed out until its OCSHR result arrives (PE-249): a quiet grey pill with an hourglass.
-export function OcshrPendingBadge() {
+// A listed case that is not handed out for want of an OCSHR result (PE-249): a quiet grey pill with an hourglass. It
+// reads "OCSHR not scored" for a case the OCSHR model will never score, which is not pending.
+export function OcshrPendingBadge({ label = "OCSHR pending" }: { label?: "OCSHR pending" | "OCSHR not scored" }) {
   return (
     <Pill
-      label="OCSHR pending"
+      label={label}
       ink="#475569"
       fill="#f1f5f9"
       icon={HourglassEmptyOutlinedIcon}
       testId="ocshr-pending-badge"
-      state="ocshr-pending"
+      state={label.toLowerCase().replace(/\s+/g, "-")}
     />
   );
 }
@@ -268,23 +269,23 @@ const HOLD_PILL: Record<HoldStatus["kind"], { ink: string; fill: string; icon: S
 };
 
 // Who is working on a case right now, on one line. Another physician is named without the organisation's
-// `usernameSuffix`; the tooltip gives their full username and when they took the case. A case waiting for its OCSHR
-// result cannot be taken yet, so it shows a clock in place of the open lock. `withSince` (the case page's header) adds
-// the time the viewer took their own case.
+// `usernameSuffix`; the tooltip gives their full username and when they took the case. A case that is not handed out
+// for want of an OCSHR result, pending or never coming, cannot be taken, so it shows a clock in place of the open lock.
+// `withSince` (the case page's header) adds the time the viewer took their own case.
 export function HoldStatusBadge({
   status,
   usernameSuffix,
-  awaitingOcshr = false,
+  waitingFor = "review",
   withSince = false,
 }: {
   status: HoldStatus;
   usernameSuffix?: string;
-  awaitingOcshr?: boolean;
+  waitingFor?: WaitingFor;
   withSince?: boolean;
 }) {
-  const { label, tooltip } = holdPill(status, usernameSuffix, { awaitingOcshr, withSince });
+  const { label, tooltip } = holdPill(status, usernameSuffix, { waitingFor, withSince });
   const { ink, fill } = HOLD_PILL[status.kind];
-  const icon = status.kind === "waiting" && awaitingOcshr ? ScheduleOutlinedIcon : HOLD_PILL[status.kind].icon;
+  const icon = status.kind === "waiting" && waitingFor !== "review" ? ScheduleOutlinedIcon : HOLD_PILL[status.kind].icon;
   const pill = <Pill label={label} ink={ink} fill={fill} icon={icon} testId="hold-status" state={status.kind} />;
   if (!tooltip) return pill;
   // The tooltip needs an element that takes its ref and handlers, which Pill does not.

@@ -68,7 +68,7 @@ import {
 } from "@/constants/tanuhConcepts";
 import { CategoryBadge, HoldStatusBadge, ModelResultBadge, QueueGroupBadge } from "@/components/StatusBadge";
 import { computeAgreement } from "./agreement";
-import { caseNoticeText, decideCaseAccess, decideSubmit, formToShow } from "./caseAccess";
+import { caseNoticeText, decideCaseAccess, decideSubmit, formToShow, noticeWaitingFor } from "./caseAccess";
 import { caseHeading } from "./caseHeading";
 import { bookHighRiskFollowUps, type FollowUp } from "./followUps";
 import { reviewDraftKey } from "./reviewDrafts";
@@ -647,7 +647,7 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
             <HoldStatusBadge
               status={holdStatus(loaded.review, viewer, loaded.loadedAt)}
               usernameSuffix={usernameSuffix}
-              awaitingOcshr={notice.kind === "waiting" && notice.reason === "ocshr-pending"}
+              waitingFor={noticeWaitingFor(notice)}
               withSince
             />
           )}

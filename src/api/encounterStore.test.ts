@@ -6,6 +6,7 @@ import {
   RANDOM_SAMPLE_ID_CONCEPT,
   ANY_SUSPICIOUS_LESION_CONCEPT, MODEL_RESULT_CONCEPT, MODEL_RUN_TIME_CONCEPT, MODEL_STATUS_CONCEPT,
   MODEL_VERSION_CONCEPT, ORAL_IMAGE_GROUP, PLACE_OF_REFERRAL_CONCEPT, REVIEW_CATEGORY_CONCEPT, WORKER_OPINION,
+  OCSHR_CALL_MADE_CONCEPT, OCSHR_ERROR_CONCEPT, OCSHR_STATUS_CONCEPT, QC_STATUS_CONCEPT,
 } from "@/constants/tanuhConcepts";
 
 describe("trimForCache", () => {
@@ -61,6 +62,22 @@ describe("trimForCache", () => {
     const kept = trimForCache(review);
     expect(kept.observations).toEqual(review.observations);
     expect(kept.audit?.["Last modified at"]).toBe("2026-10-07T09:00:01.000Z");
+  });
+
+  it("keeps what tells a never-scored OCSHR case from a pending one: Call Made, Model Status, Model Error and QC status", () => {
+    const ocshr = {
+      [OCSHR_CALL_MADE_CONCEPT.name]: "Yes",
+      [OCSHR_STATUS_CONCEPT.name]: "FAILED",
+      [OCSHR_ERROR_CONCEPT.name]: "Bad image",
+      [QC_STATUS_CONCEPT.name]: "QC Pass",
+    };
+    const screening = {
+      ID: "s3", "Subject ID": "p1", "Encounter type": "Oral Screening", Voided: false, "Encounter date time": "2026-10-06T10:00:00.000Z",
+      observations: { ...ocshr, [ORAL_IMAGE_GROUP.name]: [{ "Oral Image": "https://s3/1.jpg" }] },
+      audit: { "Created at": "2026-10-06T10:00:05.000Z", "Last modified at": "2026-10-06T10:01:00.000Z", "Created by": "worker" },
+    } as unknown as EncounterApiResponse;
+
+    expect(trimForCache(screening).observations).toEqual(ocshr);
   });
 });
 

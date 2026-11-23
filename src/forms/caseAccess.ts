@@ -2,16 +2,19 @@ import { format, isValid, parseISO } from "date-fns";
 import { holdStatus, readHold, type ReviewLike } from "@/api/caseHold";
 import { classify, signalsOf } from "@/api/caseSignals";
 import { isCompleted } from "@/api/encounters";
+import { signalDetailsOf } from "@/api/signalDetails";
 import type { EncounterApiResponse } from "@/api/types";
+import type { WaitingFor } from "@/components/holdPill";
 import { IN_REVIEW_BY_CONCEPT, IN_REVIEW_SINCE_CONCEPT } from "@/constants/tanuhConcepts";
 
 // PE-249: what a case page says about who has the case, and whether the "In review by" hold lets the viewer edit it.
-// A waiting case's `reason` says why Review next case does not give it out (FW8): its OCSHR result is pending, or it is
-// in no review group.
+// A waiting case's `reason` says why Review next case does not give it out (FW8): its OCSHR result is pending, the OCSHR
+// model will never score it (no result, and the screening shows it was not sent, failed the quality check, or failed
+// scoring), or it is in no review group.
 export type CaseNotice =
   | { kind: "mine"; since: string }
   | { kind: "other"; by: string }
-  | { kind: "waiting"; reason?: "ocshr-pending" | "no-group" };
+  | { kind: "waiting"; reason?: "ocshr-pending" | "ocshr-never" | "no-group" };
 
 export interface CaseAccess {
   // The hold keeps the page read-only. Completed, legacy and unavailable cases are read-only for their own reasons.
@@ -23,7 +26,10 @@ export interface CaseAccess {
 function waiting(screening: { observations?: Record<string, unknown> } | undefined): CaseNotice {
   if (!screening) return { kind: "waiting" };
   const cls = classify(signalsOf(screening));
-  if (cls.ocshrPending) return { kind: "waiting", reason: "ocshr-pending" };
+  if (cls.ocshrPending) {
+    const never = signalDetailsOf(screening).ocshr.state === "unavailable";
+    return { kind: "waiting", reason: never ? "ocshr-never" : "ocshr-pending" };
+  }
   if (!cls.group) return { kind: "waiting", reason: "no-group" };
   return { kind: "waiting" };
 }
@@ -58,10 +64,20 @@ export function caseNoticeText(notice: CaseNotice): string {
       return `In review by ${notice.by}`;
     case "waiting":
       if (notice.reason === "ocshr-pending") return "Not handed out yet: this case's OCSHR result is pending.";
+      if (notice.reason === "ocshr-never") return "Not handed out: the OCSHR model will not score this case.";
       if (notice.reason === "no-group")
         return "This case is not in a review group, so Review next case does not hand it out.";
       return "Waiting. Use Review next case on Pending Reviews to review it.";
   }
+}
+
+// The header pill's words for a waiting case: waiting for its OCSHR result, no OCSHR result when the model will never
+// score it, else waiting for review.
+export function noticeWaitingFor(notice: CaseNotice): WaitingFor {
+  if (notice.kind !== "waiting") return "review";
+  if (notice.reason === "ocshr-pending") return "ocshr";
+  if (notice.reason === "ocshr-never") return "no-ocshr";
+  return "review";
 }
 
 export type SubmitDecision = { kind: "refuse" } | { kind: "send"; markers: Record<string, string> };

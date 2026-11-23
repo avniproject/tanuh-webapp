@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { EncounterApiResponse } from "@/api/types";
-import { caseNoticeText, decideCaseAccess, decideSubmit, formToShow } from "./caseAccess";
+import { caseNoticeText, decideCaseAccess, decideSubmit, formToShow, noticeWaitingFor } from "./caseAccess";
 
 const t0 = new Date("2026-11-23T10:00:00Z");
 const later = (min: number) => new Date(t0.getTime() + min * 60_000);
@@ -144,12 +144,59 @@ describe("a waiting case that Review next case does not give out", () => {
     });
   });
 
+  // Adam, 23 Nov: a case the OCSHR model will never score does not read as waiting for its result.
+  const neverScored = {
+    "QC fail": { "Egde AI Final Verdict": "Suspicious", "QC status": "QC Fail" },
+    "Call Made No": { "Egde AI Final Verdict": "Suspicious", "OCSHR Call Made": "No" },
+    REJECTED: { "Egde AI Final Verdict": "Suspicious", "OCSHR Model Status": "REJECTED" },
+    FAILED: { "Egde AI Final Verdict": "Suspicious", "OCSHR Model Status": "FAILED", "OCSHR Model Error": "Bad image" },
+  };
+  for (const [name, observations] of Object.entries(neverScored)) {
+    it(`says the OCSHR model will not score a case with no result: ${name}`, () => {
+      const access = decideCaseAccess(true, { review: booked, screening: screeningWith(observations) }, "dr.a", t0);
+      expect(access).toEqual({ locked: true, notice: { kind: "waiting", reason: "ocshr-never" } });
+      expect(caseNoticeText(access.notice!)).toBe("Not handed out: the OCSHR model will not score this case.");
+    });
+  }
+
+  it("says the same on a never-scored screening's page with no review yet", () => {
+    expect(decideCaseAccess(true, { screening: screeningWith(neverScored["Call Made No"]) }, "dr.a", t0).notice).toEqual({
+      kind: "waiting",
+      reason: "ocshr-never",
+    });
+  });
+
+  it("keeps the pending text for a case sent to the model and not yet scored", () => {
+    const sent = screeningWith({ "Egde AI Final Verdict": "Suspicious", "OCSHR Call Made": "Yes" });
+    const access = decideCaseAccess(true, { review: booked, screening: sent }, "dr.a", t0);
+    expect(access.notice).toEqual({ kind: "waiting", reason: "ocshr-pending" });
+    expect(caseNoticeText(access.notice!)).toBe("Not handed out yet: this case's OCSHR result is pending.");
+  });
+
+  it("treats a failed score that kept an old result as scored, as PE-249 does", () => {
+    const stale = screeningWith({ "Egde AI Final Verdict": "Suspicious", "OCSHR Model Status": "FAILED", "OCSHR Model Result": "High Risk" });
+    expect(decideCaseAccess(true, { review: booked, screening: stale }, "dr.a", t0).notice).toEqual({ kind: "waiting" });
+  });
+
   it("leaves a held case's notice alone, and the page as today with the queue off", () => {
     expect(decideCaseAccess(true, { review: heldBy("dr.b", t0), screening: pending }, "dr.a", later(1)).notice).toEqual({
       kind: "other",
       by: "dr.b",
     });
     expect(decideCaseAccess(false, { review: booked, screening: pending }, "dr.a", t0)).toEqual({ locked: false, notice: null });
+  });
+});
+
+describe("noticeWaitingFor, the header pill's waiting words", () => {
+  it("waits for the OCSHR result while it is pending", () =>
+    expect(noticeWaitingFor({ kind: "waiting", reason: "ocshr-pending" })).toBe("ocshr"));
+  it("has no OCSHR result when the model will never score the case", () =>
+    expect(noticeWaitingFor({ kind: "waiting", reason: "ocshr-never" })).toBe("no-ocshr"));
+  it("waits for review otherwise", () => {
+    expect(noticeWaitingFor({ kind: "waiting" })).toBe("review");
+    expect(noticeWaitingFor({ kind: "waiting", reason: "no-group" })).toBe("review");
+    expect(noticeWaitingFor({ kind: "mine", since: t0.toISOString() })).toBe("review");
+    expect(noticeWaitingFor({ kind: "other", by: "dr.b" })).toBe("review");
   });
 });
 

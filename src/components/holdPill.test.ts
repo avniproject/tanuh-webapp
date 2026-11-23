@@ -33,12 +33,22 @@ describe("holdPill", () => {
     expect(holdPill({ kind: "waiting" }, suffix)).toEqual({ label: "Waiting for review" });
   });
   it("says Waiting for OCSHR result for a case that is not handed out until its result arrives", () => {
-    expect(holdPill({ kind: "waiting" }, suffix, { awaitingOcshr: true })).toEqual({
+    expect(holdPill({ kind: "waiting" }, suffix, { waitingFor: "ocshr" })).toEqual({
       label: "Waiting for OCSHR result",
     });
     // A hold is named as before, whatever the case waits for.
     const since = new Date(2026, 10, 23, 14, 5).toISOString();
-    expect(holdPill({ kind: "mine", since }, suffix, { awaitingOcshr: true }).label).toBe("In review by you");
+    expect(holdPill({ kind: "mine", since }, suffix, { waitingFor: "ocshr" }).label).toBe("In review by you");
+  });
+  it("says No OCSHR result for a case the OCSHR model will never score, and not that it waits", () => {
+    expect(holdPill({ kind: "waiting" }, suffix, { waitingFor: "no-ocshr" })).toEqual({ label: "No OCSHR result" });
+    const since = new Date(2026, 10, 23, 14, 5).toISOString();
+    expect(holdPill({ kind: "mine", since }, suffix, { waitingFor: "no-ocshr" }).label).toBe("In review by you");
+    const other = { kind: "other", by: "physician4@tanuh_uat_local", since } as const;
+    expect(holdPill(other, suffix, { waitingFor: "no-ocshr" })).toEqual(holdPill(other, suffix));
+  });
+  it("says Waiting for review when the case waits for review, as without the option", () => {
+    expect(holdPill({ kind: "waiting" }, suffix, { waitingFor: "review" })).toEqual({ label: "Waiting for review" });
   });
   describe("withSince, for the case page's header (PE-250)", () => {
     const since = "2026-11-23T05:11:00Z";
@@ -56,8 +66,11 @@ describe("holdPill", () => {
       const other = { kind: "other", by: "physician4@tanuh_uat_local", since } as const;
       expect(holdPill(other, suffix, { withSince: true })).toEqual(holdPill(other, suffix));
       expect(holdPill({ kind: "waiting" }, suffix, { withSince: true })).toEqual({ label: "Waiting for review" });
-      expect(holdPill({ kind: "waiting" }, suffix, { withSince: true, awaitingOcshr: true })).toEqual({
+      expect(holdPill({ kind: "waiting" }, suffix, { withSince: true, waitingFor: "ocshr" })).toEqual({
         label: "Waiting for OCSHR result",
+      });
+      expect(holdPill({ kind: "waiting" }, suffix, { withSince: true, waitingFor: "no-ocshr" })).toEqual({
+        label: "No OCSHR result",
       });
     });
     it("leaves the list's In review by you as it is without the option", () => {
