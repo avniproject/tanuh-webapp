@@ -86,7 +86,7 @@ import { LocationFilter } from "./LocationFilter";
 import { FacilityFilter } from "./FacilityFilter";
 import { NextCasePanel } from "./NextCasePanel";
 import { CategoryBadge, HoldStatusBadge, ModelResultBadge, QueueGroupBadge } from "./StatusBadge";
-import { placesToRead, readReviewsByPlace, usePendingQueue } from "./usePendingQueue";
+import { chosenPlace, placeScreenings, placesToRead, readReviewsByPlace, usePendingQueue } from "./usePendingQueue";
 
 interface Props {
   mode: "pending" | "completed";
@@ -389,7 +389,7 @@ export function EncounterList({ mode }: Props) {
     if (!queueMode || !queueData || !pageData) return null;
     if (referralUuid && referral?.uuid !== referralUuid) return null;
     const { catchment, subjects } = queueData;
-    const place = patientLocationUuid && catchment.contains(patientLocationUuid) ? patientLocationUuid : null;
+    const place = chosenPlace(catchment, patientLocationUuid);
     return narrowQueueRows(queueData.rows, {
       bookedListed: place || referralUuid ? new Set(pageData.content.map((e) => e.encounterUuid)) : null,
       placesUnder: place ? catchment.placesUnder(place) : null,
@@ -403,17 +403,26 @@ export function EncounterList({ mode }: Props) {
   // matched to the patient's location by a server lookup rather than a read per patient (a screening inside a program
   // still needs its patient read), and by the screening's own referral place here; one without a referral drops out
   // while that filter is set. `unchecked` holds the rows kept because their location could not be checked
-  // (tanuh-webapp#4 review).
+  // (tanuh-webapp#4 review). The screenings come from the organisation-wide store, so first only those in the
+  // physician's places are kept; one that cannot be placed is left out and counted in `unplaced` (FW5). The location
+  // filter takes the chosen place only when it is one of the physician's, as the read above does.
   const { data: pending, error: rowsError } = useAsync(async () => {
     if (!pendingFromScreenings || !pageData) return null;
-    const [screenings, reviews] = await Promise.all([
+    const [catchment, screenings, reviews] = await Promise.all([
+      getCatchment(),
       getCachedEncounters(ENCOUNTER_TYPE.oralScreening.name),
       getCachedEncounters(ENCOUNTER_TYPE.physicianReviewForm.name),
     ]);
-    let rows = selectPendingRows(pageData.content, screenings, reviews);
-    const unchecked = new Set(pageData.unchecked);
-    if (patientLocationUuid) {
-      const located = filterByPatientLocation(rows, await matchPatientLocation(rows, patientLocationUuid));
+    const all = selectPendingRows(pageData.content, screenings, reviews);
+    const where = await placeScreenings(
+      all.flatMap((r) => (r.kind === "screening" ? [r.screening] : [])),
+      catchment,
+    );
+    let rows = all.filter((r) => r.kind === "booked" || where.placed.has(r.screening.ID));
+    const unchecked = new Set<string>();
+    const place = chosenPlace(catchment, patientLocationUuid);
+    if (place) {
+      const located = filterByPatientLocation(rows, await matchPatientLocation(rows, place));
       rows = located.rows;
       located.unchecked.forEach((key) => unchecked.add(key));
     }
@@ -423,7 +432,7 @@ export function EncounterList({ mode }: Props) {
         (r) => r.kind === "booked" || inSubtree(r.screening.observations?.[PLACE_OF_REFERRAL_CONCEPT.name], chain),
       );
     }
-    return { rows, unchecked };
+    return { rows, unchecked, unplaced: where.unplaced.size };
   }, [pendingFromScreenings, pageData]);
 
   // The patients of the rows on screen, read as those rows show and kept for the page's life; none for the rest of
@@ -620,14 +629,18 @@ export function EncounterList({ mode }: Props) {
   const held = queueMode ? queueData?.held : undefined;
   const heldView =
     held && queueData ? queueRowView(held, queueData.subjects.get(queueRowSubjectId(held)), viewer, queueData.now) : null;
-  // The listed rows whose location could not be checked, counted where they are still listed: after the referral
-  // filter, and without a deleted patient's rows.
-  // The queue lists no such row: it leaves out what it cannot place, and says how many instead.
-  const uncheckedCount = queueMode
-    ? 0
-    : pendingFromScreenings && pending && pendingRows
+  // The listed rows whose location, within the physician's places, could not be checked against the chosen patient
+  // location, counted where they are still listed: after the referral filter, and without a deleted patient's rows.
+  const uncheckedCount =
+    !queueMode && pendingFromScreenings && pending && pendingRows
       ? pendingRows.filter((r) => pending.unchecked.has(pendingRowKey(r))).length
-      : pageData.unchecked.size;
+      : 0;
+  // The cases left out because they could not be placed in the physician's places, or their patient could not be
+  // read: the queue's, a programme review's on either tab (FW6), a screening's on the pending tab without the queue
+  // (FW5).
+  const unreadCount = queueMode
+    ? (queueData?.unread ?? 0)
+    : pageData.unread + (pendingFromScreenings ? (pending?.unplaced ?? 0) : 0);
   // High Risk count over every row the current location/referral filters allow —
   // deliberately not narrowed by the date or High Risk display filters.
   const highRiskCount =
@@ -928,12 +941,12 @@ export function EncounterList({ mode }: Props) {
         )}
       </Stack>
 
-      {/* PE-249: a case whose patient could not be read cannot be placed, so the queue leaves it out and says so. */}
-      {queueMode && queueData && queueData.unread > 0 && (
-        <Alert severity="warning" data-testid="queue-unread" sx={{ m: { xs: 1.5, sm: 2 }, mb: 0 }}>
-          {queueData.unread === 1
+      {/* PE-249: a case that cannot be placed is left out, and the list says so. */}
+      {unreadCount > 0 && (
+        <Alert severity="warning" data-testid="cases-unread" sx={{ m: { xs: 1.5, sm: 2 }, mb: 0 }}>
+          {unreadCount === 1
             ? "1 case could not be loaded and is not shown."
-            : `${queueData.unread} cases could not be loaded and are not shown.`}
+            : `${unreadCount} cases could not be loaded and are not shown.`}
         </Alert>
       )}
 

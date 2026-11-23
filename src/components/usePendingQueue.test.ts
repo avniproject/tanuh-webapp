@@ -12,6 +12,7 @@ const m = vi.hoisted(() => ({
   getAll: vi.fn(),
   getProgram: vi.fn(),
   readSubjects: vi.fn(),
+  lookup: vi.fn(),
 }));
 vi.mock("@/api/catchment", () => ({ getCatchment: () => m.getCatchment() }));
 vi.mock("@/api/encounters", async (importOriginal) => ({
@@ -22,13 +23,14 @@ vi.mock("@/api/encounters", async (importOriginal) => ({
 vi.mock("@/api/impl", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/api/impl")>()),
   getAllEncountersWithLocation: (p: unknown) => m.getAll(p),
+  getEncounterUuidsInLocation: (type: string, status: string, place: string) => m.lookup(type, status, place),
 }));
 vi.mock("@/api/programList", () => ({
   getProgramEncountersWithLocation: (p: unknown) => m.getProgram(p),
   readSubjects: (ids: string[]) => m.readSubjects(ids),
 }));
 
-import { loadPendingQueue, placesToRead, readReviewsByPlace } from "./usePendingQueue";
+import { chosenPlace, loadPendingQueue, placeScreenings, placesToRead, readReviewsByPlace } from "./usePendingQueue";
 
 const at = (minute: number) => new Date(Date.UTC(2026, 10, 23, 9, minute)).toISOString();
 
@@ -66,14 +68,17 @@ const patient = (id: string, place: string, voided = false): SubjectApiResponse 
 const standalone = (rows: EncounterWithLocation[]) => ({ content: rows, totalElements: rows.length });
 const program = (rows: EncounterWithLocation[], unchecked: string[] = []) => ({ rows, unchecked: new Set(unchecked) });
 
-// The physician covers district d1 (top) and its village v1.
+// The physician covers district d1 (top) and its village v1. `inPlaces` is what the server's lookup places in d1.
 function given({
   tops = ["d1"],
   booked = [] as EncounterWithLocation[],
   programRows = program([]),
   screenings = [] as CachedEncounter[],
   patients = new Map<string, SubjectApiResponse | null>(),
+  inPlaces = [] as string[],
+  complete = true,
 } = {}) {
+  m.lookup.mockResolvedValue({ uuids: new Set(inPlaces), complete });
   m.getCatchment.mockResolvedValue(catchment(tops.length ? ["d1", "v1"] : [], tops));
   m.getAll.mockResolvedValue(standalone(booked));
   m.getProgram.mockResolvedValue(programRows);
@@ -90,39 +95,75 @@ describe("loadPendingQueue", () => {
     Object.values(m).forEach((f) => f.mockReset());
   });
 
-  it("keeps a screening whose patient lives in the physician's places, and drops one outside them", async () => {
+  // FW10: a screening is placed by the server's lookup, not by reading every patient in the organisation.
+  it("keeps a screening the server places in the physician's places, and drops one outside them unread", async () => {
     given({
       screenings: [screening("sIn", "pIn", 1), screening("sOut", "pOut", 2)],
       patients: new Map([
         ["pIn", patient("pIn", "v1")],
         ["pOut", patient("pOut", "elsewhere")],
       ]),
+      inPlaces: ["sIn"],
     });
     const q = await loadPendingQueue("dr.a");
     expect(q.rows.map(queueRowKey)).toEqual(["sIn"]);
     expect(q.unread).toBe(0);
     expect(q.waiting).toMatchObject({ "FLW marked": 1, total: 1 });
     expect([...q.subjects.keys()]).toEqual(["pIn"]);
+    expect(m.lookup).toHaveBeenCalledWith("Oral Screening", "completed", "d1");
+    // The patient outside the places is never read.
+    expect(m.readSubjects.mock.calls.flatMap(([ids]) => ids)).toEqual(["pIn"]);
   });
 
-  it("drops a screening whose patient could not be read, and counts it", async () => {
+  it("drops the screenings an incomplete lookup could not place, and counts them", async () => {
+    given({
+      screenings: [screening("sIn", "pIn", 1), screening("sUnknown", "pUnknown", 2)],
+      patients: new Map([["pIn", patient("pIn", "v1")]]),
+      inPlaces: ["sIn"],
+      complete: false,
+    });
+    const q = await loadPendingQueue("dr.a");
+    expect(q.rows.map(queueRowKey)).toEqual(["sIn"]);
+    expect(q.unread).toBe(1);
+    expect(m.readSubjects.mock.calls.flatMap(([ids]) => ids)).toEqual(["pIn"]);
+  });
+
+  it("drops a placed screening whose patient could not be read, and counts it", async () => {
     given({
       screenings: [screening("sIn", "pIn", 1), screening("sUnread", "pUnread", 2)],
       patients: new Map([["pIn", patient("pIn", "v1")]]),
+      inPlaces: ["sIn", "sUnread"],
     });
     const q = await loadPendingQueue("dr.a");
     expect(q.rows.map(queueRowKey)).toEqual(["sIn"]);
     expect(q.unread).toBe(1);
   });
 
-  it("drops a screening whose patient is deleted, without counting it", async () => {
+  it("drops a placed screening whose patient is deleted, without counting it", async () => {
     given({
       screenings: [screening("sGone", "pGone", 1)],
       patients: new Map([["pGone", patient("pGone", "v1", true)]]),
+      inPlaces: ["sGone"],
     });
     const q = await loadPendingQueue("dr.a");
     expect(q.rows).toEqual([]);
     expect(q.unread).toBe(0);
+  });
+
+  it("places a programme screening by its patient's place, which the lookup cannot see", async () => {
+    const inProgramme = (id: string, p: string, minute: number) =>
+      ({ ...screening(id, p, minute), "Enrolment ID": "e-" + p }) as CachedEncounter;
+    given({
+      screenings: [inProgramme("sP", "pP", 1), inProgramme("sQ", "pQ", 2), inProgramme("sR", "pR", 3)],
+      patients: new Map([
+        ["pP", patient("pP", "v1")],
+        ["pQ", patient("pQ", "elsewhere")],
+      ]),
+    });
+    const q = await loadPendingQueue("dr.a");
+    expect(q.rows.map(queueRowKey)).toEqual(["sP"]);
+    expect(q.unread).toBe(1);
+    expect(m.lookup).not.toHaveBeenCalled();
   });
 
   it("reads nothing and lists nothing when the physician has no places", async () => {
@@ -133,6 +174,7 @@ describe("loadPendingQueue", () => {
     expect(m.getAll).not.toHaveBeenCalled();
     expect(m.getProgram).not.toHaveBeenCalled();
     expect(m.readSubjects).not.toHaveBeenCalled();
+    expect(m.lookup).not.toHaveBeenCalled();
   });
 
   it("drops a programme review that could not be placed, and counts it; keeps the booked reviews read by place", async () => {
@@ -157,7 +199,8 @@ describe("readReviewsByPlace", () => {
     Object.values(m).forEach((f) => f.mockReset());
   });
 
-  it("reads each place and merges the reviews by uuid", async () => {
+  // FW6: a programme review whose patient could not be read cannot be placed, so it is left out and counted.
+  it("reads each place, merges the reviews by uuid, and leaves out and counts the reviews it could not place", async () => {
     m.getAll.mockImplementation(({ locationUuid }: { locationUuid: string }) =>
       Promise.resolve(
         locationUuid === "d1"
@@ -170,8 +213,10 @@ describe("readReviewsByPlace", () => {
       Promise.resolve(locationUuid === "d1" ? program([review("p1"), review("p2")], ["p2"]) : program([review("p1"), review("p2")], ["p1", "p2"])),
     );
     const read = await readReviewsByPlace(["d1", "d2"], { encounterType: "Clinician Review Form", status: "scheduled" });
-    expect(read.content.map((e) => e.encounterUuid).sort()).toEqual(["a", "b", "c", "p1", "p2"]);
-    expect([...read.unchecked]).toEqual(["p2"]);
+    expect(read.content.map((e) => e.encounterUuid).sort()).toEqual(["a", "b", "c", "p1"]);
+    expect(read.unread).toBe(1);
+    // The standalone totals of the two places, 2 + 2, and the one placed programme review.
+    expect(read.totalElements).toBe(5);
     expect(m.getAll.mock.calls.map(([p]) => (p as { locationUuid: string }).locationUuid)).toEqual(["d1", "d2"]);
     expect(m.getProgram.mock.calls.map(([p]) => (p as { locationUuid: string }).locationUuid)).toEqual(["d1", "d2"]);
   });
@@ -180,6 +225,52 @@ describe("readReviewsByPlace", () => {
     const read = await readReviewsByPlace([], { encounterType: "Clinician Review Form", status: "scheduled" });
     expect(read.content).toEqual([]);
     expect(m.getAll).not.toHaveBeenCalled();
+  });
+});
+
+// FW5 and FW10: the screenings a list may show are those in the physician's places.
+describe("placeScreenings", () => {
+  beforeEach(() => {
+    Object.values(m).forEach((f) => f.mockReset());
+  });
+  const c2 = catchment(["d1", "v1", "d2"], ["d1", "d2"]);
+
+  it("places standalone screenings by the lookup in every top place, together", async () => {
+    m.lookup.mockImplementation((_t: string, _s: string, place: string) =>
+      Promise.resolve({ uuids: new Set(place === "d1" ? ["s1"] : ["s2"]), complete: true }),
+    );
+    const placed = await placeScreenings([screening("s1", "p1", 1), screening("s2", "p2", 2), screening("s3", "p3", 3)], c2);
+    expect([...placed.placed].sort()).toEqual(["s1", "s2"]);
+    expect(placed.unplaced.size).toBe(0);
+    expect(m.lookup.mock.calls.map(([, , place]) => place)).toEqual(["d1", "d2"]);
+    expect(m.readSubjects).not.toHaveBeenCalled();
+  });
+
+  it("leaves unplaced what an incomplete lookup could not place", async () => {
+    m.lookup.mockImplementation((_t: string, _s: string, place: string) =>
+      Promise.resolve({ uuids: new Set(place === "d1" ? ["s1"] : []), complete: place === "d1" }),
+    );
+    const placed = await placeScreenings([screening("s1", "p1", 1), screening("s2", "p2", 2)], c2);
+    expect([...placed.placed]).toEqual(["s1"]);
+    expect([...placed.unplaced]).toEqual(["s2"]);
+  });
+
+  it("asks nothing when there is no screening, or no place", async () => {
+    expect((await placeScreenings([], c2)).placed.size).toBe(0);
+    const none = await placeScreenings([screening("s1", "p1", 1)], catchment([], []));
+    expect(none.placed.size + none.unplaced.size).toBe(0);
+    expect(m.lookup).not.toHaveBeenCalled();
+    expect(m.readSubjects).not.toHaveBeenCalled();
+  });
+});
+
+describe("chosenPlace", () => {
+  const c = catchment(["d1", "v1"], ["d1"]);
+  it("is the chosen place when it is one of the physician's, and none for a stale or foreign one", () => {
+    expect(chosenPlace(c, "v1")).toBe("v1");
+    expect(chosenPlace(c, "other")).toBeNull();
+    expect(chosenPlace(c, null)).toBeNull();
+    expect(chosenPlace(c, undefined)).toBeNull();
   });
 });
 
