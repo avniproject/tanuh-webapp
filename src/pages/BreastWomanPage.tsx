@@ -11,6 +11,7 @@ import { submitClinicianForm } from "@/breast/submit";
 import { Card, FormStatusPill, Pill, PillButton, RiskPill } from "@/breast/ui";
 import { loadWomanCase, registryOf, ruleSubject, visitAnswers, type WomanCase } from "@/breast/womanCase";
 import type { Answers } from "@/forms/engine/answers";
+import { allElements } from "@/forms/engine/formDef";
 import type { FormView } from "@/forms/engine/formState";
 import type { VisitDraft } from "@/forms/engine/ruleRunner";
 import { FormAnswers } from "@/forms/readonly/FormAnswers";
@@ -160,7 +161,12 @@ export function BreastWomanPage() {
         existing,
         siblings: woman.visits[formKey],
         openClinicianVisit: !!woman.booked.clinician,
-        places: woman.places,
+        placeUuids: new Set(
+          allElements(woman.forms[formKey])
+            .filter((e) => e.concept.dataType === "Location")
+            .flatMap((e) => woman.placesOf(e).map((p) => p.uuid)),
+        ),
+        loaded: visitAnswers(woman.submitted[formKey], registry),
         now: new Date(),
       },
       {
@@ -218,8 +224,8 @@ export function BreastWomanPage() {
         form={woman.forms[formKey]}
         subject={subject}
         draft={visit}
-        initialAnswers={kept?.answers ?? visitAnswers(submitted, registry)}
-        places={woman.places}
+        initialAnswers={kept?.answers ?? visitAnswers(submitted, registry).answers}
+        placesOf={woman.placesOf}
         placesFailed={woman.placesFailed}
         submitLabel={submitted ? "Update in Avni" : CLINICIAN_FORMS[formKey].submit}
         savedNote={
@@ -267,7 +273,7 @@ export function BreastWomanPage() {
         <Typography sx={{ mt: 0.75, fontFamily: CR.font, fontSize: 14, color: CR.textSecondary }}>
           {typeof obs[BREAST_OBS.age] === "number" ? `${obs[BREAST_OBS.age] as number} years · ` : ""}
           Screened {screenedOn}
-          {screenedBy ? ` by ${screenedBy}` : ""}
+          {screenedBy ? ` · recorded by ${screenedBy}` : ""}
           {encounterId ? ` · ${encounterId}` : ""}
         </Typography>
         {woman.newerScreening && (
@@ -341,7 +347,7 @@ export function BreastWomanPage() {
             <Pill tone="idle">Read-only · from Avni</Pill>
           </Stack>
           <Stack spacing={2.5}>
-            <FormAnswers form={woman.forms.screening} answers={visitAnswers(woman.screening, registry)} skip={MODEL_ANSWERS} />
+            <FormAnswers form={woman.forms.screening} answers={visitAnswers(woman.screening, registry).answers} skip={MODEL_ANSWERS} />
             <ModelPanel woman={woman} />
           </Stack>
           <Stack direction="row" justifyContent="flex-end" sx={{ mt: 3 }}>

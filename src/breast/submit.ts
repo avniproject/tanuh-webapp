@@ -8,12 +8,11 @@ import { computeNextEncounterId, type PatchEncounterBody, type UpsertEncounterBo
 import type { ScheduleEncounterBody } from "@/api/scheduledVisit";
 import type { EncounterApiResponse, SubjectApiResponse } from "@/api/types";
 import { ENCOUNTER_ID_CONCEPT, PATIENT_ID_CONCEPT, readObs } from "@/constants/tanuhConcepts";
-import { buildObservations } from "@/forms/engine/answers";
+import { buildObservations, type ReadAnswers } from "@/forms/engine/answers";
 import type { ElementDef, FormDef } from "@/forms/engine/formDef";
 import { allElements } from "@/forms/engine/formDef";
 import type { FormView } from "@/forms/engine/formState";
 import { isVisible, statusKey } from "@/forms/engine/ruleRunner";
-import type { PlaceOption } from "@/forms/screen/fields";
 import { BREAST_VISITS, type ClinicianFormKey } from "./breastConcepts";
 
 export interface SubmitInput {
@@ -28,8 +27,10 @@ export interface SubmitInput {
   siblings: EncounterApiResponse[];
   /** A Clinician Assessment is already booked and open for her. */
   openClinicianVisit: boolean;
-  /** The places a Location question offers. */
-  places: PlaceOption[];
+  /** The uuids of the places the form's Location questions offer. */
+  placeUuids: ReadonlySet<string>;
+  /** The saved visit's answers as they were read, and which questions were not read in full. */
+  loaded: ReadAnswers;
   now: Date;
 }
 
@@ -59,11 +60,18 @@ export function buildSubmission(input: SubmitInput): Submission {
   const { existing, form, view } = input;
   const submitted = existing?.["Encounter date time"] ?? null;
   const observations = buildObservations(form, (element, row) => isVisible(view.statuses, element, row), view.answers);
-  const placeUuids = new Set(input.places.map((p) => p.uuid));
+  const same = (e: ElementDef): boolean =>
+    JSON.stringify(view.answers[e.concept.uuid] ?? null) === JSON.stringify(input.loaded.answers[e.concept.uuid] ?? null);
+  // A question whose saved answer the app did not read in full (a record field or an option the
+  // form does not know, a kind of value the app does not handle) is left exactly as Avni has it,
+  // unless the clinician changed it here.
+  const untouchable = (e: ElementDef): boolean => input.loaded.unmapped.has(e.concept.uuid) && same(e);
   for (const e of allElements(form)) {
+    if (e.parentUuid) continue;
     // A Location is stored as an address uuid. A value that is not one of the listed places is the
-    // name Avni displayed for the saved answer, and is never sent: the saved answer stays as it is.
-    if (isLocation(e) && !placeUuids.has(String(observations[e.concept.name]))) delete observations[e.concept.name];
+    // name Avni displayed for the saved answer, and is never sent.
+    const notAPlace = isLocation(e) && !input.placeUuids.has(String(observations[e.concept.name]));
+    if (notAPlace || untouchable(e)) delete observations[e.concept.name];
   }
   const encounterId =
     (submitted ? readObs<string>(existing?.observations ?? {}, ENCOUNTER_ID_CONCEPT) : undefined) ??
@@ -93,7 +101,7 @@ export function buildSubmission(input: SubmitInput): Submission {
   // form that is now hidden or emptied is sent as null, which removes its saved answer — except a
   // Location, and a question whose rule failed, which are left as they are.
   for (const e of allElements(form)) {
-    if (e.parentUuid || e.concept.name in observations || isLocation(e)) continue;
+    if (e.parentUuid || e.concept.name in observations || isLocation(e) || untouchable(e)) continue;
     if (view.statuses.get(statusKey(e.uuid))?.failed) continue;
     observations[e.concept.name] = null;
   }

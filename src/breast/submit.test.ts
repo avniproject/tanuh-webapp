@@ -39,7 +39,8 @@ const input = (over: Partial<SubmitInput> = {}): SubmitInput => ({
   existing: null,
   siblings: [],
   openClinicianVisit: false,
-  places: [],
+  placeUuids: new Set<string>(),
+  loaded: { answers: {}, unmapped: new Set<string>() },
   now,
   ...over,
 });
@@ -103,6 +104,16 @@ describe("buildSubmission", () => {
     expect(body.observations).not.toHaveProperty("PS Clinician case notes");
   });
 
+  it("on an update, leaves alone a question whose saved answer the portal could not read in full, unless she changed it", () => {
+    const done = enc({ ID: "done", "Encounter date time": "2026-11-21T09:00:00.000Z" });
+    const loaded = { answers: { [notes.concept.uuid]: "Seen today." }, unmapped: new Set([notes.concept.uuid, classification.concept.uuid]) };
+    const untouched = buildSubmission(input({ existing: done, siblings: [done], loaded, view: { answers: { [notes.concept.uuid]: "Seen today." }, statuses: new Map() } }));
+    expect(untouched.body.observations).not.toHaveProperty("PS Clinician case notes");
+    expect(untouched.body.observations).not.toHaveProperty("PS Clinician risk classification");
+    const changed = buildSubmission(input({ existing: done, siblings: [done], loaded, view: { answers: { [notes.concept.uuid]: "Seen again." }, statuses: new Map() } }));
+    expect(changed.body.observations["PS Clinician case notes"]).toBe("Seen again.");
+  });
+
   it("sends a hospital only as one of the listed places, never as the name Avni displayed", () => {
     const place = { ...notes, concept: { ...notes.concept, uuid: "loc", name: "PS Institution", dataType: "Location" }, uuid: "loc-el", mandatory: false };
     const withPlace = { ...form, pages: [{ ...form.pages[0], elements: [...form.pages[0].elements, place] }] };
@@ -111,7 +122,7 @@ describe("buildSubmission", () => {
     const shown = buildSubmission(input({ form: withPlace, existing: done, view: { answers: { ...answers, loc: "Devanahalli MC" }, statuses: new Map() } }));
     expect(shown.body.observations).not.toHaveProperty("PS Institution");
     const picked = buildSubmission(
-      input({ form: withPlace, existing: done, places: [{ uuid: "h1", name: "Devanahalli MC", type: "Mammography Centre" }], view: { answers: { ...answers, loc: "h1" }, statuses: new Map() } }),
+      input({ form: withPlace, existing: done, placeUuids: new Set(["h1"]), view: { answers: { ...answers, loc: "h1" }, statuses: new Map() } }),
     );
     expect(picked.body.observations["PS Institution"]).toBe("h1");
   });

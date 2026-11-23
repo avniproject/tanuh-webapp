@@ -33,51 +33,80 @@ export class ConceptRegistry {
   }
 }
 
-function fieldFromApi(concept: ConceptDef, value: unknown): FieldValue | undefined {
-  if (value === null || value === undefined) return undefined;
+/** The data types the app can show, take an answer for, and send back unchanged. */
+const READABLE = new Set(["Coded", "Numeric", "Text", "Notes", "Date", "DateTime", "Location", "Id"]);
+
+/** `lossy`: the stored value was not taken over whole, so it must never be written back from here. */
+function fieldFromApi(concept: ConceptDef, value: unknown): { value: FieldValue | undefined; lossy: boolean } {
+  if (value === null || value === undefined) return { value: undefined, lossy: false };
+  if (!READABLE.has(concept.dataType)) return { value: undefined, lossy: true };
   if (concept.dataType === "Coded") {
-    const uuids = (Array.isArray(value) ? value : [value])
-      .map((n) => concept.answers.find((a) => a.name === n)?.uuid)
-      .filter((u): u is string => !!u);
-    if (!uuids.length) return undefined;
-    return Array.isArray(value) ? uuids : uuids[0];
+    // One stored answer comes back as a name, a stored list as a list of names, whatever the question's type.
+    const names = Array.isArray(value) ? value : [value];
+    const uuids = names.map((n) => concept.answers.find((a) => a.name === n)?.uuid).filter((u): u is string => !!u);
+    const lossy = uuids.length !== names.length;
+    if (!uuids.length) return { value: undefined, lossy };
+    return { value: Array.isArray(value) ? uuids : uuids[0], lossy };
   }
   if (concept.dataType === "Numeric") {
-    const n = typeof value === "number" ? value : Number(value);
-    return Number.isFinite(n) ? n : undefined;
+    const n = typeof value === "number" ? value : typeof value === "string" ? Number(value) : NaN;
+    return Number.isFinite(n) ? { value: n, lossy: false } : { value: undefined, lossy: true };
   }
-  // A Location comes back as {typeName: title}, the place itself first. That title is for display
-  // only: it is not the stored value (an address uuid), so it is never sent back (see submit.ts).
-  if (typeof value === "object" && !Array.isArray(value)) {
-    const titles = Object.values(value as Record<string, unknown>).filter((v) => typeof v === "string");
-    return titles.length ? String(titles[0]) : undefined;
+  if (concept.dataType === "Location") {
+    // {typeName: title}, the place itself first. The title is for display only: it is not the stored
+    // value (an address uuid), so it is never sent back (see submit.ts).
+    if (typeof value === "object" && !Array.isArray(value)) {
+      const titles = Object.values(value as Record<string, unknown>).filter((v) => typeof v === "string");
+      return { value: titles.length ? String(titles[0]) : undefined, lossy: true };
+    }
+    return { value: typeof value === "string" ? value : undefined, lossy: true };
   }
-  return typeof value === "string" || typeof value === "number" ? String(value) : undefined;
+  if (typeof value === "string" || typeof value === "number") return { value: String(value), lossy: false };
+  return { value: undefined, lossy: true };
+}
+
+export interface ReadAnswers {
+  answers: Answers;
+  /** Concept uuids of questions whose stored answer was not read in full (an answer or a record field the
+   *  form does not know, a kind of value the app does not handle). A save leaves these as Avni has them. */
+  unmapped: Set<string>;
 }
 
 /** An encounter's observations as the external API returns them (by concept name) → answers by uuid. */
-export function answersFromApi(observations: Record<string, unknown>, registry: ConceptRegistry): Answers {
-  const out: Answers = {};
+export function answersFromApi(observations: Record<string, unknown>, registry: ConceptRegistry): ReadAnswers {
+  const answers: Answers = {};
+  const unmapped = new Set<string>();
   for (const [name, value] of Object.entries(observations ?? {})) {
     const concept = registry.name(name);
-    if (!concept) continue;
+    if (!concept || value === null || value === undefined) continue;
     if (concept.dataType === "QuestionGroup") {
-      const rows = (Array.isArray(value) ? value : [value]).filter(
-        (r): r is Record<string, unknown> => !!r && typeof r === "object",
-      );
-      out[concept.uuid] = rows.map((r) => {
+      // Avni's apps store a repeatable group as a list of records. Anything else (a single group is
+      // an object keyed by field uuid) is not understood here and is left alone.
+      if (!Array.isArray(value) || value.some((r) => !r || typeof r !== "object" || Array.isArray(r))) {
+        unmapped.add(concept.uuid);
+        continue;
+      }
+      answers[concept.uuid] = (value as Array<Record<string, unknown>>).map((r) => {
         const row: Row = {};
         for (const [childName, childValue] of Object.entries(r)) {
           const child = registry.name(childName);
-          if (child) row[child.uuid] = fieldFromApi(child, childValue);
+          if (!child) {
+            unmapped.add(concept.uuid);
+            continue;
+          }
+          const read = fieldFromApi(child, childValue);
+          if (read.lossy) unmapped.add(concept.uuid);
+          row[child.uuid] = read.value;
         }
         return row;
       });
       continue;
     }
-    out[concept.uuid] = fieldFromApi(concept, value);
+    const read = fieldFromApi(concept, value);
+    if (read.lossy) unmapped.add(concept.uuid);
+    answers[concept.uuid] = read.value;
   }
-  return out;
+  return { answers, unmapped };
 }
 
 function fieldToApi(concept: ConceptDef, value: FieldValue | undefined): unknown {

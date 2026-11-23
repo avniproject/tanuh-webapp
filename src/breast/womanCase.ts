@@ -1,14 +1,16 @@
 import { getEncounter, isScheduled, listEncounters } from "@/api/encounters";
 import { getFormDef } from "@/api/formLayout";
-import { getCatchmentLocations } from "@/api/impl";
+import { getCatchmentLocations, type CatchmentLocationNode } from "@/api/impl";
+import { http } from "@/auth/httpClient";
 import { getSubject } from "@/api/subjects";
 import type { EncounterApiResponse, SubjectApiResponse } from "@/api/types";
-import { ConceptRegistry, answersFromApi, type Answers } from "@/forms/engine/answers";
-import { allElements, type FormDef } from "@/forms/engine/formDef";
+import { ConceptRegistry, answersFromApi, type ReadAnswers } from "@/forms/engine/answers";
+import { allElements, type ElementDef, type FormDef } from "@/forms/engine/formDef";
 import type { EarlierVisit, Subject } from "@/forms/engine/ruleRunner";
 import type { PlaceOption } from "@/forms/screen/fields";
 import { BREAST_VISITS, type ClinicianFormKey } from "./breastConcepts";
 import { formVisitFor } from "./breastList";
+import { placesFor, type AddressLevelType } from "./places";
 
 type VisitKey = "screening" | ClinicianFormKey;
 
@@ -23,23 +25,27 @@ export interface WomanCase {
   booked: Record<ClinicianFormKey, EncounterApiResponse | null>;
   /** She has been screened again since; the list shows that later screening. */
   newerScreening: boolean;
-  places: PlaceOption[];
+  /** The places a Location question of these forms offers. */
+  placesOf: (element: ElementDef) => PlaceOption[];
   /** The hospital list could not be read, as against being empty. */
   placesFailed: boolean;
 }
 
 const KEYS: VisitKey[] = ["screening", "assessment", "clinician"];
 
-// Hospitals and centres, as against the places people live in.
-const isFacility = (type: string): boolean => /hospital|centre|center/i.test(type) && !/public health|sub cent/i.test(type);
+interface PlaceData {
+  nodes: CatchmentLocationNode[];
+  types: AddressLevelType[];
+}
 
-async function facilities(): Promise<PlaceOption[] | null> {
+/** The places in the clinician's area and the organisation's location types, or null if either read failed. */
+async function placeData(): Promise<PlaceData | null> {
   try {
-    const { nodes } = await getCatchmentLocations();
-    return nodes
-      .filter((n) => isFacility(n.type))
-      .map((n) => ({ uuid: n.uuid, name: n.name, type: n.type }))
-      .sort((a, b) => a.name.localeCompare(b.name));
+    const [{ nodes }, types] = await Promise.all([
+      getCatchmentLocations(),
+      http.get<AddressLevelType[]>("/web/addressLevelType").then((r) => r.data),
+    ]);
+    return { nodes, types };
   } catch {
     return null; // the form says the list could not be loaded; every other question still works
   }
@@ -53,7 +59,7 @@ export async function loadWomanCase(screeningUuid: string): Promise<WomanCase> {
   const subjectUuid = screening["Subject ID"];
   const [subject, places, ...rest] = await Promise.all([
     getSubject(subjectUuid),
-    facilities(),
+    placeData(),
     ...KEYS.map((k) => getFormDef(BREAST_VISITS[k].formUuid)),
     // size must exceed any real per-woman count: the API pages by last change, not by date.
     ...KEYS.map((k) => listEncounters({ encounterType: BREAST_VISITS[k].name, subjectId: subjectUuid, size: 100 })),
@@ -76,7 +82,7 @@ export async function loadWomanCase(screeningUuid: string): Promise<WomanCase> {
     newerScreening: visits.screening.some(
       (s) => s["Encounter date time"] != null && s["Encounter date time"] > screening["Encounter date time"]!,
     ),
-    places: places ?? [],
+    placesOf: (element) => (places ? placesFor(element.concept, places.nodes, places.types) : []),
     placesFailed: places === null,
   };
 }
@@ -96,7 +102,7 @@ export function ruleSubject(woman: WomanCase, registry: ConceptRegistry): Subjec
         encounterType: v["Encounter type"],
         encounterDateTime: v["Encounter date time"],
         cancelDateTime: v["Cancel date time"],
-        answers: answersFromApi(v.observations ?? {}, registry),
+        answers: answersFromApi(v.observations ?? {}, registry).answers,
         concepts: allElements(woman.forms[k]).map((e) => e.concept),
       })),
   );
@@ -108,7 +114,7 @@ export function ruleSubject(woman: WomanCase, registry: ConceptRegistry): Subjec
   };
 }
 
-/** A submitted visit's answers, as the form screen takes them. */
-export function visitAnswers(visit: EncounterApiResponse | null, registry: ConceptRegistry): Answers {
-  return visit ? answersFromApi(visit.observations ?? {}, registry) : {};
+/** A submitted visit's answers, as the form screen takes them, with what could not be read in full. */
+export function visitAnswers(visit: EncounterApiResponse | null, registry: ConceptRegistry): ReadAnswers {
+  return visit ? answersFromApi(visit.observations ?? {}, registry) : { answers: {}, unmapped: new Set() };
 }

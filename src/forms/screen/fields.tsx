@@ -1,4 +1,5 @@
 import { Box, ButtonBase, InputBase, Stack, Typography } from "@mui/material";
+import { format } from "date-fns";
 import type { ReactNode } from "react";
 import type { FieldValue } from "@/forms/engine/answers";
 import type { AnswerDef, ElementDef } from "@/forms/engine/formDef";
@@ -83,7 +84,7 @@ function OptionPill({
 
 function offered(element: ElementDef, status: ElementStatus | undefined): AnswerDef[] {
   const hidden = new Set(status?.hiddenAnswers ?? []);
-  return element.concept.answers.filter((a) => !hidden.has(a.uuid));
+  return element.concept.answers.filter((a) => !hidden.has(a.uuid) && !a.voided);
 }
 
 function SingleSelect({ element, value, status, onChange, disabled, id }: FieldProps) {
@@ -206,9 +207,10 @@ function DateField({ value, onChange, disabled, id }: FieldProps) {
     <InputBase
       id={id}
       type="date"
-      value={typeof value === "string" ? value.slice(0, 10) : ""}
+      // The phone stores a date as local midnight, which in UTC text is the day before: show the local day.
+      value={typeof value === "string" && !Number.isNaN(new Date(value).getTime()) ? format(new Date(value), "yyyy-MM-dd") : ""}
       disabled={disabled}
-      onChange={(e) => onChange(e.target.value === "" ? undefined : new Date(e.target.value).toISOString())}
+      onChange={(e) => onChange(e.target.value === "" ? undefined : new Date(`${e.target.value}T00:00:00`).toISOString())}
       sx={{ ...inputSx, width: 200 }}
     />
   );

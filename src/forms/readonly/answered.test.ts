@@ -23,7 +23,7 @@ const observations = {
 };
 
 describe("answeredSections", () => {
-  const sections = answeredSections(form, answersFromApi(observations, registry));
+  const sections = answeredSections(form, answersFromApi(observations, registry).answers);
 
   it("keeps the form's section order and leaves out sections with no answer", () => {
     const order = form.pages.map((p) => p.name);
@@ -53,7 +53,7 @@ describe("answeredSections", () => {
   });
 
   it("can leave named answers to another panel", () => {
-    const without = answeredSections(form, answersFromApi(observations, registry), new Set(["PS Risk Class"]));
+    const without = answeredSections(form, answersFromApi(observations, registry).answers, new Set(["PS Risk Class"]));
     expect(without.flatMap((s) => s.rows).some((r) => r.element.concept.name === "PS Risk Class")).toBe(false);
   });
 });

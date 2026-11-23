@@ -6,6 +6,8 @@ export interface AnswerDef {
   name: string;
   order: number;
   unique: boolean;
+  /** Retired in Avni: still read on a saved visit, never offered for a new answer. */
+  voided: boolean;
 }
 
 export interface KeyValue {
@@ -63,7 +65,6 @@ function concept(json: Json): ConceptDef {
   // /web/form nests answers as conceptAnswers[].answerConcept; a bundle lists them flat.
   const web = arr(json.conceptAnswers);
   const answers: AnswerDef[] = (web.length ? web : arr(json.answers))
-    .filter((a) => !a.voided)
     .map((a) => {
       const c = (a.answerConcept as Json | undefined) ?? a;
       return {
@@ -71,6 +72,7 @@ function concept(json: Json): ConceptDef {
         name: String(c.name),
         order: num(a.order) ?? 0,
         unique: a.unique === true,
+        voided: a.voided === true,
       };
     })
     .sort((a, b) => a.order - b.order);

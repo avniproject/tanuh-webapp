@@ -13,7 +13,7 @@ interface Props {
   subject: Subject;
   draft: VisitDraft;
   initialAnswers: Answers;
-  places: PlaceOption[];
+  placesOf: (element: ElementDef) => PlaceOption[];
   placesFailed: boolean;
   submitLabel: string;
   /** Under the progress bar: "Draft saved just now", "Submitted to Avni", … */
@@ -28,6 +28,7 @@ interface Props {
 }
 
 const sectionId = (page: PageDef): string => `section-${page.uuid}`;
+const NO_PLACES: PlaceOption[] = [];
 
 function Section({
   index,
@@ -100,7 +101,7 @@ export function AvniForm({
   subject,
   draft,
   initialAnswers,
-  places,
+  placesOf,
   placesFailed,
   submitLabel,
   savedNote,
@@ -160,7 +161,7 @@ export function AvniForm({
         value={value}
         status={view.statuses.get(statusKey(element.uuid, row))}
         disabled={readOnly || submitting}
-        places={places}
+        places={element.concept.dataType === "Location" ? placesOf(element) : NO_PLACES}
         placesFailed={placesFailed}
         required={attempted && missingKeys.has(statusKey(element.uuid, row))}
         onChange={(v) => (group ? setRow(group, row!, element.concept.uuid, v) : set(element.concept.uuid, v))}
