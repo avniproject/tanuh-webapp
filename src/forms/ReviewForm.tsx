@@ -68,6 +68,7 @@ import { CategoryBadge, ModelResultBadge } from "@/components/StatusBadge";
 import { computeAgreement } from "./agreement";
 import { caseNoticeText, decideCaseAccess, decideSubmit, formToShow } from "./caseAccess";
 import { bookHighRiskFollowUps, type FollowUp } from "./followUps";
+import { reviewDraftKey } from "./reviewDrafts";
 import {
   collectPhotos,
   deriveClassification,
@@ -216,7 +217,7 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
   // In-progress form state is persisted to sessionStorage keyed by the
   // encounter uuid so it survives HMR, accidental refreshes, and tab
   // switches mid-review. Cleared on successful submit.
-  const storageKey = screeningUuid ? `review-form:case:${screeningUuid}` : `review-form:${encounterUuid}`;
+  const storageKey = reviewDraftKey({ encounterUuid, screeningUuid });
   const [form, setForm] = useState<FormState | null>(() => {
     try {
       const raw = sessionStorage.getItem(storageKey);

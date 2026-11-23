@@ -9,6 +9,7 @@ import { clearCatchmentCache } from "@/api/impl";
 import { clearCatchment } from "@/api/catchment";
 import { bindEncounterCacheScope, clearEncounterCacheScope } from "@/api/encounters";
 import { clearListStates } from "@/api/listState";
+import { clearReviewDrafts } from "@/forms/reviewDrafts";
 
 async function loadMe(): Promise<MeResponse> {
   const response = await http.get<MeResponse>("/me");
@@ -98,6 +99,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       clearCatchment();
       clearEncounterCacheScope();
       clearListStates(window.sessionStorage); // sessionStorage survives the reload below
+      clearReviewDrafts(window.sessionStorage); // a review's unsent answers are not the next sign-in's (FW11)
       await state.idp.signOut();
       setState({ status: "loading" });
       window.location.reload();
