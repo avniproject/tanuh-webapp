@@ -156,6 +156,30 @@ describe("readOrgChildren", () => {
     expect(get).toHaveBeenCalledTimes(2);
   });
 
+  // FW9: a place added or removed while the pages are read shifts the rows; a skipped row can make an ancestor look
+  // covered. A place seen twice shows the shift, and the read is refused (and asked again on the next load).
+  it("throws when a place comes back on two pages, and reads afresh next time", async () => {
+    get.mockImplementation((_url: string, { params }: { params: { page: number } }) =>
+      Promise.resolve(
+        params.page === 0
+          ? locPage([row("state", null), row("distA", "state")], 2)
+          : locPage([row("distA", "state"), row("distB", "state")], 2),
+      ),
+    );
+    await expect(readOrgChildren()).rejects.toThrow(/changed while it was read/);
+    get.mockImplementation(() => Promise.resolve(locPage([row("state", null), row("distA", "state")], 1)));
+    await expect(readOrgChildren()).resolves.toBeInstanceOf(Map);
+  });
+
+  it("throws when a voided place comes back on two pages", async () => {
+    get.mockImplementation((_url: string, { params }: { params: { page: number } }) =>
+      Promise.resolve(
+        params.page === 0 ? locPage([row("gone", "state", true)], 2) : locPage([row("gone", "state", true)], 2),
+      ),
+    );
+    await expect(readOrgChildren()).rejects.toThrow(/changed while it was read/);
+  });
+
   it("rejects a response without a numeric totalPages", async () => {
     get.mockResolvedValue({ data: { content: [row("a", "p")] } });
     await expect(readOrgChildren()).rejects.toThrow();

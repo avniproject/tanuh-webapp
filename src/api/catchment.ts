@@ -36,6 +36,11 @@ let catchmentCache: Promise<Catchment> | null = null;
 async function fetchOrgChildren(): Promise<Map<string, string[]>> {
   const now = new Date(Date.now() + 60 * 60 * 1000).toISOString();
   const children = new Map<string, string[]>();
+  // A place added or removed while the pages are read shifts the rows between
+  // pages: one can be read twice and another skipped, and a skipped child can
+  // make its parent look covered. A place seen twice shows the shift, so the
+  // read is refused; getCatchment asks again on the next load (FW9).
+  const seen = new Set<string>();
   // totalElements is the page's own count on this endpoint, so only totalPages
   // says when to stop.
   let totalPages = 1;
@@ -48,6 +53,8 @@ async function fetchOrgChildren(): Promise<Map<string, string[]>> {
     }
     totalPages = data.totalPages;
     for (const row of data.content) {
+      if (seen.has(row.ID)) throw new Error("The place list changed while it was read");
+      seen.add(row.ID);
       const parent = row.Parent?.ID;
       if (row.Voided || !parent) continue;
       const list = children.get(parent) ?? [];
