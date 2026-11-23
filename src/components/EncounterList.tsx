@@ -85,7 +85,7 @@ import { shortUsername } from "@/auth/username";
 import { LocationFilter } from "./LocationFilter";
 import { FacilityFilter } from "./FacilityFilter";
 import { NextCasePanel } from "./NextCasePanel";
-import { CategoryBadge, HoldStatusBadge, ModelResultBadge, QueueGroupBadge } from "./StatusBadge";
+import { CategoryBadge, HoldStatusBadge, ModelResultBadge, OcshrPendingBadge, QueueGroupBadge } from "./StatusBadge";
 import { chosenPlace, placeScreenings, placesToRead, readReviewsByPlace, usePendingQueue } from "./usePendingQueue";
 
 interface Props {
@@ -249,7 +249,7 @@ function queueRowView(row: QueueRow, subject: SubjectApiResponse | undefined, vi
 
 function ReasonCell({ reason }: { reason: RowView["reason"] }) {
   if (!reason) return <Typography component="span" color="text.secondary">—</Typography>;
-  if (reason === "OCSHR pending") return <>OCSHR pending</>;
+  if (reason === "OCSHR pending") return <OcshrPendingBadge />;
   return <QueueGroupBadge value={reason} />;
 }
 

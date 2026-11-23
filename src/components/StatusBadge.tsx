@@ -10,6 +10,7 @@ import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
 import LockOutlinedIcon from "@mui/icons-material/LockOutlined";
 import LockOpenOutlinedIcon from "@mui/icons-material/LockOpenOutlined";
 import PersonOutlineIcon from "@mui/icons-material/PersonOutline";
+import HourglassEmptyOutlinedIcon from "@mui/icons-material/HourglassEmptyOutlined";
 import type { HoldStatus } from "@/api/caseHold";
 import {
   MODEL_RESULT_VALUES,
@@ -231,9 +232,10 @@ function Pill({ label, ink, fill, testId, state, icon: Icon }: {
   );
 }
 
-// PE-249's three review groups, coloured as in the ticket's screen (amber, violet, teal).
+// PE-249's three review groups: orange (Adam's choice after his own test, in place of the ticket screen's amber), violet
+// and teal.
 const QUEUE_GROUP_COLOURS: Record<QueueGroup, { ink: string; fill: string }> = {
-  "FLW marked": { ink: "#92400e", fill: "#fef3c7" },
+  "FLW marked": { ink: "#9a3412", fill: "#ffedd5" },
   "AI marked": { ink: "#5b21b6", fill: "#ede9fe" },
   "Safety sample": { ink: "#115e59", fill: "#ccfbf1" },
 };
@@ -247,6 +249,20 @@ export function QueueGroupBadge({ value }: { value: QueueGroup }) {
       fill={fill}
       testId="queue-group-badge"
       state={value.toLowerCase().replace(/\s+/g, "-")}
+    />
+  );
+}
+
+// A listed case that is not handed out until its OCSHR result arrives (PE-249): a quiet grey pill with an hourglass.
+export function OcshrPendingBadge() {
+  return (
+    <Pill
+      label="OCSHR pending"
+      ink="#475569"
+      fill="#f1f5f9"
+      icon={HourglassEmptyOutlinedIcon}
+      testId="ocshr-pending-badge"
+      state="ocshr-pending"
     />
   );
 }
