@@ -20,7 +20,7 @@ import {
   deriveWorkerOpinion,
   readObs,
 } from "@/constants/tanuhConcepts";
-import { classify, deriveEdgeVerdict, signalsOf } from "./caseSignals";
+import { classify, deriveEdgeVerdict, hasValue, signalsOf } from "./caseSignals";
 
 // Everything the case page's "Screening signals" section shows, read from one screening (PE-250).
 export type OcshrState = "scored" | "pending" | "unavailable";
@@ -34,6 +34,11 @@ export interface SignalDetails {
 function text(v: unknown): string | undefined {
   const s = typeof v === "string" ? v.trim() : "";
   return s === "" ? undefined : s;
+}
+
+// A Coded or text value stored as a one-element array reads as its element, as codedAnswerName reads it.
+function codedText(v: unknown): string | undefined {
+  return text(Array.isArray(v) ? v[0] : v);
 }
 
 // Up to four decimals, trailing zeros dropped: 0.4999 stays "0.4999" rather than rounding to "0.50".
@@ -60,11 +65,11 @@ function flaggedOf(obs: Record<string, unknown>): { suspicious: number; of: numb
 }
 
 function ocshrOf(obs: Record<string, unknown>, hasResult: boolean, resultValue?: string): SignalDetails["ocshr"] {
-  const status = text(readObs(obs, OCSHR_STATUS_CONCEPT))?.toUpperCase();
-  const error = text(readObs(obs, OCSHR_ERROR_CONCEPT));
+  const status = codedText(readObs(obs, OCSHR_STATUS_CONCEPT))?.toUpperCase();
+  const error = codedText(readObs(obs, OCSHR_ERROR_CONCEPT));
   const code = text(readObs(obs, OCSHR_ERROR_CODE_CONCEPT));
   const failed = (OCSHR_FAILED_STATUSES as readonly string[]).includes(status ?? "") || error !== undefined;
-  const qcFail = text(readObs(obs, QC_STATUS_CONCEPT))?.toLowerCase() === QC_STATUS_VALUES.fail.toLowerCase();
+  const qcFail = codedText(readObs(obs, QC_STATUS_CONCEPT))?.toLowerCase() === QC_STATUS_VALUES.fail.toLowerCase();
   const callMade = codedAnswerName(readObs(obs, OCSHR_CALL_MADE_CONCEPT));
 
   const probability = probabilityOf(readObs(obs, OCSHR_PROBABILITY_CONCEPT));
@@ -103,7 +108,7 @@ export function signalDetailsOf(screening: { observations?: Record<string, unkno
   return {
     flw: {
       verdict: opinion === undefined ? undefined : opinion === WORKER_OPINION.suspicious ? "Suspicious" : "Non-Suspicious",
-      referralRaised: readObs(obs, PLACE_OF_REFERRAL_CONCEPT) !== undefined,
+      referralRaised: hasValue(readObs(obs, PLACE_OF_REFERRAL_CONCEPT)),
     },
     edge: { verdict: edgeVerdict, ...(flagged && { flagged }) },
     ocshr,

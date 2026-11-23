@@ -43,7 +43,8 @@ function hasPhoto(obs: Record<string, unknown>): boolean {
   );
 }
 
-function hasValue(v: unknown): boolean {
+// A value that counts as recorded: a non-empty array, or anything other than empty text, null or undefined.
+export function hasValue(v: unknown): boolean {
   if (Array.isArray(v)) return v.length > 0;
   return v !== undefined && v !== null && v !== "";
 }

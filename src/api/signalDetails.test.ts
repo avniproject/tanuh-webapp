@@ -66,6 +66,15 @@ describe("OCSHR rules", () => {
   });
   it("a stored Yes is not a result", () =>
     expect(D({ "OCSHR Model Result": "Yes", "OCSHR Call Made": "Yes" })).toMatchObject({ resultText: "Pending", statusLine: "Sent, not yet scored" }));
+  it("reads a one-element array as its element for Model Status, Model Error and QC status", () => {
+    expect(D({ "OCSHR Model Status": ["FAILED"], "OCSHR Model Result": "Not High Risk" })).toMatchObject({
+      state: "unavailable",
+      resultText: "Not available",
+      statusLine: "Not scored",
+    });
+    expect(D({ "OCSHR Model Error": ["Boom"] }).statusLine).toBe("Not scored: Boom");
+    expect(D({ "QC status": ["QC Fail"] }).statusLine).toBe("Not sent: failed the quality check");
+  });
   it("an unreadable processed time reads Scored", () =>
     expect(D({ "OCSHR Model Result": "High Risk", "OCSHR Model Processed Time": "garbage" }).statusLine).toBe("Scored"));
 });
@@ -103,6 +112,7 @@ describe("FLW, Edge and safety sample", () => {
   it("Suspicious stays", () =>
     expect(all({ "ORAL SCREENING": [{ "Suspicious Lesion?": "Yes" }] }).flw.verdict).toBe("Suspicious"));
   it("place of referral raises a referral", () => expect(all({ "Place of referral": "loc-1" }).flw.referralRaised).toBe(true));
+  it("an empty place of referral raises none", () => expect(all({ "Place of referral": [] }).flw.referralRaised).toBe(false));
   it("counts flagged images", () =>
     expect(
       all({ "Image-wise AI Assessment": [{ "AI Verdict": "Suspicious" }, { "AI Verdict": "Suspicious" }, { "AI Verdict": "Non-Suspicious" }] }).edge,
