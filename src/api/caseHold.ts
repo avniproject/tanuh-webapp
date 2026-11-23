@@ -1,10 +1,20 @@
+import axios from "axios";
 import { addDays, endOfDay, startOfDay } from "date-fns";
+import { http } from "@/auth/httpClient";
 import {
   ENCOUNTER_TYPE,
   IN_REVIEW_BY_CONCEPT,
   IN_REVIEW_SINCE_CONCEPT,
+  REVIEWED_ORAL_SCREENING_CONCEPT,
 } from "@/constants/tanuhConcepts";
-import type { UpsertEncounterBody } from "./encounters";
+import {
+  getEncounter,
+  invalidateEncounterSweeps,
+  isProgramEncounter,
+  submitEncounter,
+  type UpsertEncounterBody,
+} from "./encounters";
+import type { QueueRow } from "./queueRows";
 import { buildScheduledVisitRequest, type ScheduledVisitRequest } from "./scheduledVisit";
 import type { EncounterApiResponse } from "./types";
 
@@ -131,4 +141,83 @@ export function createReviewVisit(screening: EncounterApiResponse, uuid: string,
     },
     uuid,
   );
+}
+
+export type TakeResult = { reviewUuid: string } | { refused: "completed" | "held" | "gone" };
+
+const isNotFound = (err: unknown) => axios.isAxiosError(err) && err.response?.status === 404;
+
+// A review that is not there is null; any other failure is the caller's.
+async function readReview(uuid: string): Promise<EncounterApiResponse | null> {
+  try {
+    return await getEncounter(uuid);
+  } catch (err) {
+    if (isNotFound(err)) return null;
+    throw err;
+  }
+}
+
+// The hold write, retried once: a second failure is thrown.
+async function putHold(current: EncounterApiResponse, body: UpsertEncounterBody): Promise<void> {
+  const send = () => submitEncounter(current.ID, body, { program: isProgramEncounter(current) });
+  try {
+    await send();
+  } catch {
+    await send();
+  }
+}
+
+/**
+ * Takes a case for `viewer`: writes the hold on the case's review, creating the review first when a completed
+ * screening has none. Nothing is written when the review is completed, cancelled, deleted or held by someone else.
+ */
+export async function takeCase(row: QueueRow, viewer: string, now: Date = new Date()): Promise<TakeResult> {
+  const hold: Hold = { by: viewer, since: now.toISOString() };
+
+  if (row.kind === "booked") {
+    const current = await readReview(row.review.encounterUuid);
+    if (!current) return { refused: "gone" };
+    const verdict = decideTake(current, viewer, now);
+    if (verdict !== "take") return { refused: verdict };
+    await putHold(current, holdBody(current, hold));
+    invalidateEncounterSweeps();
+    return { reviewUuid: row.review.encounterUuid };
+  }
+
+  const screening = row.screening;
+  const stamp = { [REVIEWED_ORAL_SCREENING_CONCEPT.name]: screening.ID };
+  const uuid = await reviewUuidFor(screening.ID);
+  let current = await readReview(uuid);
+  if (current) {
+    const verdict = decideTake(current, viewer, now);
+    if (verdict !== "take") return { refused: verdict };
+  } else {
+    const { url, body } = createReviewVisit(screening, uuid, now);
+    try {
+      const response = await http.post<{ success: boolean; errorMessage?: string }>(url, body);
+      if (response.data.success === false) {
+        throw new Error(response.data.errorMessage || `${url} refused the review`);
+      }
+    } catch (err) {
+      // The POST can fail after another physician created and completed the review.
+      if (axios.isAxiosError(err)) {
+        const after = await readReview(uuid).catch(() => null);
+        if (after && decideTake(after, viewer, now) === "completed") return { refused: "completed" };
+      }
+      throw err;
+    }
+    current = await getEncounter(uuid);
+  }
+  await putHold(current, holdBody(current, hold, stamp));
+  invalidateEncounterSweeps();
+  return { reviewUuid: uuid };
+}
+
+/** Removes the viewer's own hold from a review; a review held by someone else, or already over, is left alone. */
+export async function releaseCase(reviewUuid: string, viewer: string): Promise<void> {
+  const current = await readReview(reviewUuid);
+  if (!current || isCompleted(current)) return;
+  if (readHold(current)?.by !== viewer) return;
+  await putHold(current, holdBody(current, null));
+  invalidateEncounterSweeps();
 }
