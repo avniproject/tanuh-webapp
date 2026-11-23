@@ -27,7 +27,15 @@ export type OcshrState = "scored" | "pending" | "unavailable";
 export interface SignalDetails {
   flw: { verdict?: "Suspicious" | "Non-Suspicious"; referralRaised: boolean };
   edge: { verdict?: "Suspicious" | "Non-Suspicious"; flagged?: { suspicious: number; of: number } };
-  ocshr: { state: OcshrState; resultText: string; statusLine: string; probability?: string; version?: string };
+  // highRisk: the scored "High Risk: Yes" row, which the card shows in red.
+  ocshr: {
+    state: OcshrState;
+    resultText: string;
+    statusLine: string;
+    highRisk: boolean;
+    probability?: string;
+    version?: string;
+  };
   safetySample: boolean; // group is Safety sample and ocshr.state is "scored"
 }
 
@@ -75,10 +83,11 @@ function ocshrOf(obs: Record<string, unknown>, hasResult: boolean, resultValue?:
   const probability = probabilityOf(readObs(obs, OCSHR_PROBABILITY_CONCEPT));
   const version = text(readObs(obs, OCSHR_VERSION_CONCEPT));
   const versionOnly = version !== undefined ? { version } : {};
-  const row = (state: OcshrState, resultText: string, statusLine: string): SignalDetails["ocshr"] => ({
+  const row = (state: OcshrState, resultText: string, statusLine: string, highRisk = false): SignalDetails["ocshr"] => ({
     state,
     resultText,
     statusLine,
+    highRisk,
     ...versionOnly,
     ...(state === "scored" && probability !== undefined && { probability }),
   });
@@ -90,7 +99,7 @@ function ocshrOf(obs: Record<string, unknown>, hasResult: boolean, resultValue?:
   if (hasResult) {
     const at = processedAt(readObs(obs, OCSHR_PROCESSED_TIME_CONCEPT));
     const yes = resultValue === OCSHR_RESULT_VALUES.highRisk;
-    return row("scored", yes ? "High Risk: Yes" : "High Risk: No", at ? `Scored · ${at}` : "Scored");
+    return row("scored", yes ? "High Risk: Yes" : "High Risk: No", at ? `Scored · ${at}` : "Scored", yes);
   }
   if (qcFail) return row("unavailable", "Not available", "Not sent: failed the quality check");
   if (callMade === "No") return row("unavailable", "Not available", "Not sent to the model");

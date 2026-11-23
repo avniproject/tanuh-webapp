@@ -2,7 +2,7 @@ import type { ReactNode } from "react";
 import { Alert, Box, Card, CardContent, Grid, Stack, Typography } from "@mui/material";
 import { signalDetailsOf } from "@/api/signalDetails";
 import type { EncounterApiResponse } from "@/api/types";
-import { QUEUE_GROUP_COLOURS } from "./StatusBadge";
+import { QUEUE_GROUP_COLOURS } from "./queueGroupColours";
 
 const AI_DISCLAIMER =
   "AI results are decision support only and are not a diagnosis. The final clinical assessment rests with the clinician.";
@@ -37,10 +37,10 @@ function SignalCard({
   return (
     <Card variant="outlined" sx={{ height: "100%" }} data-testid={testId}>
       <CardContent>
-        <Typography variant="subtitle2" fontWeight={700}>
+        <Typography variant="subtitle2" component="h3" fontWeight={700}>
           {title}
         </Typography>
-        <Typography variant="h6" fontWeight={700} sx={{ color: valueColor ?? "text.primary" }}>
+        <Typography variant="h6" component="p" fontWeight={700} sx={{ color: valueColor ?? "text.primary" }}>
           {value}
         </Typography>
         {children}
@@ -54,12 +54,7 @@ function SignalCard({
 export function ScreeningSignals({ screening }: { screening: EncounterApiResponse }) {
   const { flw, edge, ocshr, safetySample } = signalDetailsOf(screening);
   const dash = "—";
-  const ocshrColor =
-    ocshr.state === "scored"
-      ? ocshr.resultText === "High Risk: Yes"
-        ? "error.main"
-        : undefined
-      : "text.secondary";
+  const ocshrColor = ocshr.state === "scored" ? (ocshr.highRisk ? "error.main" : undefined) : "text.secondary";
   const safety = QUEUE_GROUP_COLOURS["Safety sample"];
 
   return (

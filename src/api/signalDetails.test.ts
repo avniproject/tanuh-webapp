@@ -129,6 +129,19 @@ describe("FLW, Edge and safety sample", () => {
   it("not when the model failed", () => expect(all(negative({ "OCSHR Model Status": "FAILED" })).safetySample).toBe(false));
 });
 
+describe("the High Risk flag, for the red result", () => {
+  it("is set only on the High Risk: Yes row", () => {
+    expect(D({ "OCSHR Model Result": "High Risk" }).highRisk).toBe(true);
+    expect(D({ "OCSHR Model Result": "Not High Risk" }).highRisk).toBe(false);
+  });
+  it("is not set when a failure hides a stored High Risk result, or on a pending or unsent row", () => {
+    expect(D({ "OCSHR Model Result": "High Risk", "OCSHR Model Status": "FAILED" }).highRisk).toBe(false);
+    expect(D({ "OCSHR Call Made": "Yes" }).highRisk).toBe(false);
+    expect(D({ "OCSHR Call Made": "No" }).highRisk).toBe(false);
+    expect(D({ "QC status": "QC Fail" }).highRisk).toBe(false);
+  });
+});
+
 describe("probability only on a scored card", () => {
   it("a failure row carries no probability but keeps the version", () => {
     const o = D({

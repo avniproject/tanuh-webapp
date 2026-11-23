@@ -20,6 +20,7 @@ import {
   type QueueGroup,
 } from "@/constants/tanuhConcepts";
 import { holdPill } from "./holdPill";
+import { QUEUE_GROUP_COLOURS } from "./queueGroupColours";
 
 // Status pills for the high-risk model's values on a screening (tanuh-webapp#4). Colour + icon + text (never colour
 // alone); red is reserved for High Risk. The result tooltips are Fathima's prototype copy (PE-96 attachment) verbatim.
@@ -232,15 +233,6 @@ function Pill({ label, ink, fill, testId, state, icon: Icon }: {
     </Box>
   );
 }
-
-// PE-249's three review groups: orange (Adam's choice after his own test, in place of the ticket screen's amber), violet
-// and teal.
-// eslint-disable-next-line react-refresh/only-export-components -- a constant shared with ScreeningSignals
-export const QUEUE_GROUP_COLOURS: Record<QueueGroup, { ink: string; fill: string }> = {
-  "FLW marked": { ink: "#9a3412", fill: "#ffedd5" },
-  "AI marked": { ink: "#5b21b6", fill: "#ede9fe" },
-  "Safety sample": { ink: "#115e59", fill: "#ccfbf1" },
-};
 
 export function QueueGroupBadge({ value }: { value: QueueGroup }) {
   const { ink, fill } = QUEUE_GROUP_COLOURS[value];
