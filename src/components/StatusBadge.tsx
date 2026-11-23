@@ -1,3 +1,4 @@
+import type { MouseEvent } from "react";
 import { Box, Tooltip, Typography } from "@mui/material";
 import { alpha, useTheme } from "@mui/material/styles";
 import type { SvgIconComponent } from "@mui/icons-material";
@@ -45,6 +46,11 @@ const RISK_TONE: Record<ModelResultValue, Tone> = {
   [MODEL_RESULT_VALUES.nonSuspicious]: "good",
 };
 
+// A badge with a tooltip sits inside a list row or card that opens the case on a click. A tap on the badge shows its
+// tooltip (enterTouchDelay 0) and must not open the case as well. The tooltip describes the badge rather than naming
+// it, so a screen reader still reads the badge's own words.
+const stopRowClick = (event: MouseEvent) => event.stopPropagation();
+
 interface StatusBadgeProps {
   tone: Tone;
   label: string;
@@ -63,12 +69,13 @@ export function StatusBadge({ tone, label, tooltip, ai, testId, state }: StatusB
   const ink = tone === "neutral" ? theme.palette.grey[800] : theme.palette[toneKey(tone)].dark;
   const Icon = TONE_ICON[tone];
   return (
-    <Tooltip title={tooltip} arrow enterTouchDelay={0}>
+    <Tooltip title={tooltip} arrow enterTouchDelay={0} describeChild>
       <Box
         component="span"
         data-testid={testId}
         data-state={state}
         tabIndex={0}
+        onClick={stopRowClick}
         sx={{
           display: "inline-flex",
           alignItems: "center",
@@ -259,8 +266,8 @@ export function HoldStatusBadge({ status, usernameSuffix }: { status: HoldStatus
   if (!tooltip) return pill;
   // The tooltip needs an element that takes its ref and handlers, which Pill does not.
   return (
-    <Tooltip title={tooltip} arrow enterTouchDelay={0}>
-      <Box component="span" tabIndex={0} sx={{ display: "inline-flex" }}>
+    <Tooltip title={tooltip} arrow enterTouchDelay={0} describeChild>
+      <Box component="span" tabIndex={0} onClick={stopRowClick} sx={{ display: "inline-flex" }}>
         {pill}
       </Box>
     </Tooltip>
