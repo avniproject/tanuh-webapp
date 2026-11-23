@@ -62,6 +62,12 @@ export function chooseGroup(reviewed: GroupCounts, waiting: GroupCounts): QueueG
   return ordered.find((g) => waiting[g] > 0) ?? null;
 }
 
+// The panel's line on which group the button takes from next (FW13: "an" before a vowel).
+export function nextCaseLine(next: QueueGroup | null): string {
+  if (!next) return "No cases are waiting for review.";
+  return `Next case will be ${/^[aeiou]/i.test(next) ? "an" : "a"} ${next} case.`;
+}
+
 export function nextCaseIn(rows: QueueRow[], group: QueueGroup, viewer: string, now: Date): QueueRow | undefined {
   return oldest(
     rows.filter((r) => isReadyRow(r) && rowReason(r) === group && rowHoldStatus(r, viewer, now).kind === "waiting"),

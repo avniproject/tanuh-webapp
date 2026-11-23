@@ -82,7 +82,7 @@ export function FacilityFilter({ value, onChange, types }: Props) {
   if (options.length === 0) {
     return (
       <Alert severity="info" sx={{ flex: 1 }}>
-        No referral facilities available in your catchment.
+        No referral facilities are available for your account.
       </Alert>
     );
   }

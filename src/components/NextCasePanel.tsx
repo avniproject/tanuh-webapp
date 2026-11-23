@@ -1,7 +1,7 @@
 import { Alert, Box, Button, CircularProgress, Paper, Stack, Typography } from "@mui/material";
 import ArrowForwardIcon from "@mui/icons-material/ArrowForward";
 import CheckIcon from "@mui/icons-material/Check";
-import type { GroupCounts } from "@/api/queueChoice";
+import { nextCaseLine, type GroupCounts } from "@/api/queueChoice";
 import { QUEUE_GROUPS, type QueueGroup } from "@/constants/tanuhConcepts";
 import { QueueGroupBadge } from "./StatusBadge";
 
@@ -76,7 +76,7 @@ export function NextCasePanel({ reviewed, next, held, busy, failed, onTake }: Pr
           ))}
         </Stack>
         <Typography variant="body2" color="text.secondary" data-testid="next-case-group">
-          {next ? `Next case will be a ${next} case.` : "No cases are waiting for review."}
+          {nextCaseLine(next)}
         </Typography>
       </Paper>
     </Stack>

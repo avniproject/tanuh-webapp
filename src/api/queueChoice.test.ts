@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { CachedEncounter } from "./encounters";
 import type { EncounterWithLocation } from "./impl";
-import { chooseGroup, heldByViewer, nextCaseIn, reviewedToday, takeNextCase, waitingCounts } from "./queueChoice";
+import { chooseGroup, heldByViewer, nextCaseIn, nextCaseLine, reviewedToday, takeNextCase, waitingCounts } from "./queueChoice";
 import type { QueueRow } from "./queueRows";
 import type { TakeResult } from "./caseHold";
 import { classify, signalsOf } from "./caseSignals";
@@ -57,6 +57,18 @@ describe("chooseGroup", () => {
   });
   it("is null when nothing waits", () => {
     expect(chooseGroup({ "FLW marked": 0, "AI marked": 0, "Safety sample": 0 }, { "FLW marked": 0, "AI marked": 0, "Safety sample": 0 })).toBeNull();
+  });
+});
+
+// FW13: "an" before a group that starts with a vowel.
+describe("nextCaseLine", () => {
+  it("names the next group with the right article", () => {
+    expect(nextCaseLine("AI marked")).toBe("Next case will be an AI marked case.");
+    expect(nextCaseLine("FLW marked")).toBe("Next case will be a FLW marked case.");
+    expect(nextCaseLine("Safety sample")).toBe("Next case will be a Safety sample case.");
+  });
+  it("says when nothing is waiting", () => {
+    expect(nextCaseLine(null)).toBe("No cases are waiting for review.");
   });
 });
 
