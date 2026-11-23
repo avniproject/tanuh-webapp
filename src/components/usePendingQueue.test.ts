@@ -28,7 +28,7 @@ vi.mock("@/api/programList", () => ({
   readSubjects: (ids: string[]) => m.readSubjects(ids),
 }));
 
-import { loadPendingQueue, readReviewsByPlace } from "./usePendingQueue";
+import { loadPendingQueue, placesToRead, readReviewsByPlace } from "./usePendingQueue";
 
 const at = (minute: number) => new Date(Date.UTC(2026, 10, 23, 9, minute)).toISOString();
 
@@ -180,5 +180,21 @@ describe("readReviewsByPlace", () => {
     const read = await readReviewsByPlace([], { encounterType: "Clinician Review Form", status: "scheduled" });
     expect(read.content).toEqual([]);
     expect(m.getAll).not.toHaveBeenCalled();
+  });
+});
+
+describe("placesToRead", () => {
+  const c = catchment(["d1", "v1", "d2"], ["d1", "d2"]);
+  it("reads the chosen place when it is one of the physician's", () => {
+    expect(placesToRead(c, "v1")).toEqual(["v1"]);
+  });
+  it("reads every top place when none is chosen", () => {
+    expect(placesToRead(c, null)).toEqual(["d1", "d2"]);
+  });
+  it("ignores a chosen place outside the physician's places", () => {
+    expect(placesToRead(c, "other")).toEqual(["d1", "d2"]);
+  });
+  it("reads nothing for a physician with no places", () => {
+    expect(placesToRead(catchment([], []), "v1")).toEqual([]);
   });
 });

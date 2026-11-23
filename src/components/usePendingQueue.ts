@@ -15,6 +15,11 @@ export interface ReviewsByPlace {
   unchecked: Set<string>;
 }
 
+/** The places to read reviews in: the chosen place when it is one of the physician's, else each top place. */
+export function placesToRead(catchment: Catchment, chosen: string | null | undefined): string[] {
+  return chosen && catchment.contains(chosen) ? [chosen] : catchment.tops;
+}
+
 /**
  * Reviews read one place at a time, standalone and programme, merged by uuid (PE-249). The places are the physician's
  * top places, or the one place chosen, so nothing outside their places is read. No places, no reviews.

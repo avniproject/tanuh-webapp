@@ -27,8 +27,8 @@ import SearchIcon from "@mui/icons-material/Search";
 import ClearIcon from "@mui/icons-material/Clear";
 import { useNavigate } from "react-router-dom";
 import { endOfDay, format, parseISO } from "date-fns";
-import { getAllEncountersWithLocation, type EncounterWithLocation } from "@/api/impl";
-import { getProgramEncountersWithLocation, readSubjects } from "@/api/programList";
+import type { EncounterWithLocation } from "@/api/impl";
+import { readSubjects } from "@/api/programList";
 import { getCatchment } from "@/api/catchment";
 import { takeCase, type HoldStatus } from "@/api/caseHold";
 import { takeNextCase } from "@/api/queueChoice";
@@ -86,7 +86,7 @@ import { LocationFilter } from "./LocationFilter";
 import { FacilityFilter } from "./FacilityFilter";
 import { NextCasePanel } from "./NextCasePanel";
 import { CategoryBadge, HoldStatusBadge, ModelResultBadge, QueueGroupBadge } from "./StatusBadge";
-import { readReviewsByPlace, usePendingQueue } from "./usePendingQueue";
+import { placesToRead, readReviewsByPlace, usePendingQueue } from "./usePendingQueue";
 
 interface Props {
   mode: "pending" | "completed";
@@ -290,25 +290,14 @@ export function EncounterList({ mode }: Props) {
   // filters. An org without program visits adds nothing here.
   // PE-249: pending reviews are read in the chosen patient location, which is always one of the physician's places,
   // or else in each of their top places, so nothing outside them is listed. A failure to read their places fails the
-  // load. The completed tab still reads as before (Task 10).
+  // load. The completed tab reads the same way, so its rows, total and High Risk count are theirs alone, with or
+  // without the review queue switch.
   const { data: pageData, error } = useAsync(async () => {
-    if (mode === "pending") {
-      const catchment = await getCatchment();
-      const place = patientLocationUuid && catchment.contains(patientLocationUuid) ? patientLocationUuid : null;
-      return readReviewsByPlace(place ? [place] : catchment.tops, { ...filterParams, status: "scheduled" });
-    }
-    // Requirements 2.0: filter by the patient's location subtree (State → District → Taluka → Village).
-    const params = { ...filterParams, locationUuid: patientLocationUuid, status: "completed" } as const;
-    const [standalone, program] = await Promise.all([
-      getAllEncountersWithLocation(params),
-      getProgramEncountersWithLocation(params),
-    ]);
-    return {
-      content: [...standalone.content, ...program.rows],
-      totalElements: standalone.totalElements + program.rows.length,
-      // Program reviews kept under the location filter because their patient could not be read.
-      unchecked: program.unchecked,
-    };
+    const catchment = await getCatchment();
+    return readReviewsByPlace(placesToRead(catchment, patientLocationUuid), {
+      ...filterParams,
+      status: mode === "pending" ? "scheduled" : "completed",
+    });
   }, [mode, referralUuid, patientLocationUuid, listVersion]);
 
   // tanuh-webapp#4: does the signed-in org have the high-risk model's values? Where it does, the pending tab adds the
