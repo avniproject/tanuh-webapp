@@ -36,9 +36,10 @@ function text(v: unknown): string | undefined {
   return s === "" ? undefined : s;
 }
 
+// Up to four decimals, trailing zeros dropped: 0.4999 stays "0.4999" rather than rounding to "0.50".
 function probabilityOf(v: unknown): string | undefined {
   const n = typeof v === "number" ? v : typeof v === "string" && v.trim() !== "" ? Number(v) : NaN;
-  return Number.isFinite(n) && n >= 0 && n <= 1 ? n.toFixed(2) : undefined;
+  return Number.isFinite(n) && n >= 0 && n <= 1 ? String(Number(n.toFixed(4))) : undefined;
 }
 
 function processedAt(v: unknown): string | undefined {

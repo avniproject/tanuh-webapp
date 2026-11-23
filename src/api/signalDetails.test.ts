@@ -72,9 +72,15 @@ describe("OCSHR rules", () => {
 
 describe("probability and version", () => {
   const p = (v: unknown) => D({ "OCSHR Model Result": "High Risk", "OCSHR Model Probability": v }).probability;
-  it("formats numbers and numeric text", () => {
-    expect(p(0.8214)).toBe("0.82");
-    expect(p("0.7312")).toBe("0.73");
+  it("shows up to four decimals, trailing zeros dropped, for numbers and numeric text", () => {
+    expect(p(0.8214)).toBe("0.8214");
+    expect(p(0.82)).toBe("0.82");
+    expect(p(0.4999)).toBe("0.4999");
+    expect(p(0.5)).toBe("0.5");
+    expect(p(0)).toBe("0");
+    expect(p(1)).toBe("1");
+    expect(p("0.7312")).toBe("0.7312");
+    expect(p(0.123456)).toBe("0.1235");
   });
   it("leaves out anything else", () => {
     for (const v of ["abc", 1.4, -0.1, undefined]) expect(p(v)).toBeUndefined();
