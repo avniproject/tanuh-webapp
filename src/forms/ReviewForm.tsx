@@ -68,7 +68,8 @@ import {
 } from "@/constants/tanuhConcepts";
 import { CategoryBadge, HoldStatusBadge, ModelResultBadge, QueueGroupBadge } from "@/components/StatusBadge";
 import { computeAgreement } from "./agreement";
-import { caseNoticeText, decideCaseAccess, decideSubmit, formToShow } from "./caseAccess";
+import { caseHeading } from "./caseHeading";
+import { caseNoticeText,decideCaseAccess, decideSubmit, formToShow } from "./caseAccess";
 import { bookHighRiskFollowUps, type FollowUp } from "./followUps";
 import { reviewDraftKey } from "./reviewDrafts";
 import {
@@ -611,10 +612,10 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
   // Title the page with the screening's Encounter ID (the same value the list
   // shows as Case ID), falling back to the registration/external ID; subjects
   // with neither get a neutral label rather than the raw subject UUID.
-  const caseLabel =
+  const caseId =
     readObs<string>(loaded.screening.observations as Record<string, unknown>, ENCOUNTER_ID_CONCEPT) ||
-    loaded.subject["External ID"] ||
-    "Patient Review";
+    loaded.subject["External ID"];
+  const caseLabel = caseHeading(caseId, loaded.queueOn);
   const caseTitle = (
     <Typography
       variant="h5"
