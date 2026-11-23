@@ -129,6 +129,19 @@ describe("selectQueueRows", () => {
     expect(keys(rows)).toEqual(["s1"]);
     expect(rows[0].stored).toBeUndefined();
   });
+  it("gives each screening row its own planned review, the first in the store when there are two", () => {
+    const stamped = (id: string, stamp: string) => planned(id, "p1", 20, { [REVIEWED_ORAL_SCREENING_CONCEPT.name]: stamp });
+    const rows = selectQueueRows(
+      [],
+      [ready("s1", "p1", 1), ready("s2", "p1", 2), ready("s3", "p1", 3)],
+      [stamped("first", "s1"), stamped("forS2", "s2"), stamped("second", "s1")],
+    );
+    expect(rows.map((r) => [queueRowKey(r), r.stored?.ID])).toEqual([
+      ["s1", "first"],
+      ["s2", "forS2"],
+      ["s3", undefined],
+    ]);
+  });
 });
 
 describe("row helpers", () => {

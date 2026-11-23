@@ -64,11 +64,17 @@ function reviewedScreeningIds(reviews: CachedEncounter[], screenings: CachedEnco
 export const isPlanned = (r: CachedEncounter): boolean =>
   !r["Encounter date time"] && !r["Cancel date time"] && !r.Voided;
 
-// The open review stamped with this screening, made when a physician took the case.
-const plannedReviewOf = (screening: CachedEncounter, reviews: CachedEncounter[]): CachedEncounter | undefined =>
-  reviews.find(
-    (r) => isPlanned(r) && readObs<string>(r.observations ?? {}, REVIEWED_ORAL_SCREENING_CONCEPT) === screening.ID,
-  );
+// Each screening's open review, made when a physician took the case, by the screening it is stamped with. Read once
+// per call, not once per screening; with two for one screening, the first in the store's order.
+function plannedReviewsByScreening(reviews: CachedEncounter[]): Map<string, CachedEncounter> {
+  const byScreening = new Map<string, CachedEncounter>();
+  for (const r of reviews) {
+    if (!isPlanned(r)) continue;
+    const stamp = readObs<string>(r.observations ?? {}, REVIEWED_ORAL_SCREENING_CONCEPT);
+    if (typeof stamp === "string" && !byScreening.has(stamp)) byScreening.set(stamp, r);
+  }
+  return byScreening;
+}
 
 const createdOf = (row: Extract<QueueRow, { kind: "booked" }>): number => {
   const t = Date.parse(row.stored?.audit?.["Created at"] ?? row.review.earliestScheduledDate ?? "");
@@ -111,10 +117,11 @@ export function selectQueueRows(
   }
   rows.push(...best.values());
 
+  const planned = plannedReviewsByScreening(reviews);
   for (const s of liveScreenings) {
     if (paired.has(s.ID) || reviewed.has(s.ID)) continue;
     const cls = classify(signalsOf(s));
-    if (isReady(cls)) rows.push({ kind: "screening", screening: s, cls, stored: plannedReviewOf(s, reviews) });
+    if (isReady(cls)) rows.push({ kind: "screening", screening: s, cls, stored: planned.get(s.ID) });
   }
   return rows;
 }
