@@ -33,10 +33,13 @@ import {
   submitEncounter,
 } from "@/api/encounters";
 import { getSubject } from "@/api/subjects";
+import { releaseCase } from "@/api/caseHold";
 import { decideCaseRoute } from "@/api/caseRoute";
-import { getConcept, hasHighRiskModel, type ConceptAnswer } from "@/api/concepts";
+import { getCatchment } from "@/api/catchment";
+import { getConcept, hasHighRiskModel, hasReviewQueue, type ConceptAnswer } from "@/api/concepts";
 import { buildCreatedReviewBody, decideCreate, findReviewCreatedFrom } from "@/api/reviewCreate";
 import type { EncounterApiResponse, SubjectApiResponse } from "@/api/types";
+import { useAuth } from "@/auth/authContext";
 import {
   ENCOUNTER_TYPE,
   ENCOUNTER_ID_CONCEPT,
@@ -62,6 +65,7 @@ import {
 } from "@/constants/tanuhConcepts";
 import { CategoryBadge, ModelResultBadge } from "@/components/StatusBadge";
 import { computeAgreement } from "./agreement";
+import { caseNoticeText, decideCaseAccess, decideSubmit } from "./caseAccess";
 import { bookHighRiskFollowUps, type FollowUp } from "./followUps";
 import {
   collectPhotos,
@@ -101,11 +105,36 @@ interface LoadedState {
   physicianVerdictAnswers: ConceptAnswer[];
   provisionalDiagnosisAnswers: ConceptAnswer[];
   subTypeAnswers: ConceptAnswer[];
+  // PE-249 (D3): whether the organisation has the review queue. Known before the page shows, so it never shows
+  // editable and then locks.
+  queueOn: boolean;
+  // When the page was read: the hold is judged against it, so it does not lock mid-review.
+  loadedAt: Date;
 }
 
+// The grey notice of a page the physician cannot change.
+const READ_ONLY_ALERT_SX = {
+  bgcolor: "grey.100",
+  color: "text.primary",
+  border: "1px solid",
+  borderColor: "grey.300",
+  "& .MuiAlert-icon": { color: "text.secondary" },
+} as const;
 
-async function loadReview(encounterUuid: string): Promise<LoadedState> {
-  const review = await getEncounter(encounterUuid);
+// PE-249: a patient outside the physician's places gets no page at all.
+type CasePage = LoadedState | { refused: true };
+
+const isRefused = (page: CasePage): page is { refused: true } => "refused" in page;
+
+// The case is read together with the physician's places and the queue switch. A failure to read either fails the
+// load, so a case is never shown when its place could not be checked.
+async function readWithPlaces(uuid: string) {
+  const [encounter, catchment, queueOn] = await Promise.all([getEncounter(uuid), getCatchment(), hasReviewQueue()]);
+  return { encounter, catchment, queueOn };
+}
+
+async function loadReview(encounterUuid: string): Promise<CasePage> {
+  const { encounter: review, catchment, queueOn } = await readWithPlaces(encounterUuid);
   const subjectId = review["Subject ID"];
   // A standalone review pairs with the subject's standalone screenings; a review
   // recorded inside a program with the screenings of its own enrolment.
@@ -118,6 +147,7 @@ async function loadReview(encounterUuid: string): Promise<LoadedState> {
       getConcept(REVIEW_CONCEPTS.provisionalDiagnosis.uuid),
       getConcept(REVIEW_CONCEPTS.provisionalSubType.uuid),
     ]);
+  if (!catchment.contains(subject["Location ID"])) return { refused: true };
   // Load the specific screening THIS review covers, by the rule the list and the
   // case page use (a booked review: the screening that booked it; a completed
   // one: its stamp, or the created-order pairing), not just the subject's latest —
@@ -135,14 +165,16 @@ async function loadReview(encounterUuid: string): Promise<LoadedState> {
     physicianVerdictAnswers: verdictConcept.answers,
     provisionalDiagnosisAnswers: diagnosisConcept.answers,
     subTypeAnswers: subTypeConcept.answers,
+    queueOn,
+    loadedAt: new Date(),
   };
 }
 
 // tanuh-webapp#5: a screening's page. A booked review takes it to that review's page (drafts are keyed by the route,
 // so one case reachable from two routes would get two drafts); a reviewed screening opens read-only on its review;
-// any other screening opens without a review, and its submit creates one.
-async function loadCase(screeningUuid: string): Promise<LoadedState> {
-  const screening = await getEncounter(screeningUuid);
+// any other screening opens without a review, and its submit creates one (only where there is no review queue).
+async function loadCase(screeningUuid: string): Promise<CasePage> {
+  const { encounter: screening, catchment, queueOn } = await readWithPlaces(screeningUuid);
   const [subject, reviews, screenings, verdictConcept, diagnosisConcept, subTypeConcept] = await Promise.all([
     getSubject(screening["Subject ID"]),
     listVisitsFor(screening, ENCOUNTER_TYPE.physicianReviewForm.name),
@@ -151,6 +183,8 @@ async function loadCase(screeningUuid: string): Promise<LoadedState> {
     getConcept(REVIEW_CONCEPTS.provisionalDiagnosis.uuid),
     getConcept(REVIEW_CONCEPTS.provisionalSubType.uuid),
   ]);
+  // Before the route: a patient outside the physician's places is not sent on to their booked review either.
+  if (!catchment.contains(subject["Location ID"])) return { refused: true };
   const route = decideCaseRoute(screening, subject, reviews, screenings);
   return {
     review: route.kind === "reviewed" ? route.review : undefined,
@@ -161,14 +195,19 @@ async function loadCase(screeningUuid: string): Promise<LoadedState> {
     physicianVerdictAnswers: verdictConcept.answers,
     provisionalDiagnosisAnswers: diagnosisConcept.answers,
     subTypeAnswers: subTypeConcept.answers,
+    queueOn,
+    loadedAt: new Date(),
   };
 }
 
 export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
-  const { data: loaded, error: loadError } = useAsync(
+  const { data: page, error: loadError } = useAsync(
     () => (screeningUuid ? loadCase(screeningUuid) : loadReview(encounterUuid ?? "")),
     [encounterUuid, screeningUuid],
   );
+  const loaded = page && !isRefused(page) ? page : null;
+  const { state: auth } = useAuth();
+  const viewer = auth.status === "ready" ? auth.user.username : "";
   // tanuh-webapp#5: the model's panel exists only for an org with the high-risk model. A failed probe hides the panel
   // and nothing else; the agreement below is decided from the screening's own model result.
   const { data: modelOn } = useAsync(() => hasHighRiskModel(), []);
@@ -195,11 +234,13 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
 
   const [submitting, setSubmitting] = useState(false);
   const [submitError, setSubmitError] = useState<string | null>(null);
-  // The review this page saved. From then on the page is read-only: a second submit would be refused as already
-  // reviewed, and only the follow-ups can still be missing.
+  // The review this page saved. From then on the page is read-only: only the follow-ups can still be missing.
   const [saved, setSaved] = useState<EncounterApiResponse | null>(null);
   // The follow-ups that failed to book for the saved review; "Book the follow-ups again" retries only these.
   const [unbooked, setUnbooked] = useState<FollowUp[]>([]);
+  // PE-249: Release case, for the physician holding the case.
+  const [releasing, setReleasing] = useState(false);
+  const [releaseError, setReleaseError] = useState<string | null>(null);
   const navigate = useNavigate();
   useEffect(() => {
     if (loaded?.redirect) navigate(`/review/${loaded.redirect}`, { replace: true });
@@ -230,6 +271,7 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
   const presentPhotos = useMemo<number[]>(() => photos.map((p) => p.slot), [photos]);
 
   if (loadError) return <Alert severity="error">{loadError}</Alert>;
+  if (page && isRefused(page)) return <Alert severity="error">You are not authorised to view this case.</Alert>;
   if (!loaded || loaded.redirect)
     return (
       <Box sx={{ p: 4, display: "flex", justifyContent: "center" }}>
@@ -254,7 +296,11 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
     presentPhotos.length,
   );
   const completed = !!loaded.review && isCompleted(loaded.review);
-  const readOnly = completed || isLegacy || saved !== null || !!loaded.unavailable;
+  // PE-249: with the review queue on, only the physician holding the case can complete it.
+  const access = decideCaseAccess(loaded.queueOn, loaded, viewer, loaded.loadedAt);
+  const readOnly = completed || isLegacy || saved !== null || !!loaded.unavailable || access.locked;
+  // Once saved, the hold is over: the review is completed.
+  const notice = saved === null ? access.notice : null;
   // A completed review shows what was RECORDED. Re-deriving from the current
   // diagnosisMapping would silently rewrite how past reviews read whenever the
   // mapping table changes (it already changed once — the OSMF row).
@@ -342,23 +388,29 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
       const patientId = readObs<string>(loaded.subject.observations ?? {}, PATIENT_ID_CONCEPT);
       let current: EncounterApiResponse | null = null;
       let encounterId: string | null;
+      // PE-249: who reviewed the case and since when, sent only where the organisation has the review queue.
+      let markers: Record<string, string> = {};
       if (review) {
         // Another physician may have completed this review since it was opened —
         // re-check so a second submit can't silently overwrite the first.
         // Best-effort (not transactional), but it closes the common case. The
         // subject's reviews are re-fetched alongside (not reused from load time)
         // so the Encounter ID sequence below is computed on current data.
+        // With the review queue on, the later submission is kept instead (D9),
+        // and the re-read gives the time the hold was taken.
         const [fetched, reviewsNow] = await Promise.all([
           getEncounter(review.ID),
           listVisitsFor(review, ENCOUNTER_TYPE.physicianReviewForm.name),
         ]);
         current = fetched;
-        if (isCompleted(current)) {
+        const decision = decideSubmit(loaded.queueOn, current, viewer, new Date());
+        if (decision.kind === "refuse") {
           setSubmitError(
             "This review has already been completed by someone else. Go back and reopen it to see the recorded answers.",
           );
           return;
         }
+        markers = decision.markers;
         encounterId =
           readObs<string>(current.observations ?? {}, ENCOUNTER_ID_CONCEPT) ??
           computeNextEncounterId(patientId, "CLR", reviewsNow, review.ID);
@@ -425,6 +477,7 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
       // (the save replaces observations wholesale — recomputing could change
       // it); a subject without a Patient ID gets none, like the mobile rule.
       if (encounterId) observations[ENCOUNTER_ID_CONCEPT.name] = encounterId;
+      Object.assign(observations, markers);
       // tanuh-webapp#5: whether the clinician agreed with the model, only where the model scored this screening; an
       // organisation without the configuration would reject the unknown concept for the whole submit.
       const modelResult = readModelResult((loaded.screening.observations ?? {}) as Record<string, unknown>);
@@ -494,6 +547,21 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
     }
   };
 
+  // PE-249: the holder gives the case back to the queue. A review already over, or no longer theirs, is left alone.
+  const release = async () => {
+    if (!loaded.review) return;
+    setReleasing(true);
+    setReleaseError(null);
+    try {
+      await releaseCase(loaded.review.ID, viewer);
+      navigate("/pending");
+    } catch (err) {
+      setReleaseError(`Could not release the case: ${err instanceof Error ? err.message : String(err)}`);
+    } finally {
+      setReleasing(false);
+    }
+  };
+
   // Clinician review is name-blind: the patient name is intentionally not shown.
   // Title the page with the screening's Encounter ID (the same value the list
   // shows as Case ID), falling back to the registration/external ID; subjects
@@ -539,6 +607,25 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
 
       {loaded.unavailable && <Alert severity="warning">{loaded.unavailable}</Alert>}
 
+      {notice &&
+        (notice.kind === "mine" ? (
+          <Alert
+            severity="info"
+            action={
+              <Button color="inherit" size="small" disabled={releasing || submitting} onClick={release}>
+                {releasing ? "Releasing…" : "Release case"}
+              </Button>
+            }
+          >
+            {caseNoticeText(notice)}
+          </Alert>
+        ) : (
+          <Alert icon={<LockOutlinedIcon fontSize="small" />} severity="info" sx={READ_ONLY_ALERT_SX}>
+            {caseNoticeText(notice)}
+          </Alert>
+        ))}
+      {releaseError && <Alert severity="error">{releaseError}</Alert>}
+
       {isLegacy && (
         <Alert severity="warning">
           This screening was captured on an older form version and is not supported for review.
@@ -547,17 +634,7 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
       )}
 
       {completed && (
-        <Alert
-          icon={<LockOutlinedIcon fontSize="small" />}
-          severity="info"
-          sx={{
-            bgcolor: "grey.100",
-            color: "text.primary",
-            border: "1px solid",
-            borderColor: "grey.300",
-            "& .MuiAlert-icon": { color: "text.secondary" },
-          }}
-        >
+        <Alert icon={<LockOutlinedIcon fontSize="small" />} severity="info" sx={READ_ONLY_ALERT_SX}>
           Read-only — review completed
           {loaded.review?.["Encounter date time"]
             ? ` on ${format(parseISO(loaded.review["Encounter date time"]), "dd MMM yyyy")}`
@@ -822,7 +899,7 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
             <Button
               variant="contained"
               size="large"
-              disabled={submitting || !canSubmit || saved !== null}
+              disabled={submitting || releasing || !canSubmit || saved !== null}
               onClick={submit}
               sx={{
                 minWidth: { xs: "100%", sm: 160 },

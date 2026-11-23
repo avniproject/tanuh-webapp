@@ -1,0 +1,137 @@
+import { describe, expect, it } from "vitest";
+import type { EncounterApiResponse } from "@/api/types";
+import { caseNoticeText, decideCaseAccess, decideSubmit } from "./caseAccess";
+
+const t0 = new Date("2026-11-23T10:00:00Z");
+const later = (min: number) => new Date(t0.getTime() + min * 60_000);
+
+const booked: EncounterApiResponse = {
+  ID: "r1",
+  "Subject ID": "sub1",
+  "Subject external ID": null,
+  "Subject type": "Individual",
+  Voided: false,
+  "External ID": null,
+  "Encounter type": "Clinician Review Form",
+  "Encounter date time": null,
+  "Earliest scheduled date": "2026-11-20T00:00:00.000Z",
+  "Max scheduled date": "2026-11-22T23:59:59.999Z",
+  "Cancel date time": null,
+  observations: {},
+};
+const heldBy = (by: string, at: Date, extra: Partial<EncounterApiResponse> = {}): EncounterApiResponse => ({
+  ...booked,
+  observations: { "In review by": by, "In review since": at.toISOString() },
+  audit: { "Last modified at": at.toISOString() },
+  ...extra,
+});
+const completedBy = (by: string, since: Date): EncounterApiResponse =>
+  heldBy(by, since, { "Encounter date time": later(5).toISOString() });
+
+describe("decideCaseAccess", () => {
+  it("leaves the page as today when the organisation has no review queue", () => {
+    expect(decideCaseAccess(false, { review: booked }, "dr.a", t0)).toEqual({ locked: false, notice: null });
+    expect(decideCaseAccess(false, {}, "dr.a", t0)).toEqual({ locked: false, notice: null });
+    expect(decideCaseAccess(false, { review: heldBy("dr.b", t0) }, "dr.a", t0)).toEqual({ locked: false, notice: null });
+  });
+
+  it("opens a booked review for editing only to the physician holding it", () => {
+    expect(decideCaseAccess(true, { review: heldBy("dr.a", t0) }, "dr.a", later(1))).toEqual({
+      locked: false,
+      notice: { kind: "mine", since: t0.toISOString() },
+    });
+  });
+
+  it("locks a review another physician holds and names them", () => {
+    expect(decideCaseAccess(true, { review: heldBy("dr.b", t0) }, "dr.a", later(1))).toEqual({
+      locked: true,
+      notice: { kind: "other", by: "dr.b" },
+    });
+  });
+
+  it("locks a review nobody holds, or whose hold has run out, as waiting", () => {
+    expect(decideCaseAccess(true, { review: booked }, "dr.a", t0)).toEqual({ locked: true, notice: { kind: "waiting" } });
+    expect(decideCaseAccess(true, { review: heldBy("dr.a", t0) }, "dr.a", later(10))).toEqual({
+      locked: true,
+      notice: { kind: "waiting" },
+    });
+  });
+
+  it("locks a screening's page that has no review yet, as waiting", () => {
+    expect(decideCaseAccess(true, {}, "dr.a", t0)).toEqual({ locked: true, notice: { kind: "waiting" } });
+  });
+
+  it("says nothing about holds on a completed or unavailable case, which stay read-only as today", () => {
+    expect(decideCaseAccess(true, { review: completedBy("dr.a", t0) }, "dr.a", later(1))).toEqual({
+      locked: true,
+      notice: null,
+    });
+    expect(decideCaseAccess(true, { unavailable: "This patient was deleted, so the case cannot be reviewed." }, "dr.a", t0)).toEqual({
+      locked: true,
+      notice: null,
+    });
+  });
+
+  it("never opens a case to a viewer with no name", () => {
+    expect(decideCaseAccess(true, { review: heldBy("dr.a", t0) }, "", later(1)).locked).toBe(true);
+  });
+});
+
+describe("caseNoticeText", () => {
+  it("gives the holder the time they took the case, in local time", () => {
+    const since = new Date(2026, 10, 23, 9, 5).toISOString();
+    expect(caseNoticeText({ kind: "mine", since })).toBe("In review by you since 09:05");
+  });
+
+  it("drops the time when the stored one cannot be read", () => {
+    expect(caseNoticeText({ kind: "mine", since: "garbage" })).toBe("In review by you");
+  });
+
+  it("names another holder, and sends a waiting case to the button", () => {
+    expect(caseNoticeText({ kind: "other", by: "dr.b" })).toBe("In review by dr.b");
+    expect(caseNoticeText({ kind: "waiting" })).toBe("Waiting. Use Review next case on Pending Reviews to review it.");
+  });
+});
+
+describe("decideSubmit", () => {
+  it("sends neither field, and refuses a review completed meanwhile, when the organisation has no review queue", () => {
+    expect(decideSubmit(false, booked, "dr.a", t0)).toEqual({ kind: "send", markers: {} });
+    expect(decideSubmit(false, completedBy("dr.b", t0), "dr.a", later(6))).toEqual({ kind: "refuse" });
+  });
+
+  it("keeps who reviewed and since when they held it", () => {
+    expect(decideSubmit(true, heldBy("dr.a", t0), "dr.a", later(4))).toEqual({
+      kind: "send",
+      markers: { "In review by": "dr.a", "In review since": t0.toISOString() },
+    });
+  });
+
+  it("keeps the stored time even after the hold has run out", () => {
+    expect(decideSubmit(true, heldBy("dr.a", t0), "dr.a", later(25))).toEqual({
+      kind: "send",
+      markers: { "In review by": "dr.a", "In review since": t0.toISOString() },
+    });
+  });
+
+  it("stamps now when the review carries no hold", () => {
+    expect(decideSubmit(true, booked, "dr.a", later(3))).toEqual({
+      kind: "send",
+      markers: { "In review by": "dr.a", "In review since": later(3).toISOString() },
+    });
+  });
+
+  it("stamps now rather than another physician's time when the stored hold is theirs", () => {
+    expect(decideSubmit(true, heldBy("dr.b", t0), "dr.a", later(12))).toEqual({
+      kind: "send",
+      markers: { "In review by": "dr.a", "In review since": later(12).toISOString() },
+    });
+  });
+
+  // D9: the later submission is kept.
+  it("completes again a review someone else completed meanwhile, under this physician", () => {
+    expect(decideSubmit(true, completedBy("dr.b", t0), "dr.a", later(6))).toEqual({
+      kind: "send",
+      markers: { "In review by": "dr.a", "In review since": later(6).toISOString() },
+    });
+  });
+});
