@@ -1,3 +1,4 @@
+import { clearDrafts } from "@/breast/drafts";
 import { useEffect, useState, type ReactNode } from "react";
 import axios from "axios";
 import { bindIdp, fetchIdpDetails, http } from "./httpClient";
@@ -96,6 +97,7 @@ export function AuthProvider({ children }: { children: ReactNode }) {
       clearCatchmentCache();
       clearEncounterCacheScope();
       clearListStates(window.sessionStorage); // sessionStorage survives the reload below
+      clearDrafts(window.localStorage); // an unfinished breast form stays on no shared computer
       await state.idp.signOut();
       setState({ status: "loading" });
       window.location.reload();

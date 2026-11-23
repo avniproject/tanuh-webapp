@@ -1,3 +1,4 @@
+import { lazy, Suspense } from "react";
 import { BrowserRouter, Route, Routes, Navigate, useLocation, useNavigate } from "react-router-dom";
 import { CssBaseline, ThemeProvider, Tab, Tabs, Box, Button, CircularProgress } from "@mui/material";
 import { theme } from "@/theme";
@@ -8,14 +9,28 @@ import { ErrorBoundary } from "@/components/ErrorBoundary";
 import { ReviewListPage } from "@/pages/ReviewListPage";
 import { ReviewDetail } from "@/pages/ReviewDetail";
 import { CaseDetail } from "@/pages/CaseDetail";
-import { NotAuthorized } from "@/pages/NotAuthorized";
 import { LoginPage } from "@/pages/LoginPage";
-import { isPhysician, isProgrammeManager } from "@/auth/roles";
+import { allocatedProgrammes, landingPath } from "@/auth/programmes";
+import { isProgrammeManager } from "@/auth/roles";
+import { ProgrammeGuard } from "@/components/ProgrammeGuard";
+import { NoProgramme } from "@/pages/NoProgramme";
+import { BreastListPage } from "@/pages/BreastListPage";
 import { DataQualityLayout } from "@/dataQuality/DataQualityLayout";
 import { Dimensions } from "@/dataQuality/views/Dimensions";
 import { Guide } from "@/dataQuality/views/Guide";
 import { HealthCheck } from "@/dataQuality/views/HealthCheck";
 import { Workers } from "@/dataQuality/views/Workers";
+
+// The woman's page brings Avni's rule libraries with it, so it loads only when it is opened.
+const BreastWomanPage = lazy(() => import("@/pages/BreastWomanPage").then((m) => ({ default: m.BreastWomanPage })));
+
+function Loading() {
+  return (
+    <Box sx={{ display: "flex", justifyContent: "center", alignItems: "center", height: "60vh" }}>
+      <CircularProgress />
+    </Box>
+  );
+}
 
 function ListLayout({ children }: { children: React.ReactNode }) {
   const { pathname } = useLocation();
@@ -74,65 +89,81 @@ function GatedRoutes() {
   if (state.status === "needs_login") {
     return <LoginPage />;
   }
-  // Physicians see the review screens and programme managers the Data Quality screens; a user
-  // in both groups sees both, and the app opens on the reviews.
-  const physician = isPhysician(state.user);
+  // A clinician's programme modules come from their Avni user groups (Physician: oral, Breast
+  // Cancer Clinician: breast); programme managers see the Data Quality screens. The app opens on
+  // the first allocated programme.
+  const programmes = allocatedProgrammes(state.user);
   const programmeManager = isProgrammeManager(state.user);
-  if (!physician && !programmeManager) {
-    return <NotAuthorized />;
+  if (programmes.length === 0 && !programmeManager) {
+    return <NoProgramme />;
   }
-  const home = physician ? "/pending" : "/data-quality/health";
+  const home = programmes.length ? landingPath(programmes) : "/data-quality/health";
+  const oral = (screen: React.ReactNode) => (
+    <ProgrammeGuard programme="oral" allocated={programmes}>
+      {screen}
+    </ProgrammeGuard>
+  );
+  const breast = (screen: React.ReactNode) => (
+    <ProgrammeGuard programme="breast" allocated={programmes}>
+      <ErrorBoundary
+        title="This screen can't be displayed."
+        description="The rest of the app still works. Reload to try again, or report this to your administrator."
+        action={<Button href="/breast">Back to the list</Button>}
+      >
+        <Suspense fallback={<Loading />}>{screen}</Suspense>
+      </ErrorBoundary>
+    </ProgrammeGuard>
+  );
   return (
     <Routes>
       <Route element={<AppShell />}>
         <Route index element={<Navigate to={home} replace />} />
-        {physician && (
-          <>
-            <Route
-              path="/pending"
-              element={
-                <ListLayout>
-                  <ReviewListPage mode="pending" />
-                </ListLayout>
-              }
-            />
-            <Route
-              path="/completed"
-              element={
-                <ListLayout>
-                  <ReviewListPage mode="completed" />
-                </ListLayout>
-              }
-            />
-            <Route
-              path="/review/:encounterUuid"
-              element={
-                // Scoped boundary: a review whose data breaks rendering degrades to
-                // this message while the list tabs keep working. "Back to reviews"
-                // is a full navigation on purpose — it also resets the boundary.
-                <ErrorBoundary
-                  title="This review can't be displayed."
-                  description="The rest of the app still works. Reload to try again, or go back to the review list and report this case to your administrator."
-                  action={<Button href="/pending">Back to reviews</Button>}
-                >
-                  <ReviewDetail />
-                </ErrorBoundary>
-              }
-            />
-            <Route
-              path="/case/:screeningUuid"
-              element={
-                <ErrorBoundary
-                  title="This case can't be displayed."
-                  description="The rest of the app still works. Reload to try again, or go back to the review list and report this case to your administrator."
-                  action={<Button href="/pending">Back to reviews</Button>}
-                >
-                  <CaseDetail />
-                </ErrorBoundary>
-              }
-            />
-          </>
-        )}
+        <Route path="/no-programme" element={<NoProgramme />} />
+        <Route
+          path="/pending"
+          element={oral(
+            <ListLayout>
+              <ReviewListPage mode="pending" />
+            </ListLayout>,
+          )}
+        />
+        <Route
+          path="/completed"
+          element={oral(
+            <ListLayout>
+              <ReviewListPage mode="completed" />
+            </ListLayout>,
+          )}
+        />
+        <Route
+          path="/review/:encounterUuid"
+          element={oral(
+            // Scoped boundary: a review whose data breaks rendering degrades to
+            // this message while the list tabs keep working. "Back to reviews"
+            // is a full navigation on purpose — it also resets the boundary.
+            <ErrorBoundary
+              title="This review can't be displayed."
+              description="The rest of the app still works. Reload to try again, or go back to the review list and report this case to your administrator."
+              action={<Button href="/pending">Back to reviews</Button>}
+            >
+              <ReviewDetail />
+            </ErrorBoundary>,
+          )}
+        />
+        <Route
+          path="/case/:screeningUuid"
+          element={oral(
+            <ErrorBoundary
+              title="This case can't be displayed."
+              description="The rest of the app still works. Reload to try again, or go back to the review list and report this case to your administrator."
+              action={<Button href="/pending">Back to reviews</Button>}
+            >
+              <CaseDetail />
+            </ErrorBoundary>,
+          )}
+        />
+        <Route path="/breast" element={breast(<BreastListPage />)} />
+        <Route path="/breast/woman/:screeningUuid" element={breast(<BreastWomanPage />)} />
         {programmeManager && (
           <Route
             path="/data-quality"

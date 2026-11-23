@@ -29,6 +29,9 @@ export default defineConfig(({ mode }) => {
 
   return {
     plugins: [react()],
+    // Avni's model and rule libraries (the breast forms' rule engine) expect Node's `global`,
+    // as they do in avni-webapp's own Vite config.
+    define: { global: "window" },
     resolve: {
       alias: { "@": path.resolve(__dirname, "./src") },
     },

@@ -1,0 +1,102 @@
+{
+  "name": "Breast Clinician Assessment Form",
+  "uuid": "b4cbc312-63ce-571a-b84f-fb2d5e0a610d",
+  "formType": "Encounter",
+  "formElementGroups": [
+    {
+      "uuid": "b4f55d61-4f89-55db-8b37-44477af8a1a0",
+      "name": "Clinician's assessment",
+      "displayOrder": 1.0,
+      "formElements": [
+        {
+          "name": "Clinician's Risk Classification",
+          "uuid": "b72402b9-9d32-5393-b8eb-8fd6a3d9ba76",
+          "keyValues": [],
+          "concept": {
+            "name": "PS Clinician risk classification",
+            "uuid": "8cad7ff5-099e-5072-b4da-49a899f0284b",
+            "dataType": "Coded",
+            "answers": [
+              {
+                "name": "Evident Risk",
+                "uuid": "29d42920-12db-5659-9716-e9284394366d",
+                "dataType": "NA",
+                "answers": [],
+                "order": 1.0,
+                "active": true,
+                "media": []
+              },
+              {
+                "name": "Significant Risk",
+                "uuid": "5981d95d-a252-5676-ba87-5dfb4f357fa4",
+                "dataType": "NA",
+                "answers": [],
+                "order": 2.0,
+                "active": true,
+                "media": []
+              },
+              {
+                "name": "Baseline Risk",
+                "uuid": "85c0b891-ff32-5ec3-ba7c-4e012582f556",
+                "dataType": "NA",
+                "answers": [],
+                "order": 0.0,
+                "active": true,
+                "media": []
+              },
+              {
+                "name": "High Risk",
+                "uuid": "885284e7-6d5a-4e05-8e59-a87a8a103b7e",
+                "dataType": "NA",
+                "answers": [],
+                "order": 3.0,
+                "active": true,
+                "media": []
+              }
+            ],
+            "active": true,
+            "media": []
+          },
+          "displayOrder": 1.0,
+          "type": "SingleSelect",
+          "rule": "",
+          "mandatory": true
+        },
+        {
+          "name": "Case Notes (describe patient presentation, clinical observations, and overall impression)",
+          "uuid": "3c2897ba-32f3-5bbc-bda4-95424ce639a2",
+          "keyValues": [],
+          "concept": {
+            "name": "PS Clinician case notes",
+            "uuid": "4a57c823-5c36-5b70-b8e8-cc9358f77d0d",
+            "dataType": "Notes",
+            "answers": [],
+            "active": true,
+            "media": []
+          },
+          "displayOrder": 2.0,
+          "type": "SingleSelect",
+          "rule": "",
+          "mandatory": true
+        }
+      ],
+      "rule": "",
+      "timed": false,
+      "display": "Clinician's assessment"
+    }
+  ],
+  "decisionRule": "\"use strict\";\n({params, imports}) => {\n    const encounter = params.entity;\n    const moment = imports.moment;\n    const decisions = params.decisions;\n    const enrolmentDecisions = [];\n    const encounterDecisions = [];\n    const registrationDecisions = [];\n\n    const CONCEPT_ENCOUNTER_ID_UUID = \"503a1c90-a8e0-5914-b4ca-66da90b0a9d2\";\n    const CONCEPT_PATIENT_ID_UUID = \"de560361-145a-51fa-b0bb-944686b8087e\";\n\n    let encounterId = encounter.getObservationReadableValue(CONCEPT_ENCOUNTER_ID_UUID);\n    if (!encounterId) {\n        const patientId = encounter.individual.getObservationReadableValue(CONCEPT_PATIENT_ID_UUID);\n        if (patientId) {\n            const encounters = encounter.individual.getEncounters() || [];\n            const previousEncounters = encounters.filter(enc => enc.encounterType.name == \"Breast Clinician Assessment\" && enc.uuid != encounter.uuid && enc.encounterDateTime != null);\n            let sequence = previousEncounters.length;\n            previousEncounters.forEach(enc => {\n                const previousId = enc.getObservationReadableValue(CONCEPT_ENCOUNTER_ID_UUID);\n                if (previousId) {\n                    const match = previousId.match(/(\\d+)\\s*$/);\n                    if (match && parseInt(match[1], 10) > sequence) {\n                        sequence = parseInt(match[1], 10);\n                    }\n                }\n            });\n            encounterId = patientId + \"BCL\" + String(sequence + 1).padStart(3, \"0\");\n        }\n    }\n\n    if (encounterId) {\n        encounterDecisions.push({name: \"Encounter ID\", value: encounterId});\n    }\n\n    decisions.enrolmentDecisions.push(...enrolmentDecisions);\n    decisions.encounterDecisions.push(...encounterDecisions);\n    decisions.registrationDecisions.push(...registrationDecisions);\n    return decisions;\n};\n",
+  "visitScheduleRule": "",
+  "validationRule": "",
+  "checklistsRule": "",
+  "decisionConcepts": [
+    {
+      "name": "Encounter ID",
+      "uuid": "503a1c90-a8e0-5914-b4ca-66da90b0a9d2",
+      "dataType": "Text",
+      "answers": [],
+      "active": true,
+      "media": []
+    }
+  ]
+}
