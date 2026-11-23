@@ -31,4 +31,13 @@ describe("list state", () => {
     s.setItem("list-state:1071:u1", "{not json");
     expect(loadListState(s, "1071:u1", "pending")).toEqual(DEFAULT_LIST_STATE);
   });
+  it("falls back to all for a queue group that is not one of the four, and for an old state without one", () => {
+    const s = fakeStorage();
+    s.setItem("list-state:1071:u1", JSON.stringify({ pending: { queueGroup: "high-risk", sort: "date" } }));
+    expect(loadListState(s, "1071:u1", "pending")).toMatchObject({ queueGroup: "all", sort: "date" });
+    s.setItem("list-state:1071:u1", JSON.stringify({ pending: { sort: "date" } }));
+    expect(loadListState(s, "1071:u1", "pending").queueGroup).toBe("all");
+    s.setItem("list-state:1071:u1", JSON.stringify({ pending: { queueGroup: "ai" } }));
+    expect(loadListState(s, "1071:u1", "pending").queueGroup).toBe("ai");
+  });
 });

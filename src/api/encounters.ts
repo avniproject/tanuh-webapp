@@ -662,7 +662,7 @@ function toScreeningInfo(screening: CachedEncounter): LatestScreeningInfo {
 // screenings, a program review with the screenings of its own enrolment — the
 // same scope loadReview and the mobile rules use. Without it an unstamped
 // program review could take a subject's older standalone screening.
-function groupBySubjectAndEnrolment(encounters: EncounterApiResponse[]): Record<string, EncounterApiResponse[]> {
+export function groupBySubjectAndEnrolment(encounters: EncounterApiResponse[]): Record<string, EncounterApiResponse[]> {
   const byScope: Record<string, EncounterApiResponse[]> = {};
   for (const e of encounters) (byScope[`${e["Subject ID"]}|${e["Enrolment ID"] ?? ""}`] ??= []).push(e);
   return byScope;

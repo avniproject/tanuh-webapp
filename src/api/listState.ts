@@ -1,10 +1,12 @@
 import type { GroupFilter, PendingSort } from "./pendingRows";
+import type { QueueGroupFilter } from "./queueRows";
 
 // tanuh-webapp#4: a tab's sort, filters, date range, Case ID search and page survive opening a case and coming back,
 // and are gone after sign-out. One sessionStorage key per encounter-cache scope (organisation and user) holds both tabs.
 export interface ListState {
   sort: PendingSort;
   group: GroupFilter;
+  queueGroup: QueueGroupFilter;
   referral: string | null;
   loc: string | null;
   riskOnly: boolean;
@@ -14,9 +16,10 @@ export interface ListState {
   page: number;
 }
 export const DEFAULT_LIST_STATE: ListState = {
-  sort: "group", group: "all", referral: null, loc: null, riskOnly: false, from: "", to: "", search: "", page: 0,
+  sort: "group", group: "all", queueGroup: "all", referral: null, loc: null, riskOnly: false, from: "", to: "", search: "", page: 0,
 };
 
+const QUEUE_GROUP_FILTERS: string[] = ["all", "flw", "ai", "safety"];
 type Mode = "pending" | "completed";
 type StateStorage = Pick<Storage, "getItem" | "setItem" | "removeItem" | "key" | "length">;
 const PREFIX = "list-state:";
@@ -31,7 +34,9 @@ function read(storage: StateStorage, scope: string): Partial<Record<Mode, Partia
 
 export function loadListState(storage: StateStorage, scope: string | null, mode: Mode): ListState {
   if (!scope) return DEFAULT_LIST_STATE;
-  return { ...DEFAULT_LIST_STATE, ...(read(storage, scope)[mode] ?? {}) };
+  const stored = { ...DEFAULT_LIST_STATE, ...(read(storage, scope)[mode] ?? {}) };
+  if (!QUEUE_GROUP_FILTERS.includes(stored.queueGroup)) stored.queueGroup = "all";
+  return stored;
 }
 
 export function saveListState(storage: StateStorage, scope: string | null, mode: Mode, state: ListState): void {
