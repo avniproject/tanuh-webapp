@@ -1,6 +1,6 @@
 import axios from "axios";
 import { http } from "@/auth/httpClient";
-import { REVIEW_CATEGORY_CONCEPT } from "@/constants/tanuhConcepts";
+import { IN_REVIEW_BY_CONCEPT, REVIEW_CATEGORY_CONCEPT } from "@/constants/tanuhConcepts";
 
 export interface ConceptAnswer {
   uuid: string;
@@ -47,6 +47,7 @@ export function getConcept(uuid: string): Promise<ConceptResponse> {
 export function resetConceptCache(): void {
   cache.clear();
   modelProbe = null;
+  queueProbe = null;
 }
 
 // tanuh-webapp#4: the pending list from screenings applies only where the organisation has the high-risk model's
@@ -70,6 +71,25 @@ export function hasHighRiskModel(): Promise<boolean> {
       });
   }
   return modelProbe;
+}
+
+// PE-249 (D3): the review queue, the hold and everything else PE-249 adds apart from the place restriction apply only
+// where the organisation has the "In review by" concept. It has no fixed uuid, so it is asked for by name; the server
+// answers 404 when there is none. A voided concept, or a different one under a near name, counts as absent. Any other
+// failure fails the load and is asked again next time, as for the high-risk model above.
+let queueProbe: Promise<boolean> | null = null;
+export function hasReviewQueue(): Promise<boolean> {
+  if (!queueProbe) {
+    queueProbe = http
+      .get<RawConceptProjection>(`/web/concept?name=${encodeURIComponent(IN_REVIEW_BY_CONCEPT.name)}`)
+      .then((r) => r.data?.name === IN_REVIEW_BY_CONCEPT.name && r.data.voided !== true)
+      .catch((e: unknown) => {
+        if (axios.isAxiosError(e) && e.response?.status === 404) return false;
+        queueProbe = null;
+        throw e;
+      });
+  }
+  return queueProbe;
 }
 
 function normalise(raw: RawConceptProjection): ConceptResponse {

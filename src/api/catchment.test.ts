@@ -74,6 +74,50 @@ describe("buildCatchment", () => {
   });
 });
 
+describe("placesUnder", () => {
+  const district = () =>
+    buildCatchment(
+      tree([
+        node("state", "State", null),
+        node("distA", "District", "state"),
+        node("taluka", "Taluka", "distA"),
+        node("a1", "Village", "taluka"),
+        node("a2", "Village", "taluka"),
+      ]),
+      orgChildren,
+    );
+
+  it("gives a covered place and every covered place below it", () => {
+    const c = district();
+    expect([...c.placesUnder("distA")].sort()).toEqual(["a1", "a2", "distA", "taluka"]);
+    expect([...c.placesUnder("taluka")].sort()).toEqual(["a1", "a2", "taluka"]);
+    expect([...c.placesUnder("a1")]).toEqual(["a1"]);
+  });
+
+  it("gives nothing for a place that is not covered, or none", () => {
+    const c = district();
+    expect(c.placesUnder("state").size).toBe(0);
+    expect(c.placesUnder("b1").size).toBe(0);
+    expect(c.placesUnder(null).size).toBe(0);
+    expect(c.placesUnder(undefined).size).toBe(0);
+  });
+
+  it("leaves out an uncovered place even when its parent link sits under the chosen place", () => {
+    // Only a1 is covered; the taluka above it is not, so a1 is not under the taluka here.
+    const c = buildCatchment(
+      tree([
+        node("state", "State", null),
+        node("distA", "District", "state"),
+        node("taluka", "Taluka", "distA"),
+        node("a1", "Village", "taluka"),
+      ]),
+      orgChildren,
+    );
+    expect(c.placesUnder("taluka").size).toBe(0);
+    expect([...c.placesUnder("a1")]).toEqual(["a1"]);
+  });
+});
+
 const row = (id: string, parent: string | null, voided = false) => ({
   ID: id,
   Title: id,

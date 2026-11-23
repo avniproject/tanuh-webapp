@@ -13,6 +13,8 @@ export interface Catchment {
   // Covered places whose parent is not covered: the places to fetch by.
   tops: string[];
   contains(locationUuid: string | null | undefined): boolean;
+  // A covered place and every covered place below it, by the tree's parent links; empty for a place not covered.
+  placesUnder(locationUuid: string | null | undefined): Set<string>;
 }
 
 interface OrgLocationRow {
@@ -87,7 +89,26 @@ export function buildCatchment(tree: CatchmentLocationsResponse, children: Map<s
   const tops = tree.nodes
     .filter((n) => covered.has(n.uuid) && (!n.parentUuid || !covered.has(n.parentUuid)))
     .map((n) => n.uuid);
-  return { covered, tops, contains: (uuid) => (uuid ? covered.has(uuid) : false) };
+  const coveredChildren = new Map<string, string[]>();
+  for (const n of tree.nodes) {
+    if (!covered.has(n.uuid) || !n.parentUuid || !covered.has(n.parentUuid)) continue;
+    const list = coveredChildren.get(n.parentUuid) ?? [];
+    list.push(n.uuid);
+    coveredChildren.set(n.parentUuid, list);
+  }
+  const placesUnder = (uuid: string | null | undefined): Set<string> => {
+    const under = new Set<string>();
+    if (!uuid || !covered.has(uuid)) return under;
+    const stack = [uuid];
+    while (stack.length > 0) {
+      const next = stack.pop() as string;
+      if (under.has(next)) continue;
+      under.add(next);
+      stack.push(...(coveredChildren.get(next) ?? []));
+    }
+    return under;
+  };
+  return { covered, tops, contains: (uuid) => (uuid ? covered.has(uuid) : false), placesUnder };
 }
 
 export function getCatchment(): Promise<Catchment> {

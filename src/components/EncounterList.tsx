@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from "react";
 import {
   Alert,
   Box,
@@ -29,6 +29,18 @@ import { useNavigate } from "react-router-dom";
 import { endOfDay, format, parseISO } from "date-fns";
 import { getAllEncountersWithLocation, type EncounterWithLocation } from "@/api/impl";
 import { getProgramEncountersWithLocation, readSubjects } from "@/api/programList";
+import { getCatchment } from "@/api/catchment";
+import { takeCase, type HoldStatus } from "@/api/caseHold";
+import { takeNextCase } from "@/api/queueChoice";
+import {
+  filterQueueRows,
+  queueRowSubjectId,
+  rowHoldStatus,
+  rowReason,
+  sortQueueRows,
+  type QueueGroupFilter,
+  type QueueRow,
+} from "@/api/queueRows";
 import {
   findCompletedEncounterUuidsWithCodedValue,
   getCachedEncounters,
@@ -37,7 +49,7 @@ import {
   getReviewScreeningPairing,
   type LatestScreeningInfo,
 } from "@/api/encounters";
-import { hasHighRiskModel } from "@/api/concepts";
+import { hasHighRiskModel, hasReviewQueue } from "@/api/concepts";
 import { addressChain, inSubtree } from "@/api/address";
 import {
   filterByPatientLocation,
@@ -60,15 +72,20 @@ import {
   ENCOUNTER_ID_CONCEPT,
   ENCOUNTER_TYPE,
   PLACE_OF_REFERRAL_CONCEPT,
+  QUEUE_GROUPS,
   REVIEW_CONCEPTS,
   readModelResult,
   readObs,
+  type QueueGroup,
 } from "@/constants/tanuhConcepts";
 import { RISK } from "@/forms/diagnosisMapping";
 import { useAsync } from "@/hooks/useAsync";
+import { useAuth } from "@/auth/authContext";
 import { LocationFilter } from "./LocationFilter";
 import { FacilityFilter } from "./FacilityFilter";
-import { CategoryBadge, ModelResultBadge } from "./StatusBadge";
+import { NextCasePanel } from "./NextCasePanel";
+import { CategoryBadge, HoldStatusBadge, ModelResultBadge, QueueGroupBadge } from "./StatusBadge";
+import { readReviewsByPlace, usePendingQueue } from "./usePendingQueue";
 
 interface Props {
   mode: "pending" | "completed";
@@ -82,15 +99,13 @@ function StatTile({
   value,
   testId,
 }: {
-  label: string;
+  label: ReactNode;
   value: number | string;
   testId?: string;
 }) {
   return (
     <Paper variant="outlined" data-testid={testId} sx={{ px: 2, py: 1.25, minWidth: 168 }}>
-      <Typography variant="body2" color="text.secondary">
-        {label}
-      </Typography>
+      <Box sx={{ typography: "body2", color: "text.secondary" }}>{label}</Box>
       <Typography variant="h5" component="div" sx={{ fontWeight: 600, color: "text.primary" }}>
         {value}
       </Typography>
@@ -118,6 +133,13 @@ const GROUP_FILTERS: { value: GroupFilter; label: string }[] = [
   { value: "safety-sample", label: "Safety sample" },
   { value: "not-scored", label: "Not scored" },
 ];
+// PE-249: the queue's group filter, where the organisation has the review queue.
+const QUEUE_GROUP_FILTERS: { value: QueueGroupFilter; label: string }[] = [
+  { value: "all", label: "All" },
+  { value: "flw", label: "FLW marked" },
+  { value: "ai", label: "AI marked" },
+  { value: "safety", label: "Safety sample" },
+];
 const SORTS: { value: PendingSort; label: string }[] = [
   { value: "group", label: "By group" },
   { value: "date", label: "By date" },
@@ -138,6 +160,9 @@ interface RowView {
   group?: string;
   reviewedOn?: string | null;
   reviewedBy?: string | null;
+  // PE-249: why the case is in the queue, and who is working on it.
+  reason?: QueueGroup | "OCSHR pending";
+  hold?: HoldStatus;
 }
 
 function reviewRowView(e: EncounterWithLocation, info: LatestScreeningInfo | undefined): RowView {
@@ -188,10 +213,50 @@ function pendingRowView(row: PendingRow, subject: SubjectApiResponse | null | un
   };
 }
 
+// PE-249: a queue row. A screening row opens the case page and a booked review its review, as before; the case page
+// decides what may be done there. `subject` is the patient of a screening row, read to place it.
+function queueRowView(row: QueueRow, subject: SubjectApiResponse | undefined, viewer: string, now: Date): RowView {
+  const screening = row.screening;
+  const obs = screening?.observations ?? {};
+  const fromScreening = {
+    subjectId: queueRowSubjectId(row),
+    caseId: (screening ? readObs<string>(obs, ENCOUNTER_ID_CONCEPT) : undefined) || screening?.["Subject external ID"],
+    screeningDate: screening?.["Encounter date time"],
+    healthWorker: screening?.audit?.["Created by"],
+    opinion: screening?.workerOpinion,
+    modelResult: screening ? readModelResult(obs) : undefined,
+    reason: rowReason(row),
+    hold: rowHoldStatus(row, viewer, now),
+  };
+  if (row.kind === "screening") {
+    return {
+      key: row.screening.ID,
+      href: `/case/${row.screening.ID}`,
+      village: subject?.location?.["Village"],
+      ...fromScreening,
+    };
+  }
+  return {
+    key: row.review.encounterUuid,
+    href: `/review/${row.review.encounterUuid}`,
+    ...fromScreening,
+    caseId: fromScreening.caseId || row.review.subject.externalId,
+    village: row.review.subject.location?.["Village"],
+  };
+}
+
+function ReasonCell({ reason }: { reason: RowView["reason"] }) {
+  if (!reason) return <Typography component="span" color="text.secondary">—</Typography>;
+  if (reason === "OCSHR pending") return <>OCSHR pending</>;
+  return <QueueGroupBadge value={reason} />;
+}
+
 export function EncounterList({ mode }: Props) {
   const navigate = useNavigate();
   const theme = useTheme();
   const isMobile = useMediaQuery(theme.breakpoints.down("sm"));
+  const { state: auth } = useAuth();
+  const viewer = auth.status === "ready" ? auth.user.username : "";
 
   // tanuh-webapp#4: the sort, filters, date range, Case ID search and page are kept for the session, per sign-in, so
   // they survive opening a case and coming back; sign-out clears them.
@@ -210,21 +275,29 @@ export function EncounterList({ mode }: Props) {
   // first, ACROSS pages) and the display filters + counts (completed: High
   // Risk, date range) are correct over the whole list, not just one server
   // page; pagination then happens client-side.
-  const listParams = {
+  const filterParams = {
     encounterType: ENCOUNTER_TYPE.physicianReviewForm.name,
-    // Requirements 2.0: filter by the patient's location subtree
-    // (State → District → Taluka → Village).
-    locationUuid: patientLocationUuid,
     // Linked-observation filter: only fires when a referral facility is picked.
     linkedEncounterType: referralUuid ? ENCOUNTER_TYPE.oralScreening.name : null,
     linkedObservationConceptUuid: referralUuid ? PLACE_OF_REFERRAL_CONCEPT.uuid : null,
     linkedLocationUuid: referralUuid,
   };
+  // Bumped when the queue is read again after Review next case found nothing to take, so the list follows it.
+  const [listVersion, setListVersion] = useState(0);
   // Standalone reviews come from the impl endpoint; reviews recorded inside a
   // program (Tanuh Staging's NCD) are built from the program API with the same
   // filters. An org without program visits adds nothing here.
+  // PE-249: pending reviews are read in the chosen patient location, which is always one of the physician's places,
+  // or else in each of their top places, so nothing outside them is listed. A failure to read their places fails the
+  // load. The completed tab still reads as before (Task 10).
   const { data: pageData, error } = useAsync(async () => {
-    const params = { ...listParams, status: mode === "pending" ? "scheduled" : "completed" } as const;
+    if (mode === "pending") {
+      const catchment = await getCatchment();
+      const place = patientLocationUuid && catchment.contains(patientLocationUuid) ? patientLocationUuid : null;
+      return readReviewsByPlace(place ? [place] : catchment.tops, { ...filterParams, status: "scheduled" });
+    }
+    // Requirements 2.0: filter by the patient's location subtree (State → District → Taluka → Village).
+    const params = { ...filterParams, locationUuid: patientLocationUuid, status: "completed" } as const;
     const [standalone, program] = await Promise.all([
       getAllEncountersWithLocation(params),
       getProgramEncountersWithLocation(params),
@@ -235,13 +308,85 @@ export function EncounterList({ mode }: Props) {
       // Program reviews kept under the location filter because their patient could not be read.
       unchecked: program.unchecked,
     };
-  }, [mode, referralUuid, patientLocationUuid]);
+  }, [mode, referralUuid, patientLocationUuid, listVersion]);
 
   // tanuh-webapp#4: does the signed-in org have the high-risk model's values? Where it does, the pending tab adds the
   // screenings the model sent for review and both tabs show the model's columns; where it does not (Staging, production
   // before promotion), both tabs are as before. null while probing.
   const { data: modelOn, error: modelError } = useAsync(() => hasHighRiskModel(), [mode]);
-  const pendingFromScreenings = mode === "pending" && modelOn === true;
+  // PE-249 (D3): does the signed-in org have the review queue ("In review by")? Where it does, the pending tab is the
+  // queue, and the high-risk model only adds its Worker's opinion and Model columns; where it does not, the pending tab
+  // is as before, the model's screenings included. null while probing.
+  const { data: queueOn, error: queueProbeError } = useAsync(
+    () => (mode === "pending" ? hasReviewQueue() : Promise.resolve(false)),
+    [mode],
+  );
+  const queueMode = mode === "pending" && queueOn === true;
+  const pendingFromScreenings = mode === "pending" && queueOn === false && modelOn === true;
+
+  // PE-249: the queue's own read, unfiltered by the list's choices (D7): what the tiles count and the button takes.
+  const queue = usePendingQueue(queueMode, viewer);
+  const queueData = queue.data;
+  const reloadQueue = queue.reload;
+
+  // Review next case. Every press reads the queue again from the server; the viewer's own case is continued, else the
+  // oldest waiting case of the group they have reviewed least is taken, moving on past any case someone else took
+  // first. When every candidate is refused the queue is read again and the panel says nothing is waiting.
+  const filtered = !!(patientLocationUuid || referralUuid);
+  const [taking, setTaking] = useState(false);
+  const [takeError, setTakeError] = useState<string | null>(null);
+  const [exhausted, setExhausted] = useState(false);
+  const handleTake = useCallback(async () => {
+    setTaking(true);
+    setTakeError(null);
+    setExhausted(false);
+    try {
+      const fresh = await reloadQueue();
+      if (fresh.held?.kind === "booked") {
+        navigate(`/review/${fresh.held.review.encounterUuid}`);
+        return;
+      }
+      const reviewUuid = await takeNextCase(fresh.rows, fresh.reviewed, viewer, fresh.now, (row) =>
+        takeCase(row, viewer),
+      );
+      if (reviewUuid) {
+        navigate(`/review/${reviewUuid}`);
+        return;
+      }
+      setExhausted(true);
+      await reloadQueue();
+      // With a place or referral facility chosen the list narrows booked reviews by its own read, so it is read again.
+      if (filtered) setListVersion((v) => v + 1);
+    } catch (err) {
+      setTakeError(err instanceof Error ? err.message : String(err));
+    } finally {
+      setTaking(false);
+    }
+  }, [navigate, reloadQueue, viewer, filtered]);
+
+  // The queue's rows the list shows: booked reviews narrowed by the filtered read above (chosen place, referral
+  // facility), screening rows by their patient's place being the chosen place or one below it, and by the screening's
+  // own place of referral, as the old list did. Worked out without a load, so a press that reads the queue again keeps
+  // the list on screen; only the referral facility's place chain is read, once per choice.
+  const { data: referral, error: referralError } = useAsync(
+    async () => (queueMode && referralUuid ? { uuid: referralUuid, chain: await addressChain(referralUuid) } : null),
+    [queueMode, referralUuid],
+  );
+  const queueListed = useMemo(() => {
+    if (!queueMode || !queueData || !pageData) return null;
+    if (referralUuid && referral?.uuid !== referralUuid) return null;
+    const { catchment, subjects } = queueData;
+    const place = patientLocationUuid && catchment.contains(patientLocationUuid) ? patientLocationUuid : null;
+    const bookedListed = place || referralUuid ? new Set(pageData.content.map((e) => e.encounterUuid)) : null;
+    const placesUnder = place ? catchment.placesUnder(place) : null;
+    const chain = referralUuid ? referral?.chain : undefined;
+    return queueData.rows.filter((row) => {
+      if (row.kind === "booked") return !bookedListed || bookedListed.has(row.review.encounterUuid);
+      const at = subjects.get(row.screening["Subject ID"])?.["Location ID"];
+      if (placesUnder && !(at && placesUnder.has(at))) return false;
+      return !chain || inSubtree(row.screening.observations?.[PLACE_OF_REFERRAL_CONCEPT.name], chain);
+    });
+  }, [queueMode, queueData, pageData, patientLocationUuid, referralUuid, referral]);
 
   // The pending rows: every booked review still waiting, with the screening that booked it, and every screening the
   // model sent for review that nobody has reviewed. Booked rows are narrowed by the server as before. Screening rows are
@@ -336,6 +481,7 @@ export function EncounterList({ mode }: Props) {
 
   const views = useMemo<RowView[] | null>(() => {
     if (modelOn === null) return null;
+    if (mode === "pending" && queueOn === null) return null;
 
     // Case ID search — applied to both tabs. Matches the Case ID actually shown
     // in the row (Encounter ID, falling back to legacy Case ID / external ID).
@@ -348,6 +494,12 @@ export function EncounterList({ mode }: Props) {
     const query = unpad(search.trim());
     const matchesSearch = (v: RowView) => !query || unpad(v.caseId || "").includes(query);
 
+    if (queueMode) {
+      if (!queueListed || !queueData) return null;
+      return filterQueueRows(sortQueueRows(queueListed, state.sort), state.queueGroup)
+        .map((row) => queueRowView(row, queueData.subjects.get(queueRowSubjectId(row)), viewer, queueData.now))
+        .filter(matchesSearch);
+    }
     if (pendingFromScreenings) {
       if (!pendingRows) return null;
       return filterPendingRows(sortPendingRows(pendingRows, state.sort), state.group)
@@ -385,6 +537,12 @@ export function EncounterList({ mode }: Props) {
       .filter(matchesSearch);
   }, [
     modelOn,
+    queueOn,
+    queueMode,
+    queueListed,
+    queueData,
+    viewer,
+    state.queueGroup,
     pendingFromScreenings,
     pendingRows,
     subjects,
@@ -424,7 +582,8 @@ export function EncounterList({ mode }: Props) {
     };
   }, [unreadKey]);
 
-  const loadError = error ?? pairingError ?? screeningError ?? modelError ?? rowsError;
+  const loadError =
+    error ?? pairingError ?? screeningError ?? modelError ?? rowsError ?? queueProbeError ?? queue.error ?? referralError;
   if (loadError) return <Box sx={{ p: 3, color: "error.main" }}>Failed to load: {loadError}</Box>;
   if (!pageData || !views)
     return (
@@ -441,10 +600,16 @@ export function EncounterList({ mode }: Props) {
   // date range, search). On the pending tab with the model, a deleted patient's rows leave it once they have been on
   // screen, since only those patients are read.
   const listedCount = pendingFromScreenings ? (pendingRows?.length ?? 0) : pageData.totalElements;
+  // The case the viewer holds, by the Case ID the list shows for it.
+  const held = queueMode ? queueData?.held : undefined;
+  const heldView =
+    held && queueData ? queueRowView(held, queueData.subjects.get(queueRowSubjectId(held)), viewer, queueData.now) : null;
   // The listed rows whose location could not be checked, counted where they are still listed: after the referral
   // filter, and without a deleted patient's rows.
-  const uncheckedCount =
-    pendingFromScreenings && pending && pendingRows
+  // The queue lists no such row: it leaves out what it cannot place, and says how many instead.
+  const uncheckedCount = queueMode
+    ? 0
+    : pendingFromScreenings && pending && pendingRows
       ? pendingRows.filter((r) => pending.unchecked.has(pendingRowKey(r))).length
       : pageData.unchecked.size;
   // High Risk count over every row the current location/referral filters allow —
@@ -457,15 +622,21 @@ export function EncounterList({ mode }: Props) {
   // The model's three columns show wherever the org has the model; without it the v1.12.2 columns apply unchanged.
   // Badges never wrap: "Non Suspicious" with its AI mark needs about 17% and "Safety sample" about 14% of a desktop
   // table, or they run into the next column.
+  // PE-249: in the queue the old Group column gives way to Reason and Status, and the row button only views.
   const showModel = modelOn === true;
-  const none = { opinion: "0", model: "0", group: "0" };
-  const widths =
-    mode === "pending"
+  const showGroup = showModel && !queueMode;
+  const viewOnly = mode === "completed" || queueMode;
+  const none = { opinion: "0", model: "0", group: "0", reason: "0", status: "0" };
+  const widths = queueMode
+    ? showModel
+      ? { ...none, sno: "4%", caseId: "11%", date: "13%", village: "9%", hw: "10%", opinion: "9%", model: "15%", reason: "11%", status: "11%", on: "0", by: "0", action: "7%" }
+      : { ...none, sno: "5%", caseId: "14%", date: "17%", village: "12%", hw: "13%", reason: "13%", status: "17%", on: "0", by: "0", action: "9%" }
+    : mode === "pending"
       ? showModel
-        ? { sno: "4%", caseId: "11%", date: "14%", village: "10%", hw: "11%", opinion: "10%", model: "17%", group: "14%", on: "0", by: "0", action: "9%" }
+        ? { ...none, sno: "4%", caseId: "11%", date: "14%", village: "10%", hw: "11%", opinion: "10%", model: "17%", group: "14%", on: "0", by: "0", action: "9%" }
         : { ...none, sno: "6%", caseId: "16%", date: "22%", village: "18%", hw: "16%", on: "0", by: "0", action: "14%" }
       : showModel
-        ? { sno: "3%", caseId: "8%", date: "10%", village: "7%", hw: "8%", opinion: "7%", model: "17%", group: "14%", on: "8%", by: "10%", action: "8%" }
+        ? { ...none, sno: "3%", caseId: "8%", date: "10%", village: "7%", hw: "8%", opinion: "7%", model: "17%", group: "14%", on: "8%", by: "10%", action: "8%" }
         : { ...none, sno: "6%", caseId: "12%", date: "16%", village: "13%", hw: "13%", on: "13%", by: "14%", action: "7%" };
 
   const handleRiskOnlyChange = (checked: boolean) => update({ riskOnly: checked, page: 0 });
@@ -481,14 +652,40 @@ export function EncounterList({ mode }: Props) {
         spacing={1.5}
         sx={{ p: { xs: 1.5, sm: 2 }, borderBottom: "1px solid #e5e7eb" }}
       >
-        {/* KPI row. Totals = all rows across all pages — display filters (group,
-            High Risk, date range, search) narrow the rows below, not these numbers. */}
-        <Stack direction="row" spacing={1.5} sx={{ flexWrap: "wrap", rowGap: 1.5 }}>
-          <StatTile
-            testId="stat-total"
-            label={mode === "pending" ? "Pending reviews" : "Completed reviews"}
-            value={listedCount}
+        {queueMode && queueData && (
+          <NextCasePanel
+            reviewed={queueData.reviewed}
+            waiting={queueData.waiting}
+            next={exhausted ? null : queueData.next}
+            held={heldView ? { caseId: heldView.caseId ?? null } : null}
+            busy={taking}
+            error={takeError}
+            onTake={() => void handleTake()}
           />
+        )}
+        {/* KPI row. Totals = all rows across all pages — display filters (group,
+            High Risk, date range, search) narrow the rows below, not these numbers.
+            PE-249: the queue's tiles count every waiting case in the physician's places, whatever the filters (D7). */}
+        <Stack direction="row" spacing={1.5} sx={{ flexWrap: "wrap", rowGap: 1.5 }}>
+          {queueMode && queueData ? (
+            <>
+              <StatTile testId="stat-waiting" label="Waiting for review" value={queueData.waiting.total} />
+              {QUEUE_GROUPS.map((group) => (
+                <StatTile
+                  key={group}
+                  testId={`stat-${group.toLowerCase().replace(/\s+/g, "-")}`}
+                  label={<QueueGroupBadge value={group} />}
+                  value={queueData.waiting[group]}
+                />
+              ))}
+            </>
+          ) : (
+            <StatTile
+              testId="stat-total"
+              label={mode === "pending" ? "Pending reviews" : "Completed reviews"}
+              value={listedCount}
+            />
+          )}
           {mode === "completed" && (
             <StatTile testId="stat-high-risk" label="High risk" value={highRiskCount ?? "…"} />
           )}
@@ -573,7 +770,7 @@ export function EncounterList({ mode }: Props) {
             }}
           />
         </Stack>
-        {pendingFromScreenings && (
+        {(pendingFromScreenings || queueMode) && (
           <>
             <Stack
               direction={{ xs: "column", sm: "row" }}
@@ -586,21 +783,39 @@ export function EncounterList({ mode }: Props) {
               >
                 Group
               </Typography>
-              <ToggleButtonGroup
-                exclusive
-                size="small"
-                value={state.group}
-                onChange={(_, v: GroupFilter | null) => {
-                  if (v) update({ group: v, page: 0 });
-                }}
-                sx={{ flexWrap: "wrap" }}
-              >
-                {GROUP_FILTERS.map((g) => (
-                  <ToggleButton key={g.value} value={g.value} sx={{ px: 1.5, textTransform: "none", fontWeight: 600 }}>
-                    {g.label}
-                  </ToggleButton>
-                ))}
-              </ToggleButtonGroup>
+              {queueMode ? (
+                <ToggleButtonGroup
+                  exclusive
+                  size="small"
+                  value={state.queueGroup}
+                  onChange={(_, v: QueueGroupFilter | null) => {
+                    if (v) update({ queueGroup: v, page: 0 });
+                  }}
+                  sx={{ flexWrap: "wrap" }}
+                >
+                  {QUEUE_GROUP_FILTERS.map((g) => (
+                    <ToggleButton key={g.value} value={g.value} sx={{ px: 1.5, textTransform: "none", fontWeight: 600 }}>
+                      {g.label}
+                    </ToggleButton>
+                  ))}
+                </ToggleButtonGroup>
+              ) : (
+                <ToggleButtonGroup
+                  exclusive
+                  size="small"
+                  value={state.group}
+                  onChange={(_, v: GroupFilter | null) => {
+                    if (v) update({ group: v, page: 0 });
+                  }}
+                  sx={{ flexWrap: "wrap" }}
+                >
+                  {GROUP_FILTERS.map((g) => (
+                    <ToggleButton key={g.value} value={g.value} sx={{ px: 1.5, textTransform: "none", fontWeight: 600 }}>
+                      {g.label}
+                    </ToggleButton>
+                  ))}
+                </ToggleButtonGroup>
+              )}
             </Stack>
             <Stack
               direction={{ xs: "column", sm: "row" }}
@@ -698,6 +913,15 @@ export function EncounterList({ mode }: Props) {
         )}
       </Stack>
 
+      {/* PE-249: a case whose patient could not be read cannot be placed, so the queue leaves it out and says so. */}
+      {queueMode && queueData && queueData.unread > 0 && (
+        <Alert severity="warning" data-testid="queue-unread" sx={{ m: { xs: 1.5, sm: 2 }, mb: 0 }}>
+          {queueData.unread === 1
+            ? "1 case could not be loaded and is not shown."
+            : `${queueData.unread} cases could not be loaded and are not shown.`}
+        </Alert>
+      )}
+
       {/* The location could not be checked for these cases, so they stay rather than vanish (tanuh-webapp#4 review). */}
       {uncheckedCount > 0 && (
         <Alert severity="warning" data-testid="location-unchecked" sx={{ m: { xs: 1.5, sm: 2 }, mb: 0 }}>
@@ -715,7 +939,7 @@ export function EncounterList({ mode }: Props) {
             <>
               No {riskOnly ? "High Risk " : ""}
               {mode === "pending" ? "pending" : "completed"} reviews
-              {referralUuid ? " for the selected referral facility." : " in your catchment."}
+              {referralUuid ? " for the selected referral facility." : "."}
             </>
           )}
         </Typography>
@@ -743,14 +967,14 @@ export function EncounterList({ mode }: Props) {
                         </Typography>
                         <Button
                           size="small"
-                          startIcon={mode === "pending" ? <RateReviewIcon /> : <VisibilityIcon />}
+                          startIcon={viewOnly ? <VisibilityIcon /> : <RateReviewIcon />}
                           onClick={(event) => {
                             event.stopPropagation();
                             navigate(v.href);
                           }}
                           sx={{ flexShrink: 0 }}
                         >
-                          {mode === "pending" ? "Review" : "View"}
+                          {viewOnly ? "View" : "Review"}
                         </Button>
                       </Stack>
                       <Typography variant="body2" sx={{ color: "text.primary" }}>
@@ -794,12 +1018,30 @@ export function EncounterList({ mode }: Props) {
                           <ModelResultBadge value={v.modelResult} />
                         </Stack>
                       )}
-                      {showModel && (
+                      {showGroup && (
                         <Stack direction="row" alignItems="center" spacing={0.75}>
                           <Typography variant="body2" sx={{ color: "text.secondary", fontWeight: 500 }}>
                             Group:
                           </Typography>
                           <CategoryBadge value={v.group} />
+                        </Stack>
+                      )}
+                      {queueMode && (
+                        <Stack direction="row" alignItems="center" spacing={0.75}>
+                          <Typography variant="body2" sx={{ color: "text.secondary", fontWeight: 500 }}>
+                            Reason:
+                          </Typography>
+                          <Typography component="span" variant="body2" sx={{ color: "text.primary" }}>
+                            <ReasonCell reason={v.reason} />
+                          </Typography>
+                        </Stack>
+                      )}
+                      {queueMode && v.hold && (
+                        <Stack direction="row" alignItems="center" spacing={0.75}>
+                          <Typography variant="body2" sx={{ color: "text.secondary", fontWeight: 500 }}>
+                            Status:
+                          </Typography>
+                          <HoldStatusBadge status={v.hold} />
                         </Stack>
                       )}
                       {mode === "completed" && (
@@ -835,7 +1077,9 @@ export function EncounterList({ mode }: Props) {
                   {showModel && <TableCell sx={{ width: widths.opinion }}>Worker's opinion</TableCell>}
                   {/* Badges never wrap, so their columns must fit them (fixed table layout clips nothing). */}
                   {showModel && <TableCell sx={{ width: widths.model, whiteSpace: "nowrap" }}>Model</TableCell>}
-                  {showModel && <TableCell sx={{ width: widths.group, whiteSpace: "nowrap" }}>Group</TableCell>}
+                  {showGroup && <TableCell sx={{ width: widths.group, whiteSpace: "nowrap" }}>Group</TableCell>}
+                  {queueMode && <TableCell sx={{ width: widths.reason, whiteSpace: "nowrap" }}>Reason</TableCell>}
+                  {queueMode && <TableCell sx={{ width: widths.status }}>Status</TableCell>}
                   {mode === "completed" && <TableCell sx={{ width: widths.on }}>Reviewed on</TableCell>}
                   {mode === "completed" && <TableCell sx={{ width: widths.by }}>Reviewed by</TableCell>}
                   <TableCell sx={{ width: widths.action }} aria-hidden />
@@ -870,11 +1114,17 @@ export function EncounterList({ mode }: Props) {
                           <ModelResultBadge value={v.modelResult} />
                         </TableCell>
                       )}
-                      {showModel && (
+                      {showGroup && (
                         <TableCell sx={{ whiteSpace: "nowrap" }}>
                           <CategoryBadge value={v.group} />
                         </TableCell>
                       )}
+                      {queueMode && (
+                        <TableCell sx={{ color: "text.primary", whiteSpace: "nowrap" }}>
+                          <ReasonCell reason={v.reason} />
+                        </TableCell>
+                      )}
+                      {queueMode && <TableCell>{v.hold && <HoldStatusBadge status={v.hold} />}</TableCell>}
                       {mode === "completed" && (
                         <TableCell sx={{ color: "text.primary" }}>
                           {v.reviewedOn ? format(parseISO(v.reviewedOn), "dd MMM yyyy") : "—"}
@@ -886,13 +1136,13 @@ export function EncounterList({ mode }: Props) {
                       <TableCell>
                         <Button
                           size="small"
-                          startIcon={mode === "pending" ? <RateReviewIcon /> : <VisibilityIcon />}
+                          startIcon={viewOnly ? <VisibilityIcon /> : <RateReviewIcon />}
                           onClick={(event) => {
                             event.stopPropagation();
                             navigate(v.href);
                           }}
                         >
-                          {mode === "pending" ? "Review" : "View"}
+                          {viewOnly ? "View" : "Review"}
                         </Button>
                       </TableCell>
                     </TableRow>

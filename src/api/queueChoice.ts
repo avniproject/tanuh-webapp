@@ -8,7 +8,8 @@ import {
 import { isSameDay } from "date-fns";
 import { classify, isReady, signalsOf } from "./caseSignals";
 import type { CachedEncounter } from "./encounters";
-import { queueRowDate, rowHoldStatus, rowReason, type QueueRow } from "./queueRows";
+import type { TakeResult } from "./caseHold";
+import { queueRowDate, queueRowKey, rowHoldStatus, rowReason, type QueueRow } from "./queueRows";
 
 export type GroupCounts = Record<QueueGroup, number>;
 
@@ -69,4 +70,31 @@ export function nextCaseIn(rows: QueueRow[], group: QueueGroup, viewer: string, 
 
 export function heldByViewer(rows: QueueRow[], viewer: string, now: Date): QueueRow | undefined {
   return oldest(rows.filter((r) => rowHoldStatus(r, viewer, now).kind === "mine"));
+}
+
+/**
+ * Review next case (PE-249): the oldest waiting case of the group chosen by `chooseGroup`, taken with `take`. A refused
+ * case moves on to the next waiting case of that group; a group whose cases are all refused is set aside and the group
+ * is chosen again from the rest. The taken review's uuid, or null once every candidate is refused. Errors go to the
+ * caller.
+ */
+export async function takeNextCase(
+  rows: QueueRow[],
+  reviewed: GroupCounts,
+  viewer: string,
+  now: Date,
+  take: (row: QueueRow) => Promise<TakeResult>,
+): Promise<string | null> {
+  const tried = new Set<string>();
+  const untried = () => rows.filter((r) => !tried.has(queueRowKey(r)));
+  const waiting: GroupCounts = { ...waitingCounts(rows, viewer, now) };
+  for (let group = chooseGroup(reviewed, waiting); group; group = chooseGroup(reviewed, waiting)) {
+    for (let row = nextCaseIn(untried(), group, viewer, now); row; row = nextCaseIn(untried(), group, viewer, now)) {
+      tried.add(queueRowKey(row));
+      const result = await take(row);
+      if ("reviewUuid" in result) return result.reviewUuid;
+    }
+    waiting[group] = 0;
+  }
+  return null;
 }

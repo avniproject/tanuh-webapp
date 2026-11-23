@@ -6,7 +6,13 @@ import WarningAmberOutlinedIcon from "@mui/icons-material/WarningAmberOutlined";
 import ErrorOutlineIcon from "@mui/icons-material/ErrorOutline";
 import RemoveCircleOutlineIcon from "@mui/icons-material/RemoveCircleOutline";
 import InfoOutlinedIcon from "@mui/icons-material/InfoOutlined";
-import { MODEL_RESULT_VALUES, REVIEW_CATEGORY_VALUES, type ModelResultValue } from "@/constants/tanuhConcepts";
+import type { HoldStatus } from "@/api/caseHold";
+import {
+  MODEL_RESULT_VALUES,
+  REVIEW_CATEGORY_VALUES,
+  type ModelResultValue,
+  type QueueGroup,
+} from "@/constants/tanuhConcepts";
 
 // Status pills for the high-risk model's values on a screening (tanuh-webapp#4). Colour + icon + text (never colour
 // alone); red is reserved for High Risk. The result tooltips are Fathima's prototype copy (PE-96 attachment) verbatim.
@@ -175,5 +181,70 @@ export function ModelResultBadge({ value }: { value: string | undefined }) {
       testId="model-result-badge"
       state={value.toLowerCase().replace(/\s+/g, "-")}
     />
+  );
+}
+
+// A plain pill: text on a pale fill of its own colour, so the label carries the meaning and the colour only groups it.
+function Pill({ label, ink, fill, testId, state, wrap }: {
+  label: string;
+  ink: string;
+  fill: string;
+  testId: string;
+  state: string;
+  wrap?: boolean;
+}) {
+  return (
+    <Box
+      component="span"
+      data-testid={testId}
+      data-state={state}
+      sx={{
+        display: "inline-block",
+        px: 1,
+        py: 0.25,
+        borderRadius: 999,
+        fontSize: "0.8rem",
+        fontWeight: 600,
+        lineHeight: 1.6,
+        color: ink,
+        bgcolor: fill,
+        ...(wrap ? { whiteSpace: "normal", overflowWrap: "anywhere" } : { whiteSpace: "nowrap" }),
+      }}
+    >
+      {label}
+    </Box>
+  );
+}
+
+// PE-249's three review groups, coloured as in the ticket's screen (amber, violet, teal).
+const QUEUE_GROUP_COLOURS: Record<QueueGroup, { ink: string; fill: string }> = {
+  "FLW marked": { ink: "#92400e", fill: "#fef3c7" },
+  "AI marked": { ink: "#5b21b6", fill: "#ede9fe" },
+  "Safety sample": { ink: "#115e59", fill: "#ccfbf1" },
+};
+
+export function QueueGroupBadge({ value }: { value: QueueGroup }) {
+  const { ink, fill } = QUEUE_GROUP_COLOURS[value];
+  return (
+    <Pill
+      label={value}
+      ink={ink}
+      fill={fill}
+      testId="queue-group-badge"
+      state={value.toLowerCase().replace(/\s+/g, "-")}
+    />
+  );
+}
+
+// Who is working on a case right now. Usernames have no break point, so this pill wraps anywhere.
+export function HoldStatusBadge({ status }: { status: HoldStatus }) {
+  if (status.kind === "waiting") {
+    return <Pill label="Waiting" ink="#475569" fill="#f1f5f9" testId="hold-status" state="waiting" wrap />;
+  }
+  if (status.kind === "mine") {
+    return <Pill label="In review by you" ink="#1d4ed8" fill="#dbeafe" testId="hold-status" state="mine" wrap />;
+  }
+  return (
+    <Pill label={`In review by ${status.by}`} ink="#b91c1c" fill="#fee2e2" testId="hold-status" state="other" wrap />
   );
 }

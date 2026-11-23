@@ -47,4 +47,6 @@ export interface SubjectApiResponse {
   audit?: Record<string, string>;
   // Keyed by address-level type name. For Tanuh: State, District, Block, Village.
   location?: Record<string, string | null>;
+  // The uuid of the place the patient is registered in (PE-249: places them among the physician's places by uuid).
+  "Location ID"?: string;
 }

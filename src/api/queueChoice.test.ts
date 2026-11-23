@@ -1,8 +1,9 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import type { CachedEncounter } from "./encounters";
 import type { EncounterWithLocation } from "./impl";
-import { chooseGroup, heldByViewer, nextCaseIn, reviewedToday, waitingCounts } from "./queueChoice";
+import { chooseGroup, heldByViewer, nextCaseIn, reviewedToday, takeNextCase, waitingCounts } from "./queueChoice";
 import type { QueueRow } from "./queueRows";
+import type { TakeResult } from "./caseHold";
 import { classify, signalsOf } from "./caseSignals";
 import {
   IN_REVIEW_BY_CONCEPT,
@@ -111,5 +112,57 @@ describe("reviewedToday", () => {
       review("r8", "dr.a", "s1", 7, true),
     ];
     expect(reviewedToday(reviews, screenings, "dr.a", NOW)).toEqual({ "FLW marked": 1, "AI marked": 2, "Safety sample": 0 });
+  });
+});
+
+// The button's choice (PE-249): the group reviewed least today, its oldest waiting case; a refused case moves to the
+// next one in that group, then to the next group.
+describe("takeNextCase", () => {
+  const none = { "FLW marked": 0, "AI marked": 0, "Safety sample": 0 };
+  const key = (r: QueueRow) => r.screening?.ID;
+
+  it("takes the oldest waiting case of the group reviewed least", async () => {
+    const rows = [row("f1", 3, true), row("a2", 5, false), row("a1", 2, false)];
+    const take = vi.fn(async (r: QueueRow) => ({ reviewUuid: "rev-" + key(r) }));
+    await expect(takeNextCase(rows, { ...none, "FLW marked": 1 }, "dr.a", NOW, take)).resolves.toBe("rev-a1");
+    expect(take).toHaveBeenCalledTimes(1);
+  });
+
+  it("tries the next case in the same group when one is refused", async () => {
+    const rows = [row("a1", 2, false), row("a2", 5, false), row("f1", 1, true)];
+    const take = vi.fn(async (r: QueueRow) =>
+      key(r) === "a1" ? { refused: "held" as const } : { reviewUuid: "rev-" + key(r) },
+    );
+    await expect(takeNextCase(rows, { ...none, "FLW marked": 1 }, "dr.a", NOW, take)).resolves.toBe("rev-a2");
+    expect(take.mock.calls.map(([r]) => key(r))).toEqual(["a1", "a2"]);
+  });
+
+  it("chooses again among the other groups once a group's cases are all refused", async () => {
+    const rows = [row("a1", 2, false), row("f1", 1, true), row("f2", 4, true)];
+    const take = vi.fn(async (r: QueueRow) =>
+      key(r) === "a1" || key(r) === "f1" ? { refused: "completed" as const } : { reviewUuid: "rev-" + key(r) },
+    );
+    await expect(takeNextCase(rows, { ...none, "FLW marked": 1 }, "dr.a", NOW, take)).resolves.toBe("rev-f2");
+    expect(take.mock.calls.map(([r]) => key(r))).toEqual(["a1", "f1", "f2"]);
+  });
+
+  it("gives up after every waiting case is refused, and never tries one held by someone else", async () => {
+    const rows = [row("a1", 2, false), row("f1", 1, true), row("f2", 4, true, { by: "dr.b", modifiedMinute: 25 })];
+    const take = vi.fn<(r: QueueRow) => Promise<TakeResult>>(async () => ({ refused: "gone" }));
+    await expect(takeNextCase(rows, none, "dr.a", NOW, take)).resolves.toBeNull();
+    expect(take.mock.calls.map(([r]) => key(r))).toEqual(["f1", "a1"]);
+  });
+
+  it("tries nothing when nothing waits", async () => {
+    const take = vi.fn();
+    await expect(takeNextCase([], none, "dr.a", NOW, take)).resolves.toBeNull();
+    expect(take).not.toHaveBeenCalled();
+  });
+
+  it("lets a thrown error through", async () => {
+    const take = vi.fn(async () => {
+      throw new Error("503");
+    });
+    await expect(takeNextCase([row("f1", 1, true)], none, "dr.a", NOW, take)).rejects.toThrow("503");
   });
 });
