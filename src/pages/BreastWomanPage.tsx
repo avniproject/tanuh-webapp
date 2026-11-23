@@ -345,7 +345,7 @@ export function BreastWomanPage() {
       </Stack>
 
       {step === "responses" && (
-        <Card sx={{ p: { xs: 2, sm: 3 }, maxWidth: 1040 }}>
+        <Card sx={{ p: { xs: 2, sm: 3 } }}>
           <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ mb: 2, flexWrap: "wrap", rowGap: 1 }}>
             <Typography component="h2" sx={{ fontFamily: CR.font, fontSize: 20, fontWeight: 600, color: CR.heading }}>
               {woman.forms.screening.name}
