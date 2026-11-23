@@ -1,3 +1,4 @@
+import { format, parseISO } from "date-fns";
 import { describe, expect, it } from "vitest";
 import { holdPill } from "./holdPill";
 
@@ -38,5 +39,30 @@ describe("holdPill", () => {
     // A hold is named as before, whatever the case waits for.
     const since = new Date(2026, 10, 23, 14, 5).toISOString();
     expect(holdPill({ kind: "mine", since }, suffix, { awaitingOcshr: true }).label).toBe("In review by you");
+  });
+  describe("withSince, for the case page's header (PE-250)", () => {
+    const since = "2026-11-23T05:11:00Z";
+    it("adds the time the viewer took the case", () => {
+      expect(holdPill({ kind: "mine", since }, suffix, { withSince: true })).toEqual({
+        label: `In review by you · since ${format(parseISO(since), "h:mm a")}`,
+      });
+    });
+    it("says In review by you when the time cannot be read", () => {
+      expect(holdPill({ kind: "mine", since: "garbage" }, suffix, { withSince: true })).toEqual({
+        label: "In review by you",
+      });
+    });
+    it("changes nothing for another physician's hold or a waiting case", () => {
+      const other = { kind: "other", by: "physician4@tanuh_uat_local", since } as const;
+      expect(holdPill(other, suffix, { withSince: true })).toEqual(holdPill(other, suffix));
+      expect(holdPill({ kind: "waiting" }, suffix, { withSince: true })).toEqual({ label: "Waiting for review" });
+      expect(holdPill({ kind: "waiting" }, suffix, { withSince: true, awaitingOcshr: true })).toEqual({
+        label: "Waiting for OCSHR result",
+      });
+    });
+    it("leaves the list's In review by you as it is without the option", () => {
+      expect(holdPill({ kind: "mine", since }, suffix)).toEqual({ label: "In review by you" });
+      expect(holdPill({ kind: "mine", since }, suffix, { withSince: false })).toEqual({ label: "In review by you" });
+    });
   });
 });

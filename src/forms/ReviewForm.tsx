@@ -34,7 +34,8 @@ import {
   submitEncounter,
 } from "@/api/encounters";
 import { getSubject } from "@/api/subjects";
-import { releaseCase } from "@/api/caseHold";
+import { holdStatus, releaseCase } from "@/api/caseHold";
+import { classify, signalsOf } from "@/api/caseSignals";
 import { decideCaseRoute } from "@/api/caseRoute";
 import { getCatchment } from "@/api/catchment";
 import { getConcept, hasHighRiskModel, hasReviewQueue, type ConceptAnswer } from "@/api/concepts";
@@ -65,7 +66,7 @@ import {
   readObs,
   readReviewCategory,
 } from "@/constants/tanuhConcepts";
-import { CategoryBadge, ModelResultBadge } from "@/components/StatusBadge";
+import { CategoryBadge, HoldStatusBadge, ModelResultBadge, QueueGroupBadge } from "@/components/StatusBadge";
 import { computeAgreement } from "./agreement";
 import { caseNoticeText, decideCaseAccess, decideSubmit, formToShow } from "./caseAccess";
 import { bookHighRiskFollowUps, type FollowUp } from "./followUps";
@@ -329,6 +330,9 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
   const readOnly = completed || isLegacy || saved !== null || !!loaded.unavailable || access.locked;
   // Once saved, the hold is over: the review is completed.
   const notice = saved === null ? access.notice : null;
+  // PE-250: the header's review group, with the queue on. Completed and unavailable pages show it too.
+  const group = loaded.queueOn ? classify(signalsOf(loaded.screening)).group : undefined;
+  const usernameSuffix = auth.status === "ready" ? auth.user.usernameSuffix : undefined;
   // A page the hold locks shows the empty form rather than the viewer's own unsent draft, which stays stored.
   const effectiveForm = formToShow(access, { stored: prefilled, draft: form, empty: emptyForm });
   // A completed review shows what was RECORDED. Re-deriving from the current
@@ -611,45 +615,69 @@ export function ReviewForm({ encounterUuid, screeningUuid, onBack }: Props) {
     readObs<string>(loaded.screening.observations as Record<string, unknown>, ENCOUNTER_ID_CONCEPT) ||
     loaded.subject["External ID"] ||
     "Patient Review";
+  const caseTitle = (
+    <Typography
+      variant="h5"
+      sx={{
+        fontSize: { xs: "1.15rem", sm: "1.5rem" },
+        fontWeight: 700,
+        overflow: "hidden",
+        textOverflow: "ellipsis",
+        whiteSpace: "nowrap",
+      }}
+    >
+      {caseLabel}
+    </Typography>
+  );
 
   return (
     <Stack spacing={3}>
-      <Stack direction="row" alignItems="center" spacing={1}>
-        {onBack && <BackButton onBack={onBack} />}
-        <Typography
-          variant="h5"
-          sx={{
-            fontSize: { xs: "1.15rem", sm: "1.5rem" },
-            fontWeight: 700,
-            overflow: "hidden",
-            textOverflow: "ellipsis",
-            whiteSpace: "nowrap",
-          }}
-        >
-          {caseLabel}
-        </Typography>
-        <Box sx={{ flexGrow: 1 }} />
-      </Stack>
+      {loaded.queueOn ? (
+        // PE-250: the case, its review group, who has it in review, and Release case for the holder. The hold pill and
+        // the button go with `notice`, so both leave once the review is saved. On a narrow screen the badge and the
+        // pill wrap under the case, and the button keeps to the right of its line.
+        <Stack direction="row" alignItems="center" sx={{ flexWrap: "wrap", columnGap: 1.5, rowGap: 1 }}>
+          <Stack direction="row" alignItems="center" spacing={1} sx={{ minWidth: 0, maxWidth: "100%" }}>
+            {onBack && <BackButton onBack={onBack} />}
+            {caseTitle}
+          </Stack>
+          {group && <QueueGroupBadge value={group} />}
+          {notice && (
+            <HoldStatusBadge
+              status={holdStatus(loaded.review, viewer, loaded.loadedAt)}
+              usernameSuffix={usernameSuffix}
+              awaitingOcshr={notice.kind === "waiting" && notice.reason === "ocshr-pending"}
+              withSince
+            />
+          )}
+          {notice?.kind === "mine" && (
+            <Button
+              variant="outlined"
+              disabled={releasing || submitting}
+              onClick={release}
+              sx={{ ml: "auto", flexShrink: 0 }}
+            >
+              {releasing ? "Releasing…" : "Release case"}
+            </Button>
+          )}
+        </Stack>
+      ) : (
+        <Stack direction="row" alignItems="center" spacing={1}>
+          {onBack && <BackButton onBack={onBack} />}
+          {caseTitle}
+          <Box sx={{ flexGrow: 1 }} />
+        </Stack>
+      )}
 
       {loaded.unavailable && <Alert severity="warning">{loaded.unavailable}</Alert>}
 
-      {notice &&
-        (notice.kind === "mine" ? (
-          <Alert
-            severity="info"
-            action={
-              <Button color="inherit" size="small" disabled={releasing || submitting} onClick={release}>
-                {releasing ? "Releasing…" : "Release case"}
-              </Button>
-            }
-          >
-            {caseNoticeText(notice)}
-          </Alert>
-        ) : (
-          <Alert icon={<LockOutlinedIcon fontSize="small" />} severity="info" sx={READ_ONLY_ALERT_SX}>
-            {caseNoticeText(notice)}
-          </Alert>
-        ))}
+      {/* With the queue on, the header names who has the case; a waiting case also says here why it is read-only.
+          `notice` is set only with the queue on. */}
+      {notice?.kind === "waiting" && (
+        <Alert icon={<LockOutlinedIcon fontSize="small" />} severity="info" sx={READ_ONLY_ALERT_SX}>
+          {caseNoticeText(notice)}
+        </Alert>
+      )}
       {releaseError && <Alert severity="error">{releaseError}</Alert>}
 
       {isLegacy && (
