@@ -143,7 +143,7 @@ export function BreastWomanPage() {
         : "not_started";
   const stepLine = (formKey: ClinicianFormKey): string => {
     const s = statusOf(formKey);
-    if (s === "submitted") return "Submitted to Avni";
+    if (s === "submitted") return "Submitted";
     return s === "draft" ? "Draft · kept in this browser" : "Not started";
   };
 
@@ -236,7 +236,7 @@ export function BreastWomanPage() {
         submitLabel={submitted ? "Update" : CLINICIAN_FORMS[formKey].submit}
         savedNote={
           submitted
-            ? `Submitted to Avni on ${format(new Date(submitted["Encounter date time"]!), "d MMM yyyy")}`
+            ? `Submitted on ${format(new Date(submitted["Encounter date time"]!), "d MMM yyyy")}`
             : saved
               ? "Draft saved in this browser"
               : kept

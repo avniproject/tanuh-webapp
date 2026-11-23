@@ -16,7 +16,7 @@ interface Props {
   placesOf: (element: ElementDef) => PlaceOption[];
   placesFailed: boolean;
   submitLabel: string;
-  /** Under the progress bar: "Draft saved just now", "Submitted to Avni", … */
+  /** Under the progress bar: "Draft saved in this browser", "Submitted on 23 Nov 2026", … */
   savedNote: string | null;
   /** The clinician may read the form but not save it. */
   readOnly: boolean;
