@@ -12,7 +12,9 @@ import {
   getEncounter,
   invalidateEncounterSweeps,
   isProgramEncounter,
+  patchEncounter,
   submitEncounter,
+  type PatchEncounterBody,
   type UpsertEncounterBody,
 } from "./encounters";
 import type { QueueRow } from "./queueRows";
@@ -80,9 +82,9 @@ export function decideTake(
 }
 
 /**
- * Body for PUT /api/encounter/{uuid} that writes (hold) or removes (null) the marker on a planned review. The PUT
- * replaces the observations and the schedule window with what is sent and keeps the visit planned only while
- * "Encounter date time" is null, so all of those are sent back.
+ * Body for the whole-visit PUT that writes (hold) or removes (null) the marker on a planned PROGRAMME review, which
+ * has no PATCH. The PUT replaces the observations and the schedule window with what is sent and keeps the visit planned
+ * only while "Encounter date time" is null, so all of those are sent back.
  */
 export function holdBody(
   review: EncounterApiResponse,
@@ -104,6 +106,49 @@ export function holdBody(
       ...extra,
     },
   };
+}
+
+/**
+ * Body for PATCH /api/encounter/{uuid} that writes (hold) or removes (null) the marker on a STANDALONE review (FW3).
+ * Only the marker fields, and `extra`, are sent; the server merges them into the stored observations and a null removes
+ * one. Nothing else on the review is touched, so a submit, cancel or delete that lands between the read and this write
+ * stands.
+ */
+export function holdPatch(
+  review: Pick<EncounterApiResponse, "Encounter type">,
+  hold: Hold | null,
+  extra: Record<string, unknown> = {},
+): PatchEncounterBody {
+  return {
+    "Encounter type": review["Encounter type"],
+    observations: {
+      [IN_REVIEW_BY_CONCEPT.name]: hold ? hold.by : null,
+      [IN_REVIEW_SINCE_CONCEPT.name]: hold ? hold.since : null,
+      ...extra,
+    },
+  };
+}
+
+const sameInstant = (a: string, b: string) => {
+  const t = Date.parse(a);
+  return !Number.isNaN(t) && t === Date.parse(b);
+};
+
+/**
+ * The review as read again after a take write (FW3): the viewer's only when it is still open and carries the marker
+ * just written, the viewer's name and the same time. Two takes that overlap both write; the one written last stays, so
+ * the other reads someone else's marker, or its own name with another window's time, and is refused as held.
+ */
+export function confirmTake(
+  review: ReviewLike | null,
+  viewer: string,
+  since: string,
+): "mine" | "completed" | "held" | "gone" {
+  if (!review) return "gone";
+  if (isCompleted(review)) return "completed";
+  if (isGone(review)) return "gone";
+  const hold = readHold(review);
+  return hold && hold.by === viewer && sameInstant(hold.since, since) ? "mine" : "held";
 }
 
 export const REVIEW_UUID_NAMESPACE = "3f0a6d52-6b1c-4d0e-9a51-7c2e0b249249";
@@ -145,7 +190,8 @@ export function createReviewVisit(screening: EncounterApiResponse, uuid: string,
   );
 }
 
-export type TakeResult = { reviewUuid: string } | { refused: "completed" | "held" | "gone" };
+export type TakeRefusal = "completed" | "held" | "gone";
+export type TakeResult = { reviewUuid: string } | { refused: TakeRefusal };
 
 const isNotFound = (err: unknown) => axios.isAxiosError(err) && err.response?.status === 404;
 
@@ -159,33 +205,57 @@ async function readReview(uuid: string): Promise<EncounterApiResponse | null> {
   }
 }
 
-type Stop = "completed" | "held" | "gone" | "skip";
+// The hold write: a PATCH of the marker on a standalone review, the whole-visit PUT on a programme one.
+function writeHold(review: EncounterApiResponse, hold: Hold | null, extra: Record<string, unknown> = {}) {
+  if (isProgramEncounter(review)) return submitEncounter(review.ID, holdBody(review, hold, extra), { program: true });
+  return patchEncounter(review.ID, holdPatch(review, hold, extra));
+}
 
-// The hold write, retried once. The first PUT may have landed before it failed, so the retry re-reads the review and
-// decides again: `rebuild` gives the body from the fresh copy, or the reason to stop. A second failure is thrown.
-async function putHold(
+// The hold write, retried once. The first write may have landed before it failed, so the retry re-reads the review and
+// decides again: `stop` gives the reason not to write again, or undefined to write from the fresh copy. A second
+// failure is thrown.
+async function writeHoldOnce<Stop extends string>(
   current: EncounterApiResponse,
-  body: UpsertEncounterBody,
-  rebuild: (fresh: EncounterApiResponse) => UpsertEncounterBody | Stop,
-): Promise<Stop | undefined> {
-  const send = (c: EncounterApiResponse, b: UpsertEncounterBody) =>
-    submitEncounter(c.ID, b, { program: isProgramEncounter(c) });
+  hold: Hold | null,
+  extra: Record<string, unknown>,
+  stop: (fresh: EncounterApiResponse) => Stop | undefined,
+): Promise<Stop | "gone" | undefined> {
   try {
-    await send(current, body);
+    await writeHold(current, hold, extra);
     return undefined;
   } catch {
     const fresh = await readReview(current.ID);
     if (!fresh) return "gone";
-    const next = rebuild(fresh);
-    if (typeof next === "string") return next;
-    await send(fresh, next);
+    const reason = stop(fresh);
+    if (reason) return reason;
+    await writeHold(fresh, hold, extra);
     return undefined;
   }
 }
 
+// Writes the hold on a review the take has decided to take, then reads it again: the case is the viewer's only when
+// the marker just written is what the server now holds (FW3).
+async function holdAndConfirm(
+  current: EncounterApiResponse,
+  hold: Hold,
+  extra: Record<string, unknown>,
+  viewer: string,
+  now: Date,
+): Promise<TakeResult> {
+  const stopped = await writeHoldOnce<TakeRefusal>(current, hold, extra, (fresh) => {
+    const again = decideTake(fresh, viewer, now);
+    return again === "take" ? undefined : again;
+  });
+  if (stopped) return { refused: stopped };
+  invalidateEncounterSweeps();
+  const confirmed = confirmTake(await readReview(current.ID), viewer, hold.since);
+  return confirmed === "mine" ? { reviewUuid: current.ID } : { refused: confirmed };
+}
+
 /**
  * Takes a case for `viewer`: writes the hold on the case's review, creating the review first when a completed
- * screening has none. Nothing is written when the review is completed, cancelled, deleted or held by someone else.
+ * screening has none, and keeps the case only when the review read back afterwards carries that hold. Nothing is
+ * written when the review is completed, cancelled, deleted or held by someone else.
  */
 export async function takeCase(row: QueueRow, viewer: string, now: Date = serverNow()): Promise<TakeResult> {
   const hold: Hold = { by: viewer, since: now.toISOString() };
@@ -195,13 +265,7 @@ export async function takeCase(row: QueueRow, viewer: string, now: Date = server
     if (!current) return { refused: "gone" };
     const verdict = decideTake(current, viewer, now);
     if (verdict !== "take") return { refused: verdict };
-    const stopped = await putHold(current, holdBody(current, hold), (fresh) => {
-      const again = decideTake(fresh, viewer, now);
-      return again === "take" ? holdBody(fresh, hold) : again;
-    });
-    if (stopped && stopped !== "skip") return { refused: stopped };
-    invalidateEncounterSweeps();
-    return { reviewUuid: row.review.encounterUuid };
+    return holdAndConfirm(current, hold, {}, viewer, now);
   }
 
   const screening = row.screening;
@@ -230,13 +294,7 @@ export async function takeCase(row: QueueRow, viewer: string, now: Date = server
     const verdict = decideTake(current, viewer, now);
     if (verdict !== "take") return { refused: verdict };
   }
-  const stopped = await putHold(current, holdBody(current, hold, stamp), (fresh) => {
-    const again = decideTake(fresh, viewer, now);
-    return again === "take" ? holdBody(fresh, hold, stamp) : again;
-  });
-  if (stopped && stopped !== "skip") return { refused: stopped };
-  invalidateEncounterSweeps();
-  return { reviewUuid: uuid };
+  return holdAndConfirm(current, hold, stamp, viewer, now);
 }
 
 const canRelease = (r: EncounterApiResponse, viewer: string) =>
@@ -246,8 +304,8 @@ const canRelease = (r: EncounterApiResponse, viewer: string) =>
 export async function releaseCase(reviewUuid: string, viewer: string): Promise<void> {
   const current = await readReview(reviewUuid);
   if (!current || !canRelease(current, viewer)) return;
-  const stopped = await putHold(current, holdBody(current, null), (fresh) =>
-    canRelease(fresh, viewer) ? holdBody(fresh, null) : "skip",
+  const stopped = await writeHoldOnce(current, null, {}, (fresh) =>
+    canRelease(fresh, viewer) ? undefined : ("skip" as const),
   );
   if (stopped) return;
   invalidateEncounterSweeps();

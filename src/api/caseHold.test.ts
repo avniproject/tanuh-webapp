@@ -2,19 +2,22 @@ import { AxiosError } from "axios";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { ENCOUNTER_TYPE } from "@/constants/tanuhConcepts";
 
-const { get, put, post } = vi.hoisted(() => ({ get: vi.fn(), put: vi.fn(), post: vi.fn() }));
+const { get, put, post, patch } = vi.hoisted(() => ({ get: vi.fn(), put: vi.fn(), post: vi.fn(), patch: vi.fn() }));
 vi.mock("@/auth/httpClient", () => ({
   http: {
     get: (...a: unknown[]) => get(...a),
     put: (...a: unknown[]) => put(...a),
     post: (...a: unknown[]) => post(...a),
+    patch: (...a: unknown[]) => patch(...a),
   },
 }));
 import type { QueueRow } from "./queueRows";
 import type { EncounterApiResponse } from "./types";
 import {
+  confirmTake,
   createReviewVisit,
   decideTake,
+  holdPatch,
   holdBody,
   holdStatus,
   isLiveHold,
@@ -163,44 +166,188 @@ describe("createReviewVisit", () => {
   });
 });
 
+// FW3: a standalone hold write sends only the marker, so a submit, cancel or delete landing meanwhile stands.
+describe("holdPatch", () => {
+  it("sends the encounter type and the two marker fields, and nothing else", () => {
+    expect(holdPatch(booked, { by: "dr.a", since: "t" })).toEqual({
+      "Encounter type": "Clinician Review Form",
+      observations: { "In review by": "dr.a", "In review since": "t" },
+    });
+  });
+  it("removes the marker with nulls, and adds extra observations", () => {
+    expect(holdPatch(booked, null)).toEqual({
+      "Encounter type": "Clinician Review Form",
+      observations: { "In review by": null, "In review since": null },
+    });
+    expect(holdPatch(booked, { by: "dr.a", since: "t" }, { "Reviewed Oral Screening": "s1" }).observations).toEqual({
+      "In review by": "dr.a",
+      "In review since": "t",
+      "Reviewed Oral Screening": "s1",
+    });
+  });
+});
+
+// FW3: after a take write the review is read again; the case is the viewer's only when the marker just written is
+// still there on an open review.
+describe("confirmTake", () => {
+  const since = t0.toISOString();
+  it("is mine when the review is open and carries the viewer's marker as written", () => {
+    expect(confirmTake(heldBy("dr.a", t0), "dr.a", since)).toBe("mine");
+  });
+  it("compares the time as an instant, whatever form the server gives it back in", () => {
+    const back = bookedWith({ "In review by": "dr.a", "In review since": "2026-11-23T15:30:00.000+05:30" });
+    expect(confirmTake(back, "dr.a", since)).toBe("mine");
+  });
+  it("is held when another physician's write landed after the viewer's, or the viewer's other window's", () => {
+    expect(confirmTake(heldBy("dr.b", t0), "dr.a", since)).toBe("held");
+    expect(confirmTake(heldBy("dr.a", minus(t0, 1)), "dr.a", since)).toBe("held");
+    expect(confirmTake(booked, "dr.a", since)).toBe("held");
+    expect(confirmTake(bookedWith({ "In review by": "dr.a", "In review since": "garbage" }), "dr.a", "garbage")).toBe("held");
+  });
+  it("is completed or gone when a submit, cancel or delete landed", () => {
+    expect(confirmTake({ ...heldBy("dr.a", t0), "Encounter date time": "2026-11-23T10:01:00Z" }, "dr.a", since)).toBe(
+      "completed",
+    );
+    expect(confirmTake({ ...heldBy("dr.a", t0), "Cancel date time": "2026-11-23T10:01:00Z" }, "dr.a", since)).toBe("gone");
+    expect(confirmTake({ ...heldBy("dr.a", t0), Voided: true }, "dr.a", since)).toBe("gone");
+    expect(confirmTake(null, "dr.a", since)).toBe("gone");
+  });
+});
+
 const notFound = () => new AxiosError("nf", "ERR_BAD_REQUEST", undefined, undefined, { status: 404 } as never);
 const serverError = () => new AxiosError("boom", "ERR_BAD_RESPONSE", undefined, undefined, { status: 500 } as never);
 const stamp = { "In review by": "dr.a", "In review since": t0.toISOString() };
+const reply = (data: unknown) => Promise.resolve({ data });
+const copy = <T,>(v: T): T => structuredClone(v);
+
+// A small stand-in for the server: the reviews by uuid, and every patient's visits for the visit lists. A read gives
+// what the last write left; a PATCH merges observations (null removes one), a PUT replaces them and the window, a web
+// POST creates a planned review. `stamped` is the server time each write sets as "Last modified at".
+function fakeServer(reviews: EncounterApiResponse[], visits: EncounterApiResponse[] = []) {
+  const store = new Map(reviews.map((r) => [r.ID, copy(r)]));
+  const stamped = "2026-11-23T10:00:01.000Z";
+  const touch = (r: EncounterApiResponse) => ({ ...r, audit: { ...r.audit, "Last modified at": stamped } });
+  get.mockImplementation((url: string, config?: { params?: { encounterType?: string } }) => {
+    const one = /^\/api\/(encounter|programEncounter)\/(.+)$/.exec(url);
+    if (one) {
+      const r = store.get(one[2]);
+      if (!r || !!r["Enrolment ID"] !== (one[1] === "programEncounter")) return Promise.reject(notFound());
+      return reply(copy(r));
+    }
+    if (url === "/api/encounters" || url === "/api/programEncounters") {
+      const content = [...visits, ...store.values()].filter((v) => v["Encounter type"] === config?.params?.encounterType);
+      return reply({ content: copy(content), totalElements: content.length, totalPages: 1 });
+    }
+    return Promise.reject(new Error(`unexpected GET ${url}`));
+  });
+  patch.mockImplementation((url: string, body: { observations: Record<string, unknown> }) => {
+    const id = url.replace("/api/encounter/", "");
+    const r = store.get(id);
+    if (!r || r["Enrolment ID"]) return Promise.reject(notFound());
+    const observations = { ...r.observations };
+    for (const [k, v] of Object.entries(body.observations)) {
+      if (v === null) delete observations[k];
+      else observations[k] = v;
+    }
+    store.set(id, touch({ ...r, observations }));
+    return reply(copy(store.get(id)));
+  });
+  put.mockImplementation((url: string, body: Partial<EncounterApiResponse>) => {
+    const id = url.replace(/^\/api\/(encounter|programEncounter)\//, "");
+    const r = store.get(id);
+    if (!r) return Promise.reject(notFound());
+    store.set(
+      id,
+      touch({
+        ...r,
+        observations: { ...body.observations },
+        "Encounter date time": body["Encounter date time"] ?? null,
+        "Earliest scheduled date": body["Earliest scheduled date"] ?? null,
+        "Max scheduled date": body["Max scheduled date"] ?? null,
+      }),
+    );
+    return reply(copy(store.get(id)));
+  });
+  post.mockImplementation((_url: string, body: { uuid: string; programEnrolmentUUID?: string }) => {
+    store.set(
+      body.uuid,
+      touch({
+        ...booked,
+        ID: body.uuid,
+        observations: {},
+        ...(body.programEnrolmentUUID ? { "Enrolment ID": body.programEnrolmentUUID } : {}),
+      }),
+    );
+    return reply({ success: true });
+  });
+  return { store, stamped };
+}
 
 describe("takeCase and releaseCase", () => {
   beforeEach(() => {
     get.mockReset();
     put.mockReset();
     post.mockReset();
-    put.mockResolvedValue({ data: {} });
+    patch.mockReset();
   });
 
   const bookedRow = { kind: "booked", review: { encounterUuid: "r1" } } as unknown as QueueRow;
-  const screening = { ...booked, ID: "scr1", "Subject ID": "sub1", "Encounter date time": "2026-11-20T00:00:00Z" };
+  const screening = { ...booked, ID: "scr1", "Subject ID": "sub1", "Encounter type": "Oral Screening", "Encounter date time": "2026-11-20T00:00:00Z" };
   const screeningRow = { kind: "screening", screening } as unknown as QueueRow;
-  const reply = (data: unknown) => Promise.resolve({ data });
+  const programReview = (extra: Partial<EncounterApiResponse> = {}) => bookedWith({ Other: "x" }, { "Enrolment ID": "enr1", ...extra });
 
-  it("a booked take sends one PUT carrying the marker and the window", async () => {
-    get.mockImplementation(() => reply(bookedWith({ "Other": "x" })));
+  it("a standalone booked take PATCHes only the encounter type and the marker, then reads the review again", async () => {
+    const { store } = fakeServer([bookedWith({ Other: "x" })]);
     expect(await takeCase(bookedRow, "dr.a", t0)).toEqual({ reviewUuid: "r1" });
-    expect(get).toHaveBeenCalledTimes(1);
-    expect(get.mock.calls[0][0]).toBe("/api/encounter/r1");
+    expect(put).not.toHaveBeenCalled();
+    expect(patch).toHaveBeenCalledTimes(1);
+    const [url, body] = patch.mock.calls[0];
+    expect(url).toBe("/api/encounter/r1");
+    expect(body).toEqual({ "Encounter type": "Clinician Review Form", observations: stamp });
+    expect(get.mock.calls.map(([u]) => u)).toEqual(["/api/encounter/r1", "/api/encounter/r1"]);
+    expect(store.get("r1")?.observations).toEqual({ Other: "x", ...stamp });
+  });
+
+  it("a submit that lands between the read and the hold write stands, and the take is refused as completed", async () => {
+    const { store } = fakeServer([booked]);
+    patch.mockImplementationOnce(() => {
+      // The other physician's submit lands first; the hold write then merges its two fields only.
+      store.set("r1", { ...booked, "Encounter date time": "2026-11-23T10:00:00.500Z", observations: { Diagnosis: "d" } });
+      const r = store.get("r1")!;
+      store.set("r1", { ...r, observations: { ...r.observations, ...stamp } });
+      return reply({});
+    });
+    expect(await takeCase(bookedRow, "dr.a", t0)).toEqual({ refused: "completed" });
+    expect(store.get("r1")?.["Encounter date time"]).toBe("2026-11-23T10:00:00.500Z");
+    expect(store.get("r1")?.observations).toMatchObject({ Diagnosis: "d" });
+  });
+
+  it("two takes that overlap: the one whose marker the re-read does not show is refused as held", async () => {
+    const { store } = fakeServer([booked]);
+    patch.mockImplementationOnce(() => {
+      // dr.b's write lands just after dr.a's.
+      store.set("r1", heldBy("dr.b", t0));
+      return reply({});
+    });
+    expect(await takeCase(bookedRow, "dr.a", t0)).toEqual({ refused: "held" });
+  });
+
+  it("a programme booked take sends the whole-visit PUT on the programme endpoint, and reads the review again", async () => {
+    const { store } = fakeServer([programReview()]);
+    expect(await takeCase(bookedRow, "dr.a", t0)).toEqual({ reviewUuid: "r1" });
+    expect(patch).not.toHaveBeenCalled();
     expect(put).toHaveBeenCalledTimes(1);
     const [url, body] = put.mock.calls[0];
-    expect(url).toBe("/api/encounter/r1");
+    expect(url).toBe("/api/programEncounter/r1");
     expect(body).toMatchObject({
       cancelObservations: {},
       "Encounter date time": null,
       "Earliest scheduled date": booked["Earliest scheduled date"],
       "Max scheduled date": booked["Max scheduled date"],
     });
+    expect(body).not.toHaveProperty("Subject ID");
     expect(body.observations).toEqual({ Other: "x", ...stamp });
-  });
-
-  it("a booked take inside a programme uses the programme endpoint", async () => {
-    get.mockImplementation(() => reply(bookedWith({}, { "Enrolment ID": "enr1" })));
-    await takeCase(bookedRow, "dr.a", t0);
-    expect(put.mock.calls[0][0]).toBe("/api/programEncounter/r1");
+    expect(store.get("r1")?.observations).toEqual({ Other: "x", ...stamp });
   });
 
   it.each([
@@ -209,118 +356,186 @@ describe("takeCase and releaseCase", () => {
     ["gone", voidedReview],
     ["held", heldBy("dr.b", t0)],
   ])("a booked take refused as %s writes nothing", async (refused, review) => {
-    get.mockImplementation(() => reply(review));
+    fakeServer([review]);
     expect(await takeCase(bookedRow, "dr.a", t0)).toEqual({ refused });
+    expect(patch).not.toHaveBeenCalled();
     expect(put).not.toHaveBeenCalled();
     expect(post).not.toHaveBeenCalled();
   });
 
   it("a booked review that is deleted (404 from both endpoints) is refused as gone", async () => {
-    get.mockImplementation(() => Promise.reject(notFound()));
+    fakeServer([]);
     expect(await takeCase(bookedRow, "dr.a", t0)).toEqual({ refused: "gone" });
-    expect(put).not.toHaveBeenCalled();
+    expect(patch).not.toHaveBeenCalled();
   });
 
-  it("an unbooked take whose derived review is a 404 sends the web POST, then the PUT with the stamp", async () => {
+  it("an unbooked take whose derived review is a 404 sends the web POST, then the PATCH with the stamp", async () => {
     const uuid = await reviewUuidFor("scr1");
-    let created = false;
-    get.mockImplementation(() => {
-      if (!created) return Promise.reject(notFound());
-      return reply({ ...booked, ID: uuid });
-    });
-    post.mockImplementation(() => {
-      created = true;
-      return reply({ success: true });
-    });
+    const { store } = fakeServer([], [screening]);
     expect(await takeCase(screeningRow, "dr.a", t0)).toEqual({ reviewUuid: uuid });
     expect(post).toHaveBeenCalledTimes(1);
     const expected = createReviewVisit(screening, uuid, t0);
     expect(post.mock.calls[0]).toEqual([expected.url, expected.body]);
-    expect(put).toHaveBeenCalledTimes(1);
-    const [url, body] = put.mock.calls[0];
+    expect(put).not.toHaveBeenCalled();
+    expect(patch).toHaveBeenCalledTimes(1);
+    const [url, body] = patch.mock.calls[0];
     expect(url).toBe(`/api/encounter/${uuid}`);
-    expect(body).toMatchObject({
-      cancelObservations: {},
-      "Encounter date time": null,
-      "Earliest scheduled date": booked["Earliest scheduled date"],
+    expect(body).toEqual({
+      "Encounter type": "Clinician Review Form",
       observations: { ...stamp, "Reviewed Oral Screening": "scr1" },
     });
-    expect(post.mock.invocationCallOrder[0]).toBeLessThan(put.mock.invocationCallOrder[0]);
+    expect(post.mock.invocationCallOrder[0]).toBeLessThan(patch.mock.invocationCallOrder[0]);
+    expect(store.get(uuid)?.observations).toEqual({ ...stamp, "Reviewed Oral Screening": "scr1" });
   });
 
-  it("an unbooked take whose derived review exists sends no POST, only the PUT", async () => {
+  it("an unbooked programme take sends the programme web POST, then the PUT with the stamp", async () => {
     const uuid = await reviewUuidFor("scr1");
-    get.mockImplementation(() => reply({ ...booked, ID: uuid }));
-    expect(await takeCase(screeningRow, "dr.a", t0)).toEqual({ reviewUuid: uuid });
-    expect(post).not.toHaveBeenCalled();
-    expect(put).toHaveBeenCalledTimes(1);
+    const inProgramme = { ...screening, "Enrolment ID": "enr1" };
+    fakeServer([], [inProgramme]);
+    expect(await takeCase({ kind: "screening", screening: inProgramme } as unknown as QueueRow, "dr.a", t0)).toEqual({
+      reviewUuid: uuid,
+    });
+    expect(post.mock.calls[0][0]).toBe("/web/programEncounters");
+    expect(patch).not.toHaveBeenCalled();
+    expect(put.mock.calls[0][0]).toBe(`/api/programEncounter/${uuid}`);
     expect(put.mock.calls[0][1].observations).toEqual({ ...stamp, "Reviewed Oral Screening": "scr1" });
   });
 
+  it("an unbooked take whose derived review exists sends no POST, only the PATCH", async () => {
+    const uuid = await reviewUuidFor("scr1");
+    fakeServer([{ ...booked, ID: uuid }], [screening]);
+    expect(await takeCase(screeningRow, "dr.a", t0)).toEqual({ reviewUuid: uuid });
+    expect(post).not.toHaveBeenCalled();
+    expect(patch).toHaveBeenCalledTimes(1);
+    expect(patch.mock.calls[0][1].observations).toEqual({ ...stamp, "Reviewed Oral Screening": "scr1" });
+  });
+
   it("an unbooked take whose derived review is held by someone else writes nothing", async () => {
-    get.mockImplementation(() => reply(heldBy("dr.b", t0)));
+    const uuid = await reviewUuidFor("scr1");
+    fakeServer([{ ...heldBy("dr.b", t0), ID: uuid }], [screening]);
     expect(await takeCase(screeningRow, "dr.a", t0)).toEqual({ refused: "held" });
-    expect(put).not.toHaveBeenCalled();
+    expect(patch).not.toHaveBeenCalled();
     expect(post).not.toHaveBeenCalled();
   });
 
-  it("a web POST answering success false throws and sends no PUT", async () => {
-    get.mockImplementation(() => Promise.reject(notFound()));
+  it("a web POST answering success false throws and writes nothing", async () => {
+    fakeServer([], [screening]);
     post.mockResolvedValue({ data: { success: false, errorMessage: "outside catchment" } });
     await expect(takeCase(screeningRow, "dr.a", t0)).rejects.toThrow("outside catchment");
-    expect(put).not.toHaveBeenCalled();
+    expect(patch).not.toHaveBeenCalled();
   });
 
   it("a failed POST that left a completed review behind is refused as completed", async () => {
-    let posted = false;
-    get.mockImplementation(() => (posted ? reply(completedReview) : Promise.reject(notFound())));
+    const uuid = await reviewUuidFor("scr1");
+    const { store } = fakeServer([], [screening]);
     post.mockImplementation(() => {
-      posted = true;
+      store.set(uuid, { ...completedReview, ID: uuid });
       return Promise.reject(serverError());
     });
     expect(await takeCase(screeningRow, "dr.a", t0)).toEqual({ refused: "completed" });
-    expect(put).not.toHaveBeenCalled();
+    expect(patch).not.toHaveBeenCalled();
   });
 
-  it("a failed POST with no completed review behind it is rethrown", async () => {
-    get.mockImplementation(() => Promise.reject(notFound()));
+  it("a failed POST with no review behind it is rethrown", async () => {
+    fakeServer([], [screening]);
     post.mockRejectedValue(serverError());
     await expect(takeCase(screeningRow, "dr.a", t0)).rejects.toThrow("boom");
-    expect(put).not.toHaveBeenCalled();
+    expect(patch).not.toHaveBeenCalled();
   });
 
   it("a GET failure other than 404 is rethrown", async () => {
     get.mockImplementation(() => Promise.reject(serverError()));
     await expect(takeCase(screeningRow, "dr.a", t0)).rejects.toThrow("boom");
     expect(post).not.toHaveBeenCalled();
-    expect(put).not.toHaveBeenCalled();
+    expect(patch).not.toHaveBeenCalled();
   });
 
-  it("a PUT failing once is retried and the take succeeds", async () => {
-    get.mockImplementation(() => reply(booked));
-    put.mockRejectedValueOnce(serverError()).mockResolvedValueOnce({ data: {} });
+  it("a hold write failing once is retried and the take succeeds", async () => {
+    fakeServer([booked]);
+    const real = patch.getMockImplementation()!;
+    patch.mockImplementationOnce(() => Promise.reject(serverError()));
+    patch.mockImplementationOnce(real);
+    expect(await takeCase(bookedRow, "dr.a", t0)).toEqual({ reviewUuid: "r1" });
+    expect(patch).toHaveBeenCalledTimes(2);
+  });
+
+  it("a hold write failing twice throws", async () => {
+    fakeServer([booked]);
+    patch.mockImplementation(() => Promise.reject(serverError()));
+    await expect(takeCase(bookedRow, "dr.a", t0)).rejects.toThrow("boom");
+    expect(patch).toHaveBeenCalledTimes(2);
+  });
+
+  it("a first hold write that fails, then a re-read showing the review completed, sends no second write", async () => {
+    const { store } = fakeServer([booked]);
+    patch.mockImplementationOnce(() => {
+      store.set("r1", completedReview);
+      return Promise.reject(serverError());
+    });
+    expect(await takeCase(bookedRow, "dr.a", t0)).toEqual({ refused: "completed" });
+    expect(patch).toHaveBeenCalledTimes(1);
+  });
+
+  it("a first hold write that fails, then a re-read showing another physician's live hold, sends no second write", async () => {
+    const { store } = fakeServer([booked]);
+    patch.mockImplementationOnce(() => {
+      store.set("r1", heldBy("dr.b", t0));
+      return Promise.reject(serverError());
+    });
+    expect(await takeCase(bookedRow, "dr.a", t0)).toEqual({ refused: "held" });
+    expect(patch).toHaveBeenCalledTimes(1);
+  });
+
+  it("a retried programme take is built from the fresh copy", async () => {
+    const { store } = fakeServer([programReview()]);
+    const real = put.getMockImplementation()!;
+    put.mockImplementationOnce(() => {
+      store.set("r1", programReview({ observations: { Fresh: "y" } }));
+      return Promise.reject(serverError());
+    });
+    put.mockImplementationOnce(real);
     expect(await takeCase(bookedRow, "dr.a", t0)).toEqual({ reviewUuid: "r1" });
     expect(put).toHaveBeenCalledTimes(2);
+    expect(put.mock.calls[1][1].observations).toEqual({ Fresh: "y", ...stamp });
   });
 
-  it("a PUT failing twice throws", async () => {
-    get.mockImplementation(() => reply(booked));
-    put.mockRejectedValue(serverError());
-    await expect(takeCase(bookedRow, "dr.a", t0)).rejects.toThrow("boom");
-    expect(put).toHaveBeenCalledTimes(2);
-  });
-
-  it("release by the holder removes the marker and keeps the rest and the window", async () => {
-    get.mockImplementation(() => reply(bookedWith({ ...stamp, Other: "x" })));
-    await releaseCase("r1", "dr.a");
-    expect(put).toHaveBeenCalledTimes(1);
-    const [url, body] = put.mock.calls[0];
-    expect(url).toBe("/api/encounter/r1");
-    expect(body).toMatchObject({
-      cancelObservations: {},
-      "Encounter date time": null,
-      "Max scheduled date": booked["Max scheduled date"],
+  it("a review read after a successful POST that is no longer takeable is refused with no write", async () => {
+    const uuid = await reviewUuidFor("scr1");
+    const { store } = fakeServer([], [screening]);
+    post.mockImplementation(() => {
+      store.set(uuid, { ...completedReview, ID: uuid });
+      return reply({ success: true });
     });
+    expect(await takeCase(screeningRow, "dr.a", t0)).toEqual({ refused: "completed" });
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it("a web POST answering 200 without the success flag throws", async () => {
+    fakeServer([], [screening]);
+    post.mockResolvedValue({ data: {} });
+    await expect(takeCase(screeningRow, "dr.a", t0)).rejects.toThrow();
+    expect(patch).not.toHaveBeenCalled();
+  });
+
+  it("release by the holder PATCHes nulls for both marker fields and nothing else", async () => {
+    const { store } = fakeServer([bookedWith({ ...stamp, Other: "x" })]);
+    await releaseCase("r1", "dr.a");
+    expect(put).not.toHaveBeenCalled();
+    expect(patch).toHaveBeenCalledTimes(1);
+    expect(patch.mock.calls[0]).toEqual([
+      "/api/encounter/r1",
+      { "Encounter type": "Clinician Review Form", observations: { "In review by": null, "In review since": null } },
+    ]);
+    expect(store.get("r1")?.observations).toEqual({ Other: "x" });
+  });
+
+  it("release of a programme review by the holder sends the whole-visit PUT without the marker", async () => {
+    fakeServer([programReview({ observations: { ...stamp, Other: "x" } })]);
+    await releaseCase("r1", "dr.a");
+    expect(patch).not.toHaveBeenCalled();
+    const [url, body] = put.mock.calls[0];
+    expect(url).toBe("/api/programEncounter/r1");
+    expect(body).toMatchObject({ "Encounter date time": null, "Max scheduled date": booked["Max scheduled date"] });
     expect(body.observations).toEqual({ Other: "x" });
   });
 
@@ -328,70 +543,35 @@ describe("takeCase and releaseCase", () => {
     ["cancelled", { "Cancel date time": "2026-11-23T09:00:00Z" }],
     ["voided", { Voided: true }],
   ])("release of a %s review held by the viewer sends nothing", async (_n, extra) => {
-    get.mockImplementation(() => reply(bookedWith(stamp, extra)));
+    fakeServer([bookedWith(stamp, extra)]);
     await releaseCase("r1", "dr.a");
+    expect(patch).not.toHaveBeenCalled();
     expect(put).not.toHaveBeenCalled();
-  });
-
-  it("a first PUT that fails, then a re-read showing the review completed, sends no second PUT", async () => {
-    get.mockResolvedValueOnce({ data: booked }).mockResolvedValueOnce({ data: completedReview });
-    put.mockRejectedValueOnce(serverError());
-    expect(await takeCase(bookedRow, "dr.a", t0)).toEqual({ refused: "completed" });
-    expect(put).toHaveBeenCalledTimes(1);
-  });
-
-  it("a first PUT that fails, then a re-read showing another physician's live hold, sends no second PUT", async () => {
-    get.mockResolvedValueOnce({ data: booked }).mockResolvedValueOnce({ data: heldBy("dr.b", t0) });
-    put.mockRejectedValueOnce(serverError());
-    expect(await takeCase(bookedRow, "dr.a", t0)).toEqual({ refused: "held" });
-    expect(put).toHaveBeenCalledTimes(1);
-  });
-
-  it("a retried take is built from the fresh copy", async () => {
-    get.mockResolvedValueOnce({ data: booked }).mockResolvedValueOnce({ data: bookedWith({ Fresh: "y" }) });
-    put.mockRejectedValueOnce(serverError()).mockResolvedValueOnce({ data: {} });
-    expect(await takeCase(bookedRow, "dr.a", t0)).toEqual({ reviewUuid: "r1" });
-    expect(put).toHaveBeenCalledTimes(2);
-    expect(put.mock.calls[1][1].observations).toEqual({ Fresh: "y", ...stamp });
   });
 
   it("a retried release stops when the re-read shows the review completed", async () => {
-    get.mockResolvedValueOnce({ data: bookedWith(stamp) }).mockResolvedValueOnce({ data: completedReview });
-    put.mockRejectedValueOnce(serverError());
-    await releaseCase("r1", "dr.a");
-    expect(put).toHaveBeenCalledTimes(1);
-  });
-
-  it("a review read after a successful POST that is no longer takeable is refused with no PUT", async () => {
-    let posted = false;
-    get.mockImplementation(() => (posted ? reply(completedReview) : Promise.reject(notFound())));
-    post.mockImplementation(() => {
-      posted = true;
-      return reply({ success: true });
+    const { store } = fakeServer([bookedWith(stamp)]);
+    patch.mockImplementationOnce(() => {
+      store.set("r1", completedReview);
+      return Promise.reject(serverError());
     });
-    expect(await takeCase(screeningRow, "dr.a", t0)).toEqual({ refused: "completed" });
-    expect(put).not.toHaveBeenCalled();
-  });
-
-  it("a web POST answering 200 without the success flag throws", async () => {
-    get.mockImplementation(() => (post.mock.calls.length ? reply(booked) : Promise.reject(notFound())));
-    post.mockResolvedValue({ data: {} });
-    await expect(takeCase(screeningRow, "dr.a", t0)).rejects.toThrow();
-    expect(put).not.toHaveBeenCalled();
+    await releaseCase("r1", "dr.a");
+    expect(patch).toHaveBeenCalledTimes(1);
   });
 
   it("release of the viewer's own expired marker still removes it", async () => {
-    get.mockImplementation(() => reply(heldBy("dr.a", minus(t0, 30))));
+    const { store } = fakeServer([heldBy("dr.a", minus(t0, 30))]);
     await releaseCase("r1", "dr.a");
-    expect(put).toHaveBeenCalledTimes(1);
-    expect(put.mock.calls[0][1].observations).toEqual({});
+    expect(patch).toHaveBeenCalledTimes(1);
+    expect(store.get("r1")?.observations).toEqual({});
   });
 
   it("release by a non-holder, on an unheld review or on a completed one sends nothing", async () => {
     for (const review of [heldBy("dr.b", t0), booked, { ...completedReview, observations: stamp }]) {
-      get.mockImplementation(() => reply(review));
+      fakeServer([review]);
       await releaseCase("r1", "dr.a");
     }
+    expect(patch).not.toHaveBeenCalled();
     expect(put).not.toHaveBeenCalled();
   });
 });

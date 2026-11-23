@@ -206,6 +206,22 @@ export async function submitEncounter(
   return response.data;
 }
 
+// PE-249 (FW3): the fields a PATCH sets. The server's privilege check reads the encounter type, so it is always sent.
+export interface PatchEncounterBody {
+  "Encounter type": string;
+  observations: Record<string, unknown>;
+}
+
+/**
+ * PATCH /api/encounter/{uuid} (avni-server 18.2 and 18.3, GeneralEncounterApiController): sets only the fields sent.
+ * Observations are merged into the stored ones, and a null value removes one. Standalone encounters only: the
+ * programme endpoint has no PATCH.
+ */
+export async function patchEncounter(uuid: string, body: PatchEncounterBody): Promise<EncounterApiResponse> {
+  const response = await http.patch<EncounterApiResponse>(`/api/encounter/${uuid}`, body);
+  return response.data;
+}
+
 interface AvniEntityResponse {
   success: boolean;
   errorMessage?: string;
