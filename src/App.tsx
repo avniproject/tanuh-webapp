@@ -99,12 +99,12 @@ function GatedRoutes() {
   }
   const home = programmes.length ? landingPath(programmes) : "/data-quality/health";
   const oral = (screen: React.ReactNode) => (
-    <ProgrammeGuard programme="oral" allocated={programmes}>
+    <ProgrammeGuard programme="oral" allocated={programmes} home={home}>
       {screen}
     </ProgrammeGuard>
   );
   const breast = (screen: React.ReactNode) => (
-    <ProgrammeGuard programme="breast" allocated={programmes}>
+    <ProgrammeGuard programme="breast" allocated={programmes} home={home}>
       <ErrorBoundary
         title="This screen can't be displayed."
         description="The rest of the app still works. Reload to try again, or report this to your administrator."

@@ -105,9 +105,12 @@ describe("buildBreastCases", () => {
 
   it("reads the hospital from the picker, else the typed name", () => {
     const hospital = (obs: Record<string, unknown>) => build([screening("w", 1, referred(obs))])[0].hospital;
-    expect(hospital({ "PS Breast referral facility": { District: "Bengaluru Rural", "Taluka Hospital": "Devanahalli TH" } })).toBe(
-      "Devanahalli TH",
-    );
+    // The server lists the place itself first, then each parent up to the State (ConceptService.checkAndReturnLocationAddress).
+    expect(
+      hospital({
+        "PS Breast referral facility": { "Mammography Centre": "Devanahalli MC", District: "Bengaluru Rural", State: "Karnataka" },
+      }),
+    ).toBe("Devanahalli MC");
     expect(hospital({ "PS Breast referral other facility": "City Clinic" })).toBe("City Clinic");
     expect(hospital({})).toBeNull();
   });

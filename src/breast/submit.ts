@@ -1,16 +1,19 @@
-// Saving a clinician form to Avni: as a new visit on the woman, as the completion of a visit that
-// was booked, or as an update to one already submitted. The app runs the form's show/hide rules
+// Saving a clinician form to Avni: as a new visit on the woman, or as a change to a visit that
+// exists (one booked and open, or one already submitted). The app runs the form's show/hide rules
 // but not its decision or visit-schedule rules (Avni's web form response does not carry them), so
 // the two things those rules do for these forms are done here, as the oral review already does:
 // the Encounter ID, and booking the Clinician Assessment after the additional assessment.
-import { computeNextEncounterId, type UpsertEncounterBody } from "@/api/encounters";
+import { addDays, endOfDay, startOfDay } from "date-fns";
+import { computeNextEncounterId, type PatchEncounterBody, type UpsertEncounterBody } from "@/api/encounters";
 import type { ScheduleEncounterBody } from "@/api/scheduledVisit";
 import type { EncounterApiResponse, SubjectApiResponse } from "@/api/types";
 import { ENCOUNTER_ID_CONCEPT, PATIENT_ID_CONCEPT, readObs } from "@/constants/tanuhConcepts";
 import { buildObservations } from "@/forms/engine/answers";
-import type { FormDef } from "@/forms/engine/formDef";
+import type { ElementDef, FormDef } from "@/forms/engine/formDef";
+import { allElements } from "@/forms/engine/formDef";
 import type { FormView } from "@/forms/engine/formState";
-import { isVisible } from "@/forms/engine/ruleRunner";
+import { isVisible, statusKey } from "@/forms/engine/ruleRunner";
+import type { PlaceOption } from "@/forms/screen/fields";
 import { BREAST_VISITS, type ClinicianFormKey } from "./breastConcepts";
 
 export interface SubmitInput {
@@ -25,11 +28,14 @@ export interface SubmitInput {
   siblings: EncounterApiResponse[];
   /** A Clinician Assessment is already booked and open for her. */
   openClinicianVisit: boolean;
+  /** The places a Location question offers. */
+  places: PlaceOption[];
   now: Date;
 }
 
 export interface SubmitDeps {
-  submit: (uuid: string | null, body: UpsertEncounterBody) => Promise<EncounterApiResponse>;
+  create: (body: UpsertEncounterBody) => Promise<EncounterApiResponse>;
+  patch: (uuid: string, body: PatchEncounterBody) => Promise<EncounterApiResponse>;
   schedule: (visit: ScheduleEncounterBody) => Promise<void>;
   /** Called once the form is in Avni: drop the draft, refresh the lists. */
   onSaved: () => void;
@@ -37,15 +43,23 @@ export interface SubmitDeps {
 
 export type SubmitResult = { ok: true; warning: string | null } | { ok: false; message: string };
 
-export function buildSubmission(input: SubmitInput): { uuid: string | null; body: UpsertEncounterBody } {
+export type Submission =
+  | { kind: "create"; body: UpsertEncounterBody }
+  | { kind: "patch"; uuid: string; body: PatchEncounterBody };
+
+const isLocation = (e: ElementDef): boolean => e.concept.dataType === "Location";
+
+export function buildSubmission(input: SubmitInput): Submission {
   const visit = BREAST_VISITS[input.formKey];
-  const { existing } = input;
+  const { existing, form, view } = input;
   const submitted = existing?.["Encounter date time"] ?? null;
-  const observations = buildObservations(
-    input.form,
-    (element, row) => isVisible(input.view.statuses, element, row),
-    input.view.answers,
-  );
+  const observations = buildObservations(form, (element, row) => isVisible(view.statuses, element, row), view.answers);
+  const placeUuids = new Set(input.places.map((p) => p.uuid));
+  for (const e of allElements(form)) {
+    // A Location is stored as an address uuid. A value that is not one of the listed places is the
+    // name Avni displayed for the saved answer, and is never sent: the saved answer stays as it is.
+    if (isLocation(e) && !placeUuids.has(String(observations[e.concept.name]))) delete observations[e.concept.name];
+  }
   const encounterId =
     (submitted ? readObs<string>(existing?.observations ?? {}, ENCOUNTER_ID_CONCEPT) : undefined) ??
     computeNextEncounterId(
@@ -55,55 +69,71 @@ export function buildSubmission(input: SubmitInput): { uuid: string | null; body
       existing?.ID ?? "",
     );
   if (encounterId) observations[ENCOUNTER_ID_CONCEPT.name] = encounterId;
-  const body: UpsertEncounterBody = {
-    "Encounter type": visit.name,
-    "Subject ID": input.subject.ID,
-    "Encounter date time": submitted ?? input.now.toISOString(),
-    observations,
-  };
-  if (existing) {
-    body["Earliest scheduled date"] = existing["Earliest scheduled date"];
-    body["Max scheduled date"] = existing["Max scheduled date"];
-  } else {
-    // The create is keyed on this, so a retry after a lost reply updates the same visit.
-    body["External ID"] = `breast-${input.formKey}-${input.screening.ID}`;
+
+  if (!existing) {
+    return {
+      kind: "create",
+      body: {
+        "Encounter type": visit.name,
+        "Subject ID": input.subject.ID,
+        "Encounter date time": input.now.toISOString(),
+        // The create is keyed on this, so a retry after a lost reply updates the same visit.
+        "External ID": `breast-${input.formKey}-${input.screening.ID}`,
+        observations,
+      },
+    };
   }
-  return { uuid: existing?.ID ?? null, body };
+  // A partial update: Avni keeps every answer this body does not name (a question since removed
+  // from the form, anything filled elsewhere) and the visit's schedule dates. A question of the
+  // form that is now hidden or emptied is sent as null, which removes its saved answer — except a
+  // Location, and a question whose rule failed, which are left as they are.
+  for (const e of allElements(form)) {
+    if (e.parentUuid || e.concept.name in observations || isLocation(e)) continue;
+    if (view.statuses.get(statusKey(e.uuid))?.failed) continue;
+    observations[e.concept.name] = null;
+  }
+  return {
+    kind: "patch",
+    uuid: existing.ID,
+    body: { "Encounter type": visit.name, "Encounter date time": submitted ?? input.now.toISOString(), observations },
+  };
 }
 
 function failure(err: unknown): string {
   const e = err as { isAxiosError?: boolean; response?: { status?: number; data?: unknown }; message?: string };
   if (e?.isAxiosError && !e.response) return "No connection. Your answers are kept; try again.";
-  if (e?.response?.status === 401) return "Your session has ended. Sign in again; your answers are kept in this browser.";
+  if (e?.response?.status === 401) {
+    // The header's Sign out clears every draft; a reload goes to the sign-in form and keeps them.
+    return "Your session has ended. Reload this page to sign in again; your answers are kept in this browser. Do not use Sign out, it clears them.";
+  }
   if (e?.response?.status === 403) return "Your account is not allowed to save this form. Your answers are kept.";
   const data = e?.response?.data;
   const detail =
-    typeof data === "string" ? data : ((data as { message?: string; errorMessage?: string } | undefined)?.message ??
-        (data as { errorMessage?: string } | undefined)?.errorMessage);
+    typeof data === "string"
+      ? data
+      : ((data as { message?: string } | undefined)?.message ?? (data as { errorMessage?: string } | undefined)?.errorMessage);
   return `Avni did not save the form${detail ? `: ${detail}` : e?.message ? `: ${e.message}` : ""}. Your answers are kept; try again.`;
 }
 
-const startOfUtcDay = (d: Date): Date => new Date(Date.UTC(d.getUTCFullYear(), d.getUTCMonth(), d.getUTCDate()));
-
 export async function submitClinicianForm(input: SubmitInput, deps: SubmitDeps): Promise<SubmitResult> {
-  const { uuid, body } = buildSubmission(input);
+  const submission = buildSubmission(input);
   try {
-    await deps.submit(uuid, body);
+    if (submission.kind === "create") await deps.create(submission.body);
+    else await deps.patch(submission.uuid, submission.body);
   } catch (err) {
     return { ok: false, message: failure(err) };
   }
   deps.onSaved();
-  // As the form's visit-schedule rule does on the phone: due today, overdue after seven days.
   const firstAssessment = input.formKey === "assessment" && !input.existing?.["Encounter date time"];
   if (!firstAssessment || input.openClinicianVisit) return { ok: true, warning: null };
-  const earliest = startOfUtcDay(input.now);
-  const max = new Date(earliest.getTime() + 8 * 86400000 - 1);
+  // As the form's visit-schedule rule does on the phone, in local time: due today, overdue after seven days.
+  const earliest = startOfDay(input.now);
   try {
     await deps.schedule({
       encounterType: { name: BREAST_VISITS.clinician.name, uuid: BREAST_VISITS.clinician.uuid },
       subjectId: input.subject.ID,
       earliestVisitDateTime: earliest.toISOString(),
-      maxVisitDateTime: max.toISOString(),
+      maxVisitDateTime: endOfDay(addDays(earliest, 7)).toISOString(),
     });
   } catch (err) {
     const why = err instanceof Error ? err.message : String(err);

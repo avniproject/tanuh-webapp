@@ -17,6 +17,7 @@ const observations = {
     { "PS Relative relationship": "Mother", "PS Relative cancer types": ["Breast cancer"], "PS Relative age at diagnosis years": 52 },
   ],
   "PS Risk Class": "HIGH RISK",
+  "PS Breast referral facility": { "Mammography Centre": "Devanahalli MC", District: "Bengaluru Rural", State: "Karnataka" },
   "Encounter ID": "P4001BCS001",
   "A question this form does not have": "ignored",
 };
@@ -44,6 +45,11 @@ describe("answeredSections", () => {
     const relatives = flat.find((r) => r.element.concept.name === "PS Relatives with cancer")!;
     expect("records" in relatives && relatives.records[0].map((f) => f.text)).toEqual(["Mother", "Breast cancer", "52"]);
     expect(flat.find((r) => r.element.concept.name === "PS Height cm")).toMatchObject({ text: expect.stringMatching(/^158/) });
+  });
+
+  it("shows a place by its own name, not by the State at the top of its address", () => {
+    const flat = sections.flatMap((s) => s.rows);
+    expect(flat.find((r) => r.element.concept.name === "PS Breast referral facility")).toMatchObject({ text: "Devanahalli MC" });
   });
 
   it("can leave named answers to another panel", () => {

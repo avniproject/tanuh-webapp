@@ -46,10 +46,11 @@ function fieldFromApi(concept: ConceptDef, value: unknown): FieldValue | undefin
     const n = typeof value === "number" ? value : Number(value);
     return Number.isFinite(n) ? n : undefined;
   }
-  // A Location comes back as {typeName: title}; keep the title for display.
+  // A Location comes back as {typeName: title}, the place itself first. That title is for display
+  // only: it is not the stored value (an address uuid), so it is never sent back (see submit.ts).
   if (typeof value === "object" && !Array.isArray(value)) {
     const titles = Object.values(value as Record<string, unknown>).filter((v) => typeof v === "string");
-    return titles.length ? String(titles[titles.length - 1]) : undefined;
+    return titles.length ? String(titles[0]) : undefined;
   }
   return typeof value === "string" || typeof value === "number" ? String(value) : undefined;
 }

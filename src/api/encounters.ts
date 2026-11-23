@@ -194,6 +194,23 @@ export async function submitEncounter(
   return response.data;
 }
 
+/** What a partial update may carry: only the keys sent are changed, and a null observation is removed. */
+export interface PatchEncounterBody {
+  "Encounter type": string;
+  "Encounter date time"?: string;
+  observations: Record<string, unknown>;
+}
+
+/**
+ * Changes part of an existing encounter (PATCH /api/encounter/{uuid}, EncounterService.patchEncounter
+ * in avni-server). Unlike the PUT in submitEncounter, which replaces the whole observation set and
+ * the schedule dates, this leaves alone every observation and field the body does not name.
+ */
+export async function patchEncounter(uuid: string, body: PatchEncounterBody): Promise<EncounterApiResponse> {
+  const response = await http.patch<EncounterApiResponse>(`/api/encounter/${uuid}`, body);
+  return response.data;
+}
+
 interface AvniEntityResponse {
   success: boolean;
   errorMessage?: string;

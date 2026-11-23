@@ -38,6 +38,8 @@ export interface ElementStatus {
   /** Answer uuids the rule takes off the list. */
   hiddenAnswers: string[];
   errors: string[];
+  /** The question's rule threw, so it is left out without the form having decided to hide it. */
+  failed?: boolean;
 }
 
 /** Status per question; a row field of a question group is keyed `<element uuid>#<row>`. */
@@ -153,7 +155,7 @@ function runOne(element: ElementDef, entity: any, cache: Map<string, any>, row?:
     // As in Avni's own data entry app: a rule that fails leaves its question out, and the rest of
     // the form goes on working.
     console.error(`Rule failed for "${element.name}"`, e);
-    return HIDDEN;
+    return { ...HIDDEN, failed: true };
   }
 }
 

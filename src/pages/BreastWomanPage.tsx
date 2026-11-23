@@ -2,7 +2,7 @@ import { Box, ButtonBase, CircularProgress, Stack, Typography } from "@mui/mater
 import { format } from "date-fns";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link as RouterLink, useParams } from "react-router-dom";
-import { invalidateEncounterSweeps, scheduleEncounter, submitEncounter } from "@/api/encounters";
+import { invalidateEncounterSweeps, patchEncounter, scheduleEncounter, submitEncounter } from "@/api/encounters";
 import { useAuth } from "@/auth/authContext";
 import { BREAST_OBS, BREAST_VISITS, CLINICIAN_FORMS, type ClinicianFormKey } from "@/breast/breastConcepts";
 import { placeName, type FormStatus } from "@/breast/breastList";
@@ -95,18 +95,15 @@ export function BreastWomanPage() {
   // One visit under edit per form, with a stable id and time for as long as the page is open.
   const drafts = useRef<Partial<Record<ClinicianFormKey, VisitDraft>>>({});
 
-  const timer = useRef<number | undefined>(undefined);
+  // Every change is kept at once: a write this small is instant, and a delayed one was lost when
+  // the clinician left the page or changed step within the delay.
   const keepDraft = useCallback(
     (formKey: ClinicianFormKey, answers: Answers) => {
-      window.clearTimeout(timer.current);
-      timer.current = window.setTimeout(() => {
-        saveDraft(window.localStorage, scope, screeningUuid, formKey, answers);
-        setDraftSaved((d) => ({ ...d, [formKey]: new Date().toISOString() }));
-      }, 1000);
+      saveDraft(window.localStorage, scope, screeningUuid, formKey, answers);
+      setDraftSaved((d) => (d[formKey] ? d : { ...d, [formKey]: new Date().toISOString() }));
     },
     [scope, screeningUuid],
   );
-  useEffect(() => () => window.clearTimeout(timer.current), []);
 
   if (loadError) {
     return (
@@ -163,13 +160,14 @@ export function BreastWomanPage() {
         existing,
         siblings: woman.visits[formKey],
         openClinicianVisit: !!woman.booked.clinician,
+        places: woman.places,
         now: new Date(),
       },
       {
-        submit: (uuid, body) => submitEncounter(uuid, body),
+        create: (body) => submitEncounter(null, body),
+        patch: patchEncounter,
         schedule: scheduleEncounter,
         onSaved: () => {
-          window.clearTimeout(timer.current);
           deleteDraft(window.localStorage, scope, screeningUuid, formKey);
           setDraftSaved((d) => ({ ...d, [formKey]: "" }));
           invalidateEncounterSweeps();
@@ -182,7 +180,10 @@ export function BreastWomanPage() {
       return;
     }
     setNotice(result.warning ?? `${CLINICIAN_FORMS[formKey].title} saved to Avni.`);
-    drafts.current[formKey] = undefined;
+    // What is on screen is now older than Avni. Drop it and load afresh, so the form redraws from
+    // the saved visit and a second save cannot be built from, or sent to, what was there before.
+    drafts.current = {};
+    setWoman(null);
     setReload((n) => n + 1);
     if (formKey === "assessment" && !woman.submitted.clinician) setStep("clinician");
     window.scrollTo({ top: 0, behavior: "smooth" });
@@ -257,7 +258,7 @@ export function BreastWomanPage() {
         </Typography>
         {woman.newerScreening && (
           <Box role="status" sx={{ mt: 1.5, px: 2, py: 1, borderRadius: CR.radius.panel, bgcolor: "#fff4e0", color: "#8a5a00", fontFamily: CR.font, fontSize: 14 }}>
-            She has been screened again since this screening. The list shows her latest one.
+            She has been screened again since this screening.
           </Box>
         )}
       </Card>

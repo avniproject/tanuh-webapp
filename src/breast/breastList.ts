@@ -28,12 +28,15 @@ export const draftMark = (screeningUuid: string, form: ClinicianFormKey): string
 const done = (e: EncounterApiResponse): boolean => !e.Voided && e["Encounter date time"] != null;
 const text = (v: unknown): string | null => (typeof v === "string" && v.trim() !== "" ? v.trim() : null);
 
-/** A Location answer comes back as {type: title} from the top level down; the last is the place itself. */
+/**
+ * A Location answer comes back as {type: title}, the place itself first and then each parent up to
+ * the State (avni-server ConceptService.checkAndReturnLocationAddress). The first is the place.
+ */
 export function placeName(value: unknown): string | null {
   if (typeof value === "string") return text(value);
   if (!value || typeof value !== "object" || Array.isArray(value)) return null;
   const titles = Object.values(value as Record<string, unknown>).map(text).filter((t): t is string => !!t);
-  return titles.length ? titles[titles.length - 1] : null;
+  return titles.length ? titles[0] : null;
 }
 
 function subjectId(screening: EncounterApiResponse): string {
@@ -68,7 +71,8 @@ function status(
 }
 
 /**
- * The breast worklist: every woman whose newest completed screening refers her, newest first. A
+ * The breast worklist: every woman by her newest completed screening that refers her, newest first
+ * (a later screening that does not refer her does not take her off the list). A
  * form counts as submitted only when it was completed at or after that screening, so a woman
  * screened again starts afresh.
  */
