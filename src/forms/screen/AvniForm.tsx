@@ -247,7 +247,7 @@ export function AvniForm({
             Sections
           </Typography>
           {sections.map(({ page, progress: p }) => {
-            const complete = !p.notApplicable && p.done === p.total;
+            const complete = !p.notApplicable && p.total > 0 && p.done === p.total;
             return (
               <ButtonBase
                 key={page.uuid}
@@ -294,7 +294,7 @@ export function AvniForm({
                   {page.name}
                 </Typography>
                 <Typography sx={{ fontFamily: CR.font, fontSize: 12, color: CR.textSecondary, whiteSpace: "nowrap" }}>
-                  {p.notApplicable ? "N/A" : `${p.done}/${p.total}`}
+                  {p.notApplicable ? "N/A" : p.total === 0 ? "Optional" : `${p.done}/${p.total}`}
                 </Typography>
               </ButtonBase>
             );

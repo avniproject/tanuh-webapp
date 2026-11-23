@@ -225,6 +225,12 @@ export function BreastWomanPage() {
     );
   };
 
+  const goTo = (next: Step) => {
+    setStep(next);
+    setError(null);
+    window.scrollTo({ top: 0 });
+  };
+
   const steps: Array<{ key: Step; title: string; line: string }> = [
     { key: "responses", title: "Screening responses", line: "Read-only · from Avni" },
     { key: "assessment", title: CLINICIAN_FORMS.assessment.title, line: stepLine("assessment") },
@@ -270,10 +276,7 @@ export function BreastWomanPage() {
               key={s.key}
               role="tab"
               aria-selected={on}
-              onClick={() => {
-                setStep(s.key);
-                setError(null);
-              }}
+              onClick={() => goTo(s.key)}
               sx={{
                 flex: 1,
                 justifyContent: "flex-start",
@@ -327,7 +330,7 @@ export function BreastWomanPage() {
             <ModelPanel woman={woman} />
           </Stack>
           <Stack direction="row" justifyContent="flex-end" sx={{ mt: 3 }}>
-            <PillButton variant="filled" onClick={() => setStep("assessment")}>
+            <PillButton variant="filled" onClick={() => goTo("assessment")}>
               Continue to additional assessment
             </PillButton>
           </Stack>
