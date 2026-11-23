@@ -4,6 +4,7 @@ import type { CachedEncounter } from "@/api/encounters";
 import type { EncounterWithLocation } from "@/api/impl";
 import { queueRowKey, rowHoldStatus, type QueueRow } from "@/api/queueRows";
 import type { SubjectApiResponse } from "@/api/types";
+import { noteServerDate, resetServerClock } from "@/auth/serverClock";
 import {
   IN_REVIEW_BY_CONCEPT,
   IN_REVIEW_SINCE_CONCEPT,
@@ -446,6 +447,44 @@ describe("refreshPendingQueue", () => {
     expect(m.invalidate.mock.invocationCallOrder[0]).toBeLessThan(m.getCachedEncounters.mock.invocationCallOrder[0]);
     for (const read of [m.getCatchment, m.getAll, m.getProgram, m.lookup, m.readSubjects]) expect(read).not.toHaveBeenCalled();
     expect(r.rows.map(queueRowKey).sort()).toEqual(["rA", "s1"]);
+  });
+
+  // FW2: a hold lapses by the server's clock at the refresh, not by the time of the last load or the browser's clock.
+  it("judges holds by the server's clock at the refresh", async () => {
+    const LOAD = new Date(Date.UTC(2026, 10, 23, 9, 30));
+    vi.useFakeTimers();
+    vi.setSystemTime(LOAD);
+    try {
+      given({ screenings: [screening("s1", "p1", 1)], patients: new Map([["p1", patient("p1", "v1")]]), inPlaces: ["s1"] });
+      const q = await loadPendingQueue("dr.a");
+      // dr.b takes the case as the load ends.
+      const taken = {
+        ID: "d1",
+        "Subject ID": "p1",
+        Voided: false,
+        "Encounter date time": null,
+        "Cancel date time": null,
+        "Earliest scheduled date": LOAD.toISOString(),
+        observations: {
+          [REVIEWED_ORAL_SCREENING_CONCEPT.name]: "s1",
+          [IN_REVIEW_BY_CONCEPT.name]: "dr.b",
+          [IN_REVIEW_SINCE_CONCEPT.name]: LOAD.toISOString(),
+        },
+        audit: { "Created at": LOAD.toISOString(), "Last modified at": LOAD.toISOString() },
+      } as unknown as CachedEncounter;
+      m.getCachedEncounters.mockResolvedValue([taken]);
+      // The browser's clock still reads the load's time; the server's reads ten minutes later.
+      noteServerDate(new Date(LOAD.getTime() + 10 * 60_000).toUTCString(), LOAD.getTime());
+      const r = await refreshPendingQueue(q, "dr.a");
+      expect(r.now.getTime()).toBe(LOAD.getTime() + 10 * 60_000 + 500);
+      expect(rowHoldStatus(r.rows.find((row) => queueRowKey(row) === "s1") as QueueRow, "dr.a", r.now)).toEqual({
+        kind: "waiting",
+      });
+      expect(r.waiting.total).toBe(1);
+    } finally {
+      resetServerClock();
+      vi.useRealTimers();
+    }
   });
 });
 
