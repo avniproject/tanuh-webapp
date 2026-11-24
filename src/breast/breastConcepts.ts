@@ -26,8 +26,8 @@ export const BREAST_VISITS = {
 /** The two forms a clinician fills, in the order they are filled. */
 export type ClinicianFormKey = "assessment" | "clinician";
 export const CLINICIAN_FORMS: Record<ClinicianFormKey, { title: string; submit: string }> = {
-  assessment: { title: "Additional assessment", submit: "Submit to Avni" },
-  clinician: { title: "Clinician assessment", submit: "Submit assessment" },
+  assessment: { title: "Additional assessment", submit: "Submit" },
+  clinician: { title: "Clinician assessment", submit: "Submit" },
 };
 
 export const BREAST_OBS = {

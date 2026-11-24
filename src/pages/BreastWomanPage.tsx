@@ -199,7 +199,7 @@ export function BreastWomanPage() {
       }
       return;
     }
-    setNotice(result.warning ?? `${CLINICIAN_FORMS[formKey].title} saved to Avni.`);
+    setNotice(result.warning ?? `${CLINICIAN_FORMS[formKey].title} saved.`);
     // What is on screen is now older than Avni. Drop it and load afresh, so the form redraws from
     // the saved visit and a second save cannot be built from, or sent to, what was there before.
     drafts.current = {};

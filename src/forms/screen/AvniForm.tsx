@@ -241,6 +241,9 @@ export function AvniForm({
             flexShrink: 0,
             position: { md: "sticky" },
             top: { md: 96 },
+            // Stays clear of the submit bar on a short window: the list scrolls inside itself.
+            maxHeight: { md: "calc(100vh - 230px)" },
+            overflowY: { md: "auto" },
             bgcolor: CR.surface,
             border: `1px solid ${CR.border}`,
             borderRadius: CR.radius.card,
