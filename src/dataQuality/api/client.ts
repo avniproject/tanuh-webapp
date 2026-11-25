@@ -111,14 +111,32 @@ export const dqsApi = {
       page_size: options.pageSize,
     }),
 
+  // Every worker of a rule, a page of MAX_PAGE_SIZE at a time, as one page.
+  allRuleWorkers: async (grain: Grain, start: string, ruleId: string, options: { unitId?: string | null } = {}) => {
+    const first = await dqsApi.ruleWorkers(grain, start, ruleId, { ...options, pageSize: MAX_PAGE_SIZE });
+    const workers = [...first.workers];
+    for (let page = 2; workers.length < first.total; page++) {
+      const next = await dqsApi.ruleWorkers(grain, start, ruleId, { ...options, page, pageSize: MAX_PAGE_SIZE });
+      if (!next.workers.length) break;
+      workers.push(...next.workers);
+    }
+    return { ...first, page: 1, page_size: workers.length, workers };
+  },
+
   days: (
     grain: Grain,
     start: string,
-    options: { unitId?: string | null; workerId?: string | null; ruleId?: string | null } = {},
+    options: {
+      unitId?: string | null;
+      workerId?: string | null;
+      peerGroupKey?: string | null;
+      ruleId?: string | null;
+    } = {},
   ) =>
     get<DaysInPeriod>(`${period(grain, start)}/days`, {
       unit_id: options.unitId,
       worker_id: options.workerId,
+      peer_group_key: options.peerGroupKey,
       rule_id: options.ruleId,
     }),
 

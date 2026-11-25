@@ -7,7 +7,9 @@
 // that a link reopens the same view; with none in the URL, the latest week. `useParam` reads
 // one other URL parameter and `useSetParams` writes several at once, which is how each view
 // keeps its filters. `useLoad`
-// runs an API call whenever its inputs change and reports its state.
+// runs an API call whenever its inputs change and reports its state; a call that cannot be
+// made yet, such as one that needs a period when none is selected, passes `ready` false and
+// stays loading without calling.
 
 import { createContext, useCallback, useContext, useEffect, useState } from "react";
 import { useSearchParams } from "react-router-dom";
@@ -32,11 +34,12 @@ export type Loaded<T> =
   | { state: "error"; error: Error }
   | { state: "ok"; value: T };
 
-export function useLoad<T>(load: () => Promise<T>, inputs: unknown[]): Loaded<T> {
+export function useLoad<T>(load: () => Promise<T>, inputs: unknown[], ready = true): Loaded<T> {
   const [result, setResult] = useState<Loaded<T>>({ state: "loading" });
   useEffect(() => {
     let live = true;
     setResult({ state: "loading" });
+    if (!ready) return;
     load().then(
       (value) => live && setResult({ state: "ok", value }),
       (error: Error) => live && setResult({ state: "error", error }),
@@ -46,7 +49,7 @@ export function useLoad<T>(load: () => Promise<T>, inputs: unknown[]): Loaded<T>
     };
     // The caller lists what the call depends on, as for useEffect.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, inputs);
+  }, [...inputs, ready]);
   return result;
 }
 

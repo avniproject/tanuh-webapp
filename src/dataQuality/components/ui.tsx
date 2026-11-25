@@ -21,7 +21,7 @@ import ArrowDropUpIcon from "@mui/icons-material/ArrowDropUp";
 import ArrowDropDownIcon from "@mui/icons-material/ArrowDropDown";
 import { DqsError } from "../api/client";
 import type { GateScore, Settings } from "../api/types";
-import { STATUS_LABEL, capitalised, f2, int } from "../format";
+import { STATUS_LABEL, capitalised, f2, int, shortId } from "../format";
 import type { StatusKey } from "../format";
 import type { Loaded } from "../state";
 import { DQ } from "../tokens";
@@ -144,27 +144,31 @@ export const Muted = ({ children }: { children: ReactNode }) => (
   </Box>
 );
 
+// One rule's failures on a card: its title and dimension, how many records it checked, its
+// failure rate, and its id with the failures counted out in the tooltip.
 export function ReasonCard({
+  ruleId,
   title,
   group,
   records,
+  failures,
   noun = "records",
   rate,
-  tooltip,
   onClick,
 }: {
+  ruleId: string;
   title: string;
   group: string;
   records: number;
+  failures: number;
   // What the records the rule checked are called, such as "photos".
   noun?: string;
   rate: number | null;
-  tooltip?: string;
   onClick?: () => void;
 }) {
   return (
     <ButtonBase
-      title={tooltip}
+      title={`${shortId(ruleId)}: ${int(failures)} of ${int(records)} ${noun} failed`}
       onClick={onClick}
       sx={{
         display: "grid",
