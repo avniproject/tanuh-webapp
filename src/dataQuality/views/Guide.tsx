@@ -1,7 +1,6 @@
 // The How to read this view: the scoring method in plain language, quoting the tenant's
 // scoring settings from the dashboard context so that the thresholds named are the ones the
-// scores were computed with. Ported from dqs-demo's guide, without its map section, which
-// comes with the map views.
+// scores were computed with. Ported from dqs-demo's guide.
 
 import type { ReactNode } from "react";
 import { Box, Link, Paper, Typography } from "@mui/material";
@@ -21,6 +20,7 @@ const SECTIONS: [string, string][] = [
   ["g-status", "Statuses"],
   ["g-taluk", "Taluk scores"],
   ["g-nm", "Not measured"],
+  ["g-map", "The maps"],
   ["g-src", "Where the numbers come from"],
 ];
 
@@ -201,6 +201,22 @@ export function Guide() {
             no images were sent. A rule marked Not scored is measured and reported but does not count towards any
             score. A dimension is Not measured when none of its
             rules had enough records to score, and a gate is Not measured when none of its dimensions was.
+          </p>
+
+          <h3 id="g-map">The maps</h3>
+          <p>
+            The Health Check's Map View draws the taluks with one marker each, coloured by the taluk's DQ Score band for
+            the selected period: green for High, grey for Mid, red for Low, and hollow for a taluk with too few records
+            or no score. Point at a marker to see the taluk's score and one dot per worker, coloured by that worker's
+            band. Select a marker to list the taluk's workers.
+          </p>
+          <p>
+            The Map tab draws the villages inside their taluks. Each taluk is tinted and outlined by its band. Each
+            village is shaded by how many screenings were filed in it in the period, in up to four equal ranges up to
+            the period's busiest village, so a shade means different counts in different periods. The shading is a
+            count and says nothing about the screenings' quality. Point at a village to see its screenings and the
+            workers who filed them, and select it to keep it beside the map. Screenings that name no village, or a
+            village with no outline on the map, are counted under the map and not drawn.
           </p>
 
           <h3 id="g-src">Where the numbers come from</h3>

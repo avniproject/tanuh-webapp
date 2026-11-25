@@ -314,3 +314,22 @@ export interface MapOutlines {
   taluks: TalukOutline[];
   villages: VillageOutline[];
 }
+
+// The records filed in one village in a period, from DQS's villages route, and the ids of the
+// workers who filed them. `name` and `taluk_id` are null when DQS's location master has no
+// row for the village.
+export interface VillageCount {
+  village_id: string;
+  name: string | null;
+  taluk_id: string | null;
+  n_records: number;
+  workers: string[];
+}
+
+export interface VillagesInPeriod {
+  grain: Grain;
+  period_start: string;
+  period_end: string;
+  villages: VillageCount[];
+  unlocated_records: number;
+}

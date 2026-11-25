@@ -15,6 +15,7 @@ import { DataQualityLayout } from "@/dataQuality/DataQualityLayout";
 import { Dimensions } from "@/dataQuality/views/Dimensions";
 import { Guide } from "@/dataQuality/views/Guide";
 import { HealthCheck } from "@/dataQuality/views/HealthCheck";
+import { Villages } from "@/dataQuality/views/Villages";
 import { Workers } from "@/dataQuality/views/Workers";
 
 function ListLayout({ children }: { children: React.ReactNode }) {
@@ -149,6 +150,7 @@ function GatedRoutes() {
             <Route path="health" element={<HealthCheck />} />
             <Route path="workers" element={<Workers />} />
             <Route path="dimensions" element={<Dimensions />} />
+            <Route path="map" element={<Villages />} />
             <Route path="guide" element={<Guide />} />
           </Route>
         )}
