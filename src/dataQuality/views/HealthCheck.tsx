@@ -1,8 +1,10 @@
 // The Health Check view: the period's four KPIs with their change since the period before,
-// the workers who could not be scored, the five lowest and five highest DQ scores, and the
-// top three reasons for poor quality across all workers.
+// the workers who could not be scored, the period's screenings day by day, the five lowest
+// and five highest DQ scores, and the top three reasons for poor quality across all workers.
 //
 // The KPIs are the counts DQS's workers route returns for the period and the one before it.
+// The daily activity is DQS's days route, counting screenings, which is what Records Assessed
+// counts in practice: a worker's busiest record type other than the photos.
 // The lowest and highest lists are the first five Low-band workers in ascending TrustIndex and
 // the first five High-band workers in descending TrustIndex. The reasons are the period's
 // rules that count towards a score, ordered by failures.
@@ -10,6 +12,8 @@
 import { Box, Divider, Link, Stack, Table, TableBody, TableCell, TableHead, TableRow, Typography } from "@mui/material";
 import { dqsApi } from "../api/client";
 import type { Grain, RuleFailures, WorkerRow, WorkersPage } from "../api/types";
+import { DailyBars } from "../components/DailyBars";
+import { Freshness } from "../components/Freshness";
 import {
   Change,
   ClickRow,
@@ -22,7 +26,8 @@ import {
   TABLE_SX,
   TrustCell,
 } from "../components/ui";
-import { GATE_GROUP, PERIOD_NOUN, dimensionName, f2, int, pct, periodLabel, place, shortId } from "../format";
+import { latestDay, screenings, shownCounts } from "../days";
+import { GATE_GROUP, PERIOD_NOUN, dayMonth, dimensionName, f2, int, pct, periodLabel, place, shortId } from "../format";
 import { useGo } from "../navigation";
 import { useDashboard, useLoad } from "../state";
 import { DQ } from "../tokens";
@@ -62,6 +67,7 @@ export function HealthCheck() {
         <Pending loaded={counts} empty={`No worker scores are stored for ${periodLabel(grain, span)}.`}>
           {(page) => <Kpis page={page} grain={grain} onInsufficient={() => go("workers", { status: "ins" })} />}
         </Pending>
+        <DailyActivity />
         <Panel sx={{ display: "flex", flexDirection: "column", gap: 1, flex: 1 }}>
           <Heading>Workers by Taluk</Heading>
           <Box
@@ -107,6 +113,52 @@ export function HealthCheck() {
         <Pending loaded={rules}>{(found) => <TopReasons rules={found.rules} />}</Pending>
       </Stack>
     </Box>
+  );
+}
+
+function DailyActivity() {
+  const { grain, span, context } = useDashboard();
+  const start = span?.start ?? "";
+  const days = useLoad(() => dqsApi.days(grain, start), [grain, start]);
+  const counted = screenings(context);
+  return (
+    <Panel sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
+      <Pending loaded={days} empty={`No records in ${span ? periodLabel(grain, span) : "this period"}.`}>
+        {(found) => {
+          const latest = latestDay(found.days);
+          const shown = latest ? shownCounts(latest, counted) : null;
+          const unplaced = found.days.reduce((sum, day) => sum + shownCounts(day, counted).unplaced, 0);
+          return (
+            <>
+              <Stack direction="row" justifyContent="space-between" alignItems="baseline" flexWrap="wrap" useFlexGap spacing={1}>
+                <Heading>{found.bucket === "week" ? "Weekly" : "Daily"} Activity</Heading>
+                <Freshness loadedAt={found.loaded_at} coveredTo={found.covered_to} />
+              </Stack>
+              <Typography variant="caption" sx={{ color: DQ.textMuted }}>
+                Screenings each {found.bucket} of {span ? periodLabel(grain, span) : "the period"} by visit date. Counts only; nothing here
+                is a score.
+              </Typography>
+              <DailyBars found={found} mode="records" counted={counted} noun="screenings" />
+              <Stack direction="row" spacing={4} useFlexGap flexWrap="wrap"
+                sx={{ borderTop: `1px solid ${DQ.border}`, pt: 1.5, fontSize: 13 }}>
+                {latest && shown && (
+                  <Typography variant="body2">
+                    <b>{found.bucket === "day" ? dayMonth(latest.start) : `Week of ${dayMonth(latest.start)}`}:</b>{" "}
+                    {int(shown.records)} screenings, {int(shown.failed)} failing at least one check
+                  </Typography>
+                )}
+                {unplaced > 0 && (
+                  <Typography variant="body2" sx={{ color: DQ.warning }}>
+                    <b>Not placed in a taluk:</b> {int(unplaced)} screening{unplaced === 1 ? "" : "s"} this{" "}
+                    {PERIOD_NOUN[grain].toLowerCase()} (No village on file)
+                  </Typography>
+                )}
+              </Stack>
+            </>
+          );
+        }}
+      </Pending>
+    </Panel>
   );
 }
 

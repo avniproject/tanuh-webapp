@@ -5,7 +5,8 @@
 // The cards read DQS's units route. The reasons read the rules route kept to the taluk and
 // the gate's feeds. The workers read the rule's workers route kept to the taluk, all of them
 // at once, so that the note under the table can say whether the failures are concentrated in
-// a few workers; the table pages through them ten at a time.
+// a few workers; the table pages through them ten at a time. Above them, the rule's failures
+// in the taluk day by day, from DQS's days route.
 
 import {
   Box,
@@ -35,6 +36,7 @@ import {
   SectionTitle,
   TABLE_SX,
 } from "../components/ui";
+import { DailyBars } from "../components/DailyBars";
 import type { DotKind } from "../components/ui";
 import {
   GROUP_FEEDS,
@@ -316,6 +318,7 @@ function RuleWorkers({ rule, unit }: { rule: RuleFailures; unit: UnitRow }) {
         {title}{" "}
         <Box component="span" sx={{ color: DQ.textSubtle, fontSize: 12 }}>· {shortId(rule.rule_id)} · {taluk}</Box>
       </Typography>
+      {infos[rule.rule_id]?.kind !== "batch" && <RuleDays rule={rule} unit={unit} />}
       <Pending loaded={found}>
         {(page) => {
           const affected = page.workers;
@@ -395,5 +398,26 @@ function RuleWorkers({ rule, unit }: { rule: RuleFailures; unit: UnitRow }) {
         }}
       </Pending>
     </>
+  );
+}
+
+// The rule's failing and passing records in the taluk, day by day. A batch rule is measured
+// over a worker's whole period and has no per-record outcome, so it gets no chart.
+function RuleDays({ rule, unit }: { rule: RuleFailures; unit: UnitRow }) {
+  const { grain, span } = useDashboard();
+  const start = span!.start;
+  const days = useLoad(
+    () => dqsApi.days(grain, start, { unitId: unit.unit_id, ruleId: rule.rule_id }),
+    [grain, start, unit.unit_id, rule.rule_id],
+  );
+  return (
+    <Box sx={{ border: `1px solid ${DQ.border}`, borderRadius: 1, p: 2 }}>
+      <Typography variant="body2" sx={{ fontWeight: 500, mb: 1 }}>
+        Failures by {grain === "year" ? "Week" : "Day"}
+      </Typography>
+      <Pending loaded={days} empty="No records in this period.">
+        {(found) => <DailyBars found={found} mode="rule" height={140} />}
+      </Pending>
+    </Box>
   );
 }
