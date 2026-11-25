@@ -1,7 +1,7 @@
 // Labels and number formats shared by the views. Nothing here computes a score: each
 // function formats a stored value or names one.
 
-import type { Feeds, GateScore, Grain, Span, Status } from "@/dataQuality/api/types";
+import type { Feeds, GateScore, Grain, RuleInfo, Span, Status } from "@/dataQuality/api/types";
 
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun", "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
 const MONTHS_LONG = [
@@ -107,6 +107,16 @@ export const gateText = (x: GateScore | null, insufficient: boolean) =>
 // Fabrication suspicion as it is shown beside Genuineness: on 0-100, lower is better.
 export const suspicionText = (x: GateScore | null) =>
   x ? `Fabrication suspicion ${x.score.toFixed(0)}/100` : null;
+
+// What a rule's checked records are called: "photos" for a rule that checks only the
+// tenant's photo record type, "records" for any other. Records Assessed counts screenings, so
+// a photo rule's counts would be read as screenings if they were called records.
+export function checkedNoun(info: RuleInfo | undefined, photoType: string | null): string {
+  const types = info?.record_types ?? [];
+  return photoType && types.length && types.every((type) => type === photoType) ? "photos" : "records";
+}
+
+export const capitalised = (word: string) => word[0].toUpperCase() + word.slice(1);
 
 // Where a worker is, as "village, taluk", for the tables.
 export const place = (row: { village_name: string | null; taluk_name: string | null }) =>

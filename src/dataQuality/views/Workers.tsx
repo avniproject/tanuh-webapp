@@ -1,6 +1,11 @@
 // The Workers view: every worker of the period, ten to a page, filtered by taluk and status,
 // and the selected worker's profile beside the table.
 //
+// A row is one worker-period. A worker filed under two taluks in a period has two rows, told
+// apart by their peer group, so the selected row is the URL's `worker` and `group` together.
+// A link with a worker and no group opens the worker's row with no peer group, or else their
+// first.
+//
 // The table is DQS's workers route for the filters, with each worker's last visit in the
 // period. The profile reads the worker's score for the period (its four gates and its rule
 // outcomes), the worker's screenings day by day from DQS's days route, and every period the
@@ -12,6 +17,7 @@ import { dqsApi } from "../api/client";
 import type { GateScore, RuleRow, WorkerPeriod, WorkerRow } from "../api/types";
 import { DayStrip } from "../components/DayStrip";
 import { screenings } from "../days";
+import { groupOf, historyOf, periodOf, rowKey, workerLink } from "../rows";
 import { LineChart } from "../components/LineChart";
 import {
   ClickRow,
@@ -34,6 +40,7 @@ import {
   STATUS_KEY,
   STATUS_LABEL,
   STATUS_OF_KEY,
+  checkedNoun,
   dayMonth,
   dimensionName,
   f2,
@@ -52,7 +59,8 @@ import { NameCell } from "./HealthCheck";
 
 const PAGE_SIZE = 10;
 
-// Rows seen in any table this session, so that a worker opened from another view is named.
+// Rows seen in any table this session, by worker and peer group, so that a worker opened from
+// another view is named.
 const seen = new Map<string, WorkerRow>();
 
 export function Workers() {
@@ -61,6 +69,7 @@ export function Workers() {
   const statusParam = useParam("status");
   const pageParam = useParam("page");
   const worker = useParam("worker");
+  const group = useParam("group");
   const setParams = useSetParams();
   const start = span?.start ?? "";
   const status = (statusParam && statusParam in STATUS_OF_KEY ? statusParam : null) as StatusKey | null;
@@ -72,14 +81,19 @@ export function Workers() {
       dqsApi
         .workers(grain, start, { unitId: taluk, status: status ? STATUS_OF_KEY[status] : null, page, pageSize: PAGE_SIZE })
         .then((found) => {
-          found.workers.forEach((row) => seen.set(row.worker_id, row));
+          found.workers.forEach((row) => seen.set(rowKey(row.worker_id, groupOf(row.peer_group_key)), row));
           return found;
         }),
     [grain, start, taluk, status, page],
   );
 
   if (!span) return <Typography sx={{ color: DQ.textSubtle }}>No scores are stored at this grain yet.</Typography>;
-  const selected = worker ?? (rows.state === "ok" && rows.value.workers.length ? rows.value.workers[0].worker_id : null);
+  const first = rows.state === "ok" && rows.value.workers.length ? rows.value.workers[0] : null;
+  const selected = worker
+    ? { workerId: worker, group }
+    : first
+      ? { workerId: first.worker_id, group: groupOf(first.peer_group_key) }
+      : null;
   const chips: [StatusKey | null, string][] = [
     [null, "All"],
     ["low", STATUS_LABEL.low],
@@ -96,7 +110,7 @@ export function Workers() {
           label="Taluk"
           value={taluk ?? ""}
           onChange={(value) => {
-            setParams({ taluk: value || null, page: null, worker: null });
+            setParams({ taluk: value || null, page: null, worker: null, group: null });
           }}
           options={[
             { value: "", label: "Select Taluk" },
@@ -120,7 +134,7 @@ export function Workers() {
                 label={label}
                 selected={status === key}
                 onClick={() => {
-                  setParams({ status: key, page: null, worker: null });
+                  setParams({ status: key, page: null, worker: null, group: null });
                 }}
               />
             ))}
@@ -147,8 +161,10 @@ export function Workers() {
                         found.workers.map((row) => (
                           <ClickRow
                             key={`${row.worker_id}-${row.peer_group_key}`}
-                            selected={row.worker_id === selected}
-                            onOpen={() => setParams({ worker: row.worker_id })}
+                            selected={
+                              row.worker_id === selected?.workerId && groupOf(row.peer_group_key) === selected.group
+                            }
+                            onOpen={() => setParams(workerLink(row))}
                           >
                             <TableCell><NameCell row={row} /></TableCell>
                             <TableCell>{place(row)}</TableCell>
@@ -177,7 +193,7 @@ export function Workers() {
                       page={found.page}
                       count={Math.ceil(found.total / PAGE_SIZE)}
                       onChange={(_, next) => {
-                        setParams({ page: String(next), worker: null });
+                        setParams({ page: String(next), worker: null, group: null });
                       }}
                     />
                   )}
@@ -188,7 +204,7 @@ export function Workers() {
         </Panel>
         <Panel sx={{ display: "flex", flexDirection: "column", gap: 2, position: { lg: "sticky" }, top: { lg: 16 } }}>
           {selected ? (
-            <Profile workerId={selected} />
+            <Profile workerId={selected.workerId} group={selected.group} />
           ) : (
             <Typography variant="body2" sx={{ color: DQ.textSubtle }}>Select a worker to see their scores.</Typography>
           )}
@@ -220,22 +236,20 @@ function Tile({ label, gate, insufficient, extra }: {
   );
 }
 
-function Profile({ workerId }: { workerId: string }) {
+function Profile({ workerId, group }: { workerId: string; group: string | null }) {
   const { grain, span, context, rules } = useDashboard();
   const go = useGo();
   const start = span!.start;
   const period = useLoad(() => dqsApi.workerPeriod(workerId, grain, start), [workerId, grain, start]);
   const history = useLoad(() => dqsApi.workerHistory(workerId, grain), [workerId, grain]);
   const days = useLoad(() => dqsApi.days(grain, start, { workerId }), [workerId, grain, start]);
-  const row = seen.get(workerId);
+  const row = seen.get(rowKey(workerId, group));
   const noun = PERIOD_NOUN[grain].toLowerCase();
 
-  const scored: WorkerPeriod | null = period.state === "ok" ? period.value.periods[0] ?? null : null;
+  const scored: WorkerPeriod | null = period.state === "ok" ? periodOf(period.value.periods, group) : null;
   const insufficient = scored?.insufficient ?? false;
-  const last =
-    history.state === "ok" && history.value.periods.length
-      ? history.value.periods[history.value.periods.length - 1].period_start
-      : null;
+  const points = history.state === "ok" ? historyOf(history.value.periods, group) : [];
+  const last = points.length ? points[points.length - 1].period_start : null;
   const top: RuleRow[] = scored
     ? scored.rules
         .filter((rule) => rule.n_violations > 0 && rules[rule.rule_id]?.scored !== false)
@@ -291,8 +305,9 @@ function Profile({ workerId }: { workerId: string }) {
                       title={rules[rule.rule_id]?.title || rule.rule_id}
                       group={GATE_GROUP[rule.feeds] || dimensionName(rule.dimension)}
                       records={rule.n_evaluated}
+                      noun={checkedNoun(rules[rule.rule_id], context.photo_record_type)}
                       rate={rule.rate}
-                      tooltip={`${shortId(rule.rule_id)}: ${rule.n_violations} of ${rule.n_evaluated} records failed`}
+                      tooltip={`${shortId(rule.rule_id)}: ${rule.n_violations} of ${rule.n_evaluated} ${checkedNoun(rules[rule.rule_id], context.photo_record_type)} failed`}
                       onClick={() => go("dimensions", { gate: GATE_GROUP[rule.feeds], rule: rule.rule_id, unit: row?.taluk_id })}
                     />
                   ))
@@ -317,10 +332,10 @@ function Profile({ workerId }: { workerId: string }) {
       <Box sx={{ bgcolor: DQ.surfaceSubtle, border: `1px solid ${DQ.border}`, borderRadius: 1, p: 2 }}>
         <Typography variant="body2" sx={{ fontWeight: 500, mb: 0.5 }}>DQ Score Over Time</Typography>
         <Pending loaded={history} empty="No scored periods.">
-          {(found) => (
+          {() => (
             <LineChart
               settings={context.settings}
-              points={found.periods.map((point) => ({
+              points={points.map((point) => ({
                 label: dayMonth(point.period_start),
                 value: point.insufficient || !point.trust ? null : point.trust.scale,
                 insufficient: point.insufficient,

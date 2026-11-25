@@ -21,7 +21,7 @@ import ArrowDropUpIcon from "@mui/icons-material/ArrowDropUp";
 import ArrowDropDownIcon from "@mui/icons-material/ArrowDropDown";
 import { DqsError } from "../api/client";
 import type { GateScore, Settings } from "../api/types";
-import { STATUS_LABEL, f2, int } from "../format";
+import { STATUS_LABEL, capitalised, f2, int } from "../format";
 import type { StatusKey } from "../format";
 import type { Loaded } from "../state";
 import { DQ } from "../tokens";
@@ -148,6 +148,7 @@ export function ReasonCard({
   title,
   group,
   records,
+  noun = "records",
   rate,
   tooltip,
   onClick,
@@ -155,6 +156,8 @@ export function ReasonCard({
   title: string;
   group: string;
   records: number;
+  // What the records the rule checked are called, such as "photos".
+  noun?: string;
   rate: number | null;
   tooltip?: string;
   onClick?: () => void;
@@ -181,7 +184,7 @@ export function ReasonCard({
           {title}
         </Typography>
         <Typography sx={{ fontSize: 10, color: DQ.textSubtle }}>
-          {group} • {int(records)} Records
+          {group} • {int(records)} {capitalised(noun)}
         </Typography>
       </Box>
       <Box sx={{ borderLeft: `1px solid ${DQ.border}`, pl: 1, minWidth: 58, color: DQ.danger }}>

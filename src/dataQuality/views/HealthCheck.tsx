@@ -27,8 +27,21 @@ import {
   TrustCell,
 } from "../components/ui";
 import { latestDay, screenings, shownCounts } from "../days";
-import { GATE_GROUP, PERIOD_NOUN, dayMonth, dimensionName, f2, int, pct, periodLabel, place, shortId } from "../format";
+import {
+  GATE_GROUP,
+  PERIOD_NOUN,
+  checkedNoun,
+  dayMonth,
+  dimensionName,
+  f2,
+  int,
+  pct,
+  periodLabel,
+  place,
+  shortId,
+} from "../format";
 import { useGo } from "../navigation";
+import { workerLink } from "../rows";
 import { useDashboard, useLoad } from "../state";
 import { DQ } from "../tokens";
 
@@ -265,7 +278,7 @@ function WorkerList({ rows, none }: { rows: WorkerRow[]; none: string }) {
         <TableBody>
           {rows.length ? (
             rows.map((row) => (
-              <ClickRow key={`${row.worker_id}-${row.peer_group_key}`} onOpen={() => go("workers", { worker: row.worker_id })}>
+              <ClickRow key={`${row.worker_id}-${row.peer_group_key}`} onOpen={() => go("workers", workerLink(row))}>
                 <TableCell sx={{ verticalAlign: "top" }}><NameCell row={row} /></TableCell>
                 <TableCell sx={{ verticalAlign: "top" }}>{place(row)}</TableCell>
                 <TableCell sx={{ verticalAlign: "top" }}>{int(row.n_records)}</TableCell>
@@ -283,8 +296,11 @@ function WorkerList({ rows, none }: { rows: WorkerRow[]; none: string }) {
   );
 }
 
-// The three rules with the most failures among those that count towards a score.
+// The three rules with the most failures among those that count towards a score. A card opens
+// the rule in Quality Dimensions with no taluk named, and that view opens the taluk where the
+// rule failed most.
 function TopReasons({ rules }: { rules: RuleFailures[] }) {
+  const { context, rules: infos } = useDashboard();
   const go = useGo();
   const top = rules
     .filter((rule) => rule.scored !== false && rule.n_violations > 0)
@@ -300,8 +316,9 @@ function TopReasons({ rules }: { rules: RuleFailures[] }) {
           title={rule.title || rule.rule_id}
           group={GATE_GROUP[rule.feeds] || dimensionName(rule.dimension)}
           records={rule.n_evaluated}
+          noun={checkedNoun(infos[rule.rule_id], context.photo_record_type)}
           rate={rule.rate}
-          tooltip={`${shortId(rule.rule_id)}: ${int(rule.n_violations)} of ${int(rule.n_evaluated)} records failed`}
+          tooltip={`${shortId(rule.rule_id)}: ${int(rule.n_violations)} of ${int(rule.n_evaluated)} ${checkedNoun(infos[rule.rule_id], context.photo_record_type)} failed`}
           onClick={() => open(rule)}
         />
       ))}
