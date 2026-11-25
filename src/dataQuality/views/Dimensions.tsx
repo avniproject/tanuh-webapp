@@ -25,7 +25,7 @@ import {
   TableRow,
   Typography,
 } from "@mui/material";
-import { MAX_PAGE_SIZE, dqsApi } from "../api/client";
+import { dqsApi } from "../api/client";
 import type { GateScore, RuleFailures, UnitRow } from "../api/types";
 import {
   Change,
@@ -85,14 +85,12 @@ export function Dimensions() {
   const setParams = useSetParams();
   const start = span?.start ?? "";
   const gate: GateGroup = GROUPS.includes(gateParam as GateGroup) ? (gateParam as GateGroup) : "Sufficiency";
-  const units = useLoad(() => dqsApi.units(grain, start), [grain, start]);
+  const units = useLoad(() => dqsApi.units(grain, start), [grain, start], !!span);
   const seek = ruleParam && !unitParam ? ruleParam : null;
   const busiest = useLoad(
-    () =>
-      seek
-        ? dqsApi.ruleWorkers(grain, start, seek, { pageSize: MAX_PAGE_SIZE }).then(busiestTaluk)
-        : Promise.resolve(null),
+    () => (seek ? dqsApi.allRuleWorkers(grain, start, seek).then(busiestTaluk) : Promise.resolve(null)),
     [grain, start, seek],
+    !!span,
   );
 
   const title = (
@@ -324,7 +322,7 @@ function RuleWorkers({ rule, unit }: { rule: RuleFailures; unit: UnitRow }) {
   const setParams = useSetParams();
   const start = span!.start;
   const found = useLoad(
-    () => dqsApi.ruleWorkers(grain, start, rule.rule_id, { unitId: unit.unit_id, pageSize: MAX_PAGE_SIZE }),
+    () => dqsApi.allRuleWorkers(grain, start, rule.rule_id, { unitId: unit.unit_id }),
     [grain, start, rule.rule_id, unit.unit_id],
   );
   const title = rule.title || infos[rule.rule_id]?.title || rule.rule_id;
@@ -338,7 +336,7 @@ function RuleWorkers({ rule, unit }: { rule: RuleFailures; unit: UnitRow }) {
         {title}{" "}
         <Box component="span" sx={{ color: DQ.textSubtle, fontSize: 12 }}>· {shortId(rule.rule_id)} · {taluk}</Box>
       </Typography>
-      {infos[rule.rule_id]?.kind !== "batch" && <RuleDays rule={rule} unit={unit} />}
+      {infos[rule.rule_id]?.kind !== "batch" && <RuleDays rule={rule} unit={unit} noun={noun} />}
       <Pending loaded={found}>
         {(page) => {
           const affected = page.workers;
@@ -423,10 +421,9 @@ function RuleWorkers({ rule, unit }: { rule: RuleFailures; unit: UnitRow }) {
 
 // The rule's failing and passing records in the taluk, day by day. A batch rule is measured
 // over a worker's whole period and has no per-record outcome, so it gets no chart.
-function RuleDays({ rule, unit }: { rule: RuleFailures; unit: UnitRow }) {
-  const { grain, span, context, rules: infos } = useDashboard();
+function RuleDays({ rule, unit, noun }: { rule: RuleFailures; unit: UnitRow; noun: string }) {
+  const { grain, span } = useDashboard();
   const start = span!.start;
-  const noun = checkedNoun(infos[rule.rule_id], context.photo_record_type);
   const days = useLoad(
     () => dqsApi.days(grain, start, { unitId: unit.unit_id, ruleId: rule.rule_id }),
     [grain, start, unit.unit_id, rule.rule_id],

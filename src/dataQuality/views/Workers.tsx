@@ -4,7 +4,7 @@
 // A row is one worker-period. A worker filed under two taluks in a period has two rows, told
 // apart by their peer group, so the selected row is the URL's `worker` and `group` together.
 // A link with a worker and no group opens the worker's row with no peer group, or else their
-// first.
+// first, and then names that row's group in the URL.
 //
 // The table is DQS's workers route for the filters, with each worker's last visit in the
 // period. The profile reads the worker's score for the period (its four gates and its rule
@@ -12,6 +12,7 @@
 // worker has at this grain, for the DQ Score Over Time chart. Its name and place come from the table row; a
 // worker opened from another view whose row has not been seen yet is shown by id.
 
+import { useEffect } from "react";
 import { Box, Chip, Pagination, Stack, Table, TableBody, TableCell, TableHead, TableRow, Typography } from "@mui/material";
 import { dqsApi } from "../api/client";
 import type { GateScore, RuleRow, WorkerPeriod, WorkerRow } from "../api/types";
@@ -48,7 +49,6 @@ import {
   periodLabel,
   periodShort,
   place,
-  shortId,
   suspicionText,
 } from "../format";
 import type { StatusKey } from "../format";
@@ -75,7 +75,7 @@ export function Workers() {
   const status = (statusParam && statusParam in STATUS_OF_KEY ? statusParam : null) as StatusKey | null;
   const page = Math.max(1, Number(pageParam) || 1);
 
-  const units = useLoad(() => dqsApi.units(grain, start), [grain, start]);
+  const units = useLoad(() => dqsApi.units(grain, start), [grain, start], !!span);
   const rows = useLoad(
     () =>
       dqsApi
@@ -85,6 +85,7 @@ export function Workers() {
           return found;
         }),
     [grain, start, taluk, status, page],
+    !!span,
   );
 
   if (!span) return <Typography sx={{ color: DQ.textSubtle }}>No scores are stored at this grain yet.</Typography>;
@@ -242,12 +243,21 @@ function Profile({ workerId, group }: { workerId: string; group: string | null }
   const start = span!.start;
   const period = useLoad(() => dqsApi.workerPeriod(workerId, grain, start), [workerId, grain, start]);
   const history = useLoad(() => dqsApi.workerHistory(workerId, grain), [workerId, grain]);
-  const days = useLoad(() => dqsApi.days(grain, start, { workerId }), [workerId, grain, start]);
+  const days = useLoad(
+    () => dqsApi.days(grain, start, { workerId, peerGroupKey: group }),
+    [workerId, group, grain, start],
+  );
+  const setParams = useSetParams();
   const row = seen.get(rowKey(workerId, group));
   const noun = PERIOD_NOUN[grain].toLowerCase();
 
   const scored: WorkerPeriod | null = period.state === "ok" ? periodOf(period.value.periods, group) : null;
   const insufficient = scored?.insufficient ?? false;
+  // A link with a worker and no group opens the worker's first row; naming that row's group
+  // in the URL is what lets the table highlight it and the panel name its taluk.
+  useEffect(() => {
+    if (group == null && scored?.peer_group_key != null) setParams({ group: String(scored.peer_group_key) });
+  }, [group, scored, setParams]);
   const points = history.state === "ok" ? historyOf(history.value.periods, group) : [];
   const last = points.length ? points[points.length - 1].period_start : null;
   const top: RuleRow[] = scored
@@ -302,12 +312,13 @@ function Profile({ workerId, group }: { workerId: string; group: string | null }
                   top.map((rule) => (
                     <ReasonCard
                       key={rule.rule_id}
+                      ruleId={rule.rule_id}
                       title={rules[rule.rule_id]?.title || rule.rule_id}
                       group={GATE_GROUP[rule.feeds] || dimensionName(rule.dimension)}
                       records={rule.n_evaluated}
+                      failures={rule.n_violations}
                       noun={checkedNoun(rules[rule.rule_id], context.photo_record_type)}
                       rate={rule.rate}
-                      tooltip={`${shortId(rule.rule_id)}: ${rule.n_violations} of ${rule.n_evaluated} ${checkedNoun(rules[rule.rule_id], context.photo_record_type)} failed`}
                       onClick={() => go("dimensions", { gate: GATE_GROUP[rule.feeds], rule: rule.rule_id, unit: row?.taluk_id })}
                     />
                   ))

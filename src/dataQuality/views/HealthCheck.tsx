@@ -38,7 +38,6 @@ import {
   pct,
   periodLabel,
   place,
-  shortId,
 } from "../format";
 import { useGo } from "../navigation";
 import { workerLink } from "../rows";
@@ -49,16 +48,18 @@ export function HealthCheck() {
   const { grain, span, context } = useDashboard();
   const go = useGo();
   const start = span?.start ?? "";
-  const counts = useLoad(() => dqsApi.workers(grain, start, { pageSize: 1 }), [grain, start]);
+  const counts = useLoad(() => dqsApi.workers(grain, start, { pageSize: 1 }), [grain, start], !!span);
   const lowest = useLoad(
     () => dqsApi.workers(grain, start, { band: "low", order: "trust_asc", pageSize: 5 }),
     [grain, start],
+    !!span,
   );
   const highest = useLoad(
     () => dqsApi.workers(grain, start, { band: "high", order: "trust_desc", pageSize: 5 }),
     [grain, start],
+    !!span,
   );
-  const rules = useLoad(() => dqsApi.rules(grain, start), [grain, start]);
+  const rules = useLoad(() => dqsApi.rules(grain, start), [grain, start], !!span);
 
   if (!span) return <Typography sx={{ color: DQ.textSubtle }}>No scores are stored at this grain yet.</Typography>;
   const settings = context.settings;
@@ -132,7 +133,7 @@ export function HealthCheck() {
 function DailyActivity() {
   const { grain, span, context } = useDashboard();
   const start = span?.start ?? "";
-  const days = useLoad(() => dqsApi.days(grain, start), [grain, start]);
+  const days = useLoad(() => dqsApi.days(grain, start), [grain, start], !!span);
   const counted = screenings(context);
   return (
     <Panel sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
@@ -313,12 +314,13 @@ function TopReasons({ rules }: { rules: RuleFailures[] }) {
       {top.map((rule) => (
         <ReasonCard
           key={rule.rule_id}
+          ruleId={rule.rule_id}
           title={rule.title || rule.rule_id}
           group={GATE_GROUP[rule.feeds] || dimensionName(rule.dimension)}
           records={rule.n_evaluated}
+          failures={rule.n_violations}
           noun={checkedNoun(infos[rule.rule_id], context.photo_record_type)}
           rate={rule.rate}
-          tooltip={`${shortId(rule.rule_id)}: ${int(rule.n_violations)} of ${int(rule.n_evaluated)} ${checkedNoun(infos[rule.rule_id], context.photo_record_type)} failed`}
           onClick={() => open(rule)}
         />
       ))}
