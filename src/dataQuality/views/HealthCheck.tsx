@@ -1,6 +1,11 @@
 // The Health Check view: the period's four KPIs with their change since the period before,
-// the workers who could not be scored, the period's screenings day by day, the five lowest
-// and five highest DQ scores, and the top three reasons for poor quality across all workers.
+// the workers who could not be scored, the period's screenings day by day, the workers by
+// taluk, and the top three reasons for poor quality across all workers.
+//
+// The workers by taluk are a map or a list, chosen by the URL's `layout` (`list`, or the map
+// by default). The map draws the taluks from DQS's map route with a marker for each taluk's
+// band, from the units route, and its workers from the workers route; selecting a taluk opens
+// the Workers view filtered to it. The list is the five lowest and five highest DQ scores.
 //
 // The KPIs are the counts DQS's workers route returns for the period and the one before it.
 // The daily activity is DQS's days route, counting screenings, which is what Records Assessed
@@ -9,10 +14,25 @@
 // the first five High-band workers in descending TrustIndex. The reasons are the period's
 // rules that count towards a score, ordered by failures.
 
-import { Box, Divider, Link, Stack, Table, TableBody, TableCell, TableHead, TableRow, Typography } from "@mui/material";
-import { dqsApi } from "../api/client";
+import ChevronRightIcon from "@mui/icons-material/ChevronRight";
+import {
+  Box,
+  Divider,
+  Link,
+  Stack,
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableRow,
+  ToggleButton,
+  ToggleButtonGroup,
+  Typography,
+} from "@mui/material";
+import { DqsError, MAX_PAGE_SIZE, dqsApi } from "../api/client";
 import type { Grain, RuleFailures, WorkerRow, WorkersPage } from "../api/types";
 import { DailyBars } from "../components/DailyBars";
+import { TalukMap } from "../components/TalukMap";
 import { Freshness } from "../components/Freshness";
 import {
   Change,
@@ -41,7 +61,8 @@ import {
 } from "../format";
 import { useGo } from "../navigation";
 import { workerLink } from "../rows";
-import { useDashboard, useLoad } from "../state";
+import { useDashboard, useLoad, useParam, useSetParams } from "../state";
+import type { Loaded } from "../state";
 import { DQ } from "../tokens";
 
 export function HealthCheck() {
@@ -60,6 +81,31 @@ export function HealthCheck() {
     !!span,
   );
   const rules = useLoad(() => dqsApi.rules(grain, start), [grain, start], !!span);
+  const layout = useParam("layout") === "list" ? "list" : "map";
+  const setParams = useSetParams();
+  // The outlines change only with a new location version, so they are read once; the bands
+  // and the workers follow the period.
+  const outlines = useLoad(() => dqsApi.map(), []);
+  const scored = useLoad(
+    () =>
+      Promise.all([
+        // A period with no taluk scores still draws the map, with every marker hollow.
+        dqsApi.units(grain, start).catch((error) => {
+          if (error instanceof DqsError && error.status === 404) return { units: [] };
+          throw error;
+        }),
+        dqsApi.workers(grain, start, { pageSize: MAX_PAGE_SIZE }),
+      ]),
+    [grain, start],
+    !!span && layout === "map",
+  );
+  const map = both(outlines, scored, (found, [units, page]) => ({
+    outlines: found,
+    units: units.units,
+    workers: page.workers,
+  }));
+  const district = context.districts.length === 1 ? context.districts[0].name : null;
+  const taluks = outlines.state === "ok" ? outlines.value.taluks.length : null;
 
   if (!span) return <Typography sx={{ color: DQ.textSubtle }}>No scores are stored at this grain yet.</Typography>;
   const settings = context.settings;
@@ -83,34 +129,68 @@ export function HealthCheck() {
         </Pending>
         <DailyActivity />
         <Panel sx={{ display: "flex", flexDirection: "column", gap: 1, flex: 1 }}>
-          <Heading>Workers by Taluk</Heading>
-          <Box
-            sx={{
-              display: "grid",
-              gridTemplateColumns: { xs: "1fr", md: "minmax(0,1fr) 1px minmax(0,1fr)" },
-              gap: 2,
-              mt: 2,
-              mb: 3,
-            }}
-          >
+          <Stack direction="row" justifyContent="space-between" alignItems="flex-start" flexWrap="wrap" useFlexGap spacing={1.5}>
             <Box>
-              <Typography sx={{ fontWeight: 500, color: DQ.danger, mb: 2 }}>Workers with Lowest Score</Typography>
-              <Pending loaded={lowest}>
-                {(page) => <WorkerList rows={page.workers} none={`No worker scored below ${lowText} this ${noun}.`} />}
-              </Pending>
+              <Heading>{district ? `Workers in ${district}` : "Workers by Taluk"}</Heading>
+              <Crumbs district={district} taluks={taluks} />
             </Box>
-            <Divider orientation="vertical" sx={{ display: { xs: "none", md: "block" } }} />
-            <Box>
-              <Typography sx={{ fontWeight: 500, color: DQ.successText, mb: 2 }}>Workers with Highest Score</Typography>
-              <Pending loaded={highest}>
-                {(page) => (
-                  <WorkerList rows={page.workers} none={`No worker scored ${highText} or above this ${noun}.`} />
-                )}
-              </Pending>
+            <ToggleButtonGroup
+              exclusive
+              size="small"
+              value={layout}
+              onChange={(_, next: "map" | "list" | null) => next && setParams({ layout: next === "map" ? null : next })}
+              aria-label="Layout"
+              sx={{
+                bgcolor: DQ.segment,
+                "& .MuiToggleButton-root": { border: 0, px: 2, textTransform: "none", color: DQ.textMuted },
+                "& .Mui-selected, & .Mui-selected:hover": { bgcolor: `${DQ.brand} !important`, color: "#fff !important" },
+              }}
+            >
+              <ToggleButton value="map">Map View</ToggleButton>
+              <ToggleButton value="list">List View</ToggleButton>
+            </ToggleButtonGroup>
+          </Stack>
+          {layout === "map" ? (
+            <Pending loaded={map} empty="No village boundaries are imported for this tenant yet. Switch to List View to see the workers without the map.">
+              {({ outlines, units, workers }) => (
+                <TalukMap
+                  outlines={outlines}
+                  units={units}
+                  workers={workers}
+                  settings={settings}
+                  onTaluk={(unitId) => go("workers", { taluk: unitId })}
+                />
+              )}
+            </Pending>
+          ) : (
+            <Box
+              sx={{
+                display: "grid",
+                gridTemplateColumns: { xs: "1fr", md: "minmax(0,1fr) 1px minmax(0,1fr)" },
+                gap: 2,
+                mt: 2,
+                mb: 3,
+              }}
+            >
+              <Box>
+                <Typography sx={{ fontWeight: 500, color: DQ.danger, mb: 2 }}>Workers with Lowest Score</Typography>
+                <Pending loaded={lowest}>
+                  {(page) => <WorkerList rows={page.workers} none={`No worker scored below ${lowText} this ${noun}.`} />}
+                </Pending>
+              </Box>
+              <Divider orientation="vertical" sx={{ display: { xs: "none", md: "block" } }} />
+              <Box>
+                <Typography sx={{ fontWeight: 500, color: DQ.successText, mb: 2 }}>Workers with Highest Score</Typography>
+                <Pending loaded={highest}>
+                  {(page) => (
+                    <WorkerList rows={page.workers} none={`No worker scored ${highText} or above this ${noun}.`} />
+                  )}
+                </Pending>
+              </Box>
             </Box>
-          </Box>
+          )}
           <Box sx={{ mt: "auto" }}>
-            <Legend settings={settings} withMid={false} />
+            <Legend settings={settings} withMid={layout === "map"} />
           </Box>
         </Panel>
       </Stack>
@@ -247,6 +327,33 @@ function Kpis({ page, grain, onInsufficient }: { page: WorkersPage; grain: Grain
         )}
       </Typography>
     </>
+  );
+}
+
+// Two loads as one: loading until both are in, the first error if either failed, and
+// otherwise `join` of their values.
+function both<A, B, T>(a: Loaded<A>, b: Loaded<B>, join: (a: A, b: B) => T): Loaded<T> {
+  if (a.state === "error") return a;
+  if (b.state === "error") return b;
+  if (a.state === "loading" || b.state === "loading") return { state: "loading" };
+  return { state: "ok", value: join(a.value, b.value) };
+}
+
+// Where the map is: India, the tenant's district when it has one, and its count of taluks.
+// The state is not served by DQS, so it is left out.
+function Crumbs({ district, taluks }: { district: string | null; taluks: number | null }) {
+  const parts = ["India", district, taluks == null ? null : `${taluks} taluk${taluks === 1 ? "" : "s"}`].filter(
+    (part): part is string => !!part,
+  );
+  return (
+    <Stack direction="row" spacing={0.5} alignItems="center" sx={{ mt: 0.5 }}>
+      {parts.map((part, i) => (
+        <Stack key={part} direction="row" spacing={0.5} alignItems="center">
+          {i > 0 && <ChevronRightIcon sx={{ fontSize: 16, color: DQ.text }} />}
+          <Typography variant="caption" sx={{ color: i === 0 ? DQ.textDisabled : DQ.link }}>{part}</Typography>
+        </Stack>
+      ))}
+    </Stack>
   );
 }
 

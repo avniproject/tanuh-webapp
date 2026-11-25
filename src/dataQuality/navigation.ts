@@ -8,7 +8,7 @@
 import { useCallback } from "react";
 import { useNavigate, useSearchParams } from "react-router-dom";
 
-export type View = "health" | "workers" | "dimensions" | "guide";
+export type View = "health" | "workers" | "dimensions" | "map" | "guide";
 
 export const BASE = "/data-quality";
 

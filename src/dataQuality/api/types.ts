@@ -288,3 +288,48 @@ export interface DaysInPeriod {
   covered_to: string | null;
   days: DayCount[];
 }
+
+// The tenant's taluk and village outlines from DQS's map route. Every ring is a list of
+// [longitude, latitude] pairs with the closing point left off. A taluk's `label` is a point
+// inside it to draw its name at, null when its outline has no polygon.
+export type Ring = [number, number][];
+
+export interface TalukOutline {
+  unit_id: string;
+  name: string;
+  rings: Ring[];
+  label: [number, number] | null;
+}
+
+export interface VillageOutline {
+  village_id: string;
+  aliases: string[];
+  name: string;
+  taluk_id: string;
+  rings: Ring[];
+}
+
+export interface MapOutlines {
+  location_version: string;
+  taluks: TalukOutline[];
+  villages: VillageOutline[];
+}
+
+// The records filed in one village in a period, from DQS's villages route, and the ids of the
+// workers who filed them. `name` and `taluk_id` are null when DQS's location master has no
+// row for the village.
+export interface VillageCount {
+  village_id: string;
+  name: string | null;
+  taluk_id: string | null;
+  n_records: number;
+  workers: string[];
+}
+
+export interface VillagesInPeriod {
+  grain: Grain;
+  period_start: string;
+  period_end: string;
+  villages: VillageCount[];
+  unlocated_records: number;
+}

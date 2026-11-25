@@ -18,10 +18,12 @@ import type {
   DaysInPeriod,
   Feeds,
   Grain,
+  MapOutlines,
   RulesInPeriod,
   RuleWorkersPage,
   Status,
   UnitsInPeriod,
+  VillagesInPeriod,
   WorkerHistory,
   WorkerPeriodResponse,
   WorkersPage,
@@ -142,6 +144,13 @@ export const dqsApi = {
 
   workerPeriod: (workerId: string, grain: Grain, start: string) =>
     get<WorkerPeriodResponse>(`/scores/workers/${encodeURIComponent(workerId)}/${grain}/${start}`),
+
+  // Each village's records in the period, of one record type when `recordType` is given.
+  villages: (grain: Grain, start: string, recordType?: string | null) =>
+    get<VillagesInPeriod>(`${period(grain, start)}/villages`, { record_type: recordType }),
+
+  // The taluk and village outlines; 404 until the tenant's village boundaries are imported.
+  map: () => get<MapOutlines>("/map"),
 
   workerHistory: (workerId: string, grain: Grain) =>
     get<WorkerHistory>(`/scores/workers/${encodeURIComponent(workerId)}/${grain}`),

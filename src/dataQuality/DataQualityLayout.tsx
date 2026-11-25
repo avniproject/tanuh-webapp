@@ -28,6 +28,7 @@ const TABS: [View, string][] = [
   ["health", "Health Check"],
   ["workers", "Workers"],
   ["dimensions", "Quality Dimensions"],
+  ["map", "Map"],
 ];
 
 export function DataQualityLayout() {
