@@ -2,6 +2,10 @@
 // period with their change since the period before, the rejection reasons of one gate in that
 // taluk ordered by failures, and the workers who failed the selected rule.
 //
+// The taluk is the URL's `unit`. A link that names a rule and no taluk, such as a Health Check
+// reason card, opens the taluk where that rule failed most, read from the rule's workers
+// route across every taluk; with neither, the first taluk.
+//
 // The cards read DQS's units route. The reasons read the rules route kept to the taluk and
 // the gate's feeds. The workers read the rule's workers route kept to the taluk, all of them
 // at once, so that the note under the table can say whether the failures are concentrated in
@@ -42,6 +46,8 @@ import {
   GROUP_FEEDS,
   PERIOD_NOUN,
   QUESTION,
+  capitalised,
+  checkedNoun,
   dimensionName,
   f2,
   int,
@@ -53,6 +59,7 @@ import {
 } from "../format";
 import type { GateGroup } from "../format";
 import { useGo } from "../navigation";
+import { busiestTaluk, workerLink } from "../rows";
 import { useDashboard, useLoad, useParam, useSetParams } from "../state";
 import { DQ } from "../tokens";
 import { NameCell } from "./HealthCheck";
@@ -79,6 +86,14 @@ export function Dimensions() {
   const start = span?.start ?? "";
   const gate: GateGroup = GROUPS.includes(gateParam as GateGroup) ? (gateParam as GateGroup) : "Sufficiency";
   const units = useLoad(() => dqsApi.units(grain, start), [grain, start]);
+  const seek = ruleParam && !unitParam ? ruleParam : null;
+  const busiest = useLoad(
+    () =>
+      seek
+        ? dqsApi.ruleWorkers(grain, start, seek, { pageSize: MAX_PAGE_SIZE }).then(busiestTaluk)
+        : Promise.resolve(null),
+    [grain, start, seek],
+  );
 
   const title = (
     <Stack direction="row" spacing={1.5} alignItems="center">
@@ -87,6 +102,9 @@ export function Dimensions() {
     </Stack>
   );
   if (!span) return <Typography sx={{ color: DQ.textSubtle }}>No scores are stored at this grain yet.</Typography>;
+  // Waiting for the busiest taluk keeps the first taluk from showing and then being replaced.
+  if (seek && busiest.state === "loading") return <Pending loaded={busiest}>{() => null}</Pending>;
+  const sought = busiest.state === "ok" ? busiest.value : null;
 
   return (
     <Pending loaded={units} empty={`No taluk scores are stored for ${periodLabel(grain, span)}.`}>
@@ -100,7 +118,8 @@ export function Dimensions() {
               </Panel>
             </Stack>
           );
-        const unit = found.units.find((one) => one.unit_id === unitParam) ?? found.units[0];
+        const unit =
+          found.units.find((one) => one.unit_id === (unitParam ?? sought)) ?? found.units[0];
         return (
           <Stack spacing={2} sx={{ minWidth: 0 }}>
             <Stack direction="row" justifyContent="space-between" alignItems="center" flexWrap="wrap" useFlexGap spacing={1.5}>
@@ -120,10 +139,10 @@ export function Dimensions() {
               gate={gate}
               rule={ruleParam}
               onGate={(next) => {
-                setParams({ gate: next, rule: null, rpage: null });
+                setParams({ unit: unit.unit_id, gate: next, rule: null, rpage: null });
               }}
               onRule={(next) => {
-                setParams({ rule: next, rpage: null });
+                setParams({ unit: unit.unit_id, rule: next, rpage: null });
               }}
             />
           </Stack>
@@ -312,6 +331,7 @@ function RuleWorkers({ rule, unit }: { rule: RuleFailures; unit: UnitRow }) {
   const taluk = unit.name || unit.unit_id;
   // A rule scored on a measurement shows each worker's measurement beside their failures.
   const measured = rule.scores_on === "statistic";
+  const noun = checkedNoun(infos[rule.rule_id], context.photo_record_type);
   return (
     <>
       <Typography variant="body2" sx={{ color: DQ.danger }}>
@@ -341,7 +361,7 @@ function RuleWorkers({ rule, unit }: { rule: RuleFailures; unit: UnitRow }) {
                       <TableCell>Worker</TableCell>
                       <TableCell>Location</TableCell>
                       <TableCell align="right">Failures</TableCell>
-                      <TableCell align="right">Of Their Records</TableCell>
+                      <TableCell align="right">Of Their {capitalised(noun)}</TableCell>
                       {measured && <TableCell align="right">Measurement</TableCell>}
                       <TableCell align="right">DQ Score</TableCell>
                     </TableRow>
@@ -352,7 +372,7 @@ function RuleWorkers({ rule, unit }: { rule: RuleFailures; unit: UnitRow }) {
                         const trust = one.insufficient ? null : one.trust;
                         const band: DotKind = trust ? (trust.band === "high" ? "success" : trust.band) : "ins";
                         return (
-                          <ClickRow key={`${one.worker_id}-${one.peer_group_key}`} onOpen={() => go("workers", { worker: one.worker_id })}>
+                          <ClickRow key={`${one.worker_id}-${one.peer_group_key}`} onOpen={() => go("workers", workerLink(one))}>
                             <TableCell><NameCell row={one} /></TableCell>
                             <TableCell>{place(one)}</TableCell>
                             <TableCell align="right">{int(one.n_violations)}</TableCell>
@@ -382,7 +402,7 @@ function RuleWorkers({ rule, unit }: { rule: RuleFailures; unit: UnitRow }) {
               {total > 0 && (
                 <Typography variant="caption" sx={{ color: DQ.textSubtle }}>
                   {heavy} worker{heavy === 1 ? "" : "s"} failed it on {pct(HEAVY_FAILURE_RATE, 0)} or more of their
-                  records. The top {topN} worker{topN > 1 ? "s account" : " accounts"} for {pct(topShare, 0)} of the
+                  {" "}{noun}. The top {topN} worker{topN > 1 ? "s account" : " accounts"} for {pct(topShare, 0)} of the
                   failures: {topShare >= CONCENTRATED_SHARE ? "concentrated in a few workers." : "spread across many workers."}
                 </Typography>
               )}
@@ -404,8 +424,9 @@ function RuleWorkers({ rule, unit }: { rule: RuleFailures; unit: UnitRow }) {
 // The rule's failing and passing records in the taluk, day by day. A batch rule is measured
 // over a worker's whole period and has no per-record outcome, so it gets no chart.
 function RuleDays({ rule, unit }: { rule: RuleFailures; unit: UnitRow }) {
-  const { grain, span } = useDashboard();
+  const { grain, span, context, rules: infos } = useDashboard();
   const start = span!.start;
+  const noun = checkedNoun(infos[rule.rule_id], context.photo_record_type);
   const days = useLoad(
     () => dqsApi.days(grain, start, { unitId: unit.unit_id, ruleId: rule.rule_id }),
     [grain, start, unit.unit_id, rule.rule_id],
@@ -415,8 +436,8 @@ function RuleDays({ rule, unit }: { rule: RuleFailures; unit: UnitRow }) {
       <Typography variant="body2" sx={{ fontWeight: 500, mb: 1 }}>
         Failures by {grain === "year" ? "Week" : "Day"}
       </Typography>
-      <Pending loaded={days} empty="No records in this period.">
-        {(found) => <DailyBars found={found} mode="rule" height={140} />}
+      <Pending loaded={days} empty={`No ${noun} in this period.`}>
+        {(found) => <DailyBars found={found} mode="rule" noun={noun} height={140} />}
       </Pending>
     </Box>
   );
