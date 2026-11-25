@@ -1,14 +1,17 @@
 // The Workers view: every worker of the period, ten to a page, filtered by taluk and status,
 // and the selected worker's profile beside the table.
 //
-// The table is DQS's workers route for the filters. The profile reads the worker's score for
-// the period (its four gates and its rule outcomes) and every period the worker has at this
-// grain, for the DQ Score Over Time chart. Its name and place come from the table row; a
+// The table is DQS's workers route for the filters, with each worker's last visit in the
+// period. The profile reads the worker's score for the period (its four gates and its rule
+// outcomes), the worker's screenings day by day from DQS's days route, and every period the
+// worker has at this grain, for the DQ Score Over Time chart. Its name and place come from the table row; a
 // worker opened from another view whose row has not been seen yet is shown by id.
 
 import { Box, Chip, Pagination, Stack, Table, TableBody, TableCell, TableHead, TableRow, Typography } from "@mui/material";
 import { dqsApi } from "../api/client";
 import type { GateScore, RuleRow, WorkerPeriod, WorkerRow } from "../api/types";
+import { DayStrip } from "../components/DayStrip";
+import { screenings } from "../days";
 import { LineChart } from "../components/LineChart";
 import {
   ClickRow,
@@ -136,6 +139,7 @@ export function Workers() {
                         <TableCell title="Provenance confidence">Genuineness</TableCell>
                         <TableCell>Fidelity</TableCell>
                         <TableCell>Status</TableCell>
+                        <TableCell>Last Record</TableCell>
                       </TableRow>
                     </TableHead>
                     <TableBody>
@@ -153,11 +157,12 @@ export function Workers() {
                             <TableCell><GateCell gate={row.provenance_confidence} insufficient={row.insufficient} /></TableCell>
                             <TableCell><GateCell gate={row.quality} insufficient={row.insufficient} /></TableCell>
                             <TableCell><StatusPill status={row.status ? STATUS_KEY[row.status] : null} /></TableCell>
+                            <TableCell>{row.last_visit_date ? dayMonth(row.last_visit_date) : "—"}</TableCell>
                           </ClickRow>
                         ))
                       ) : (
                         <TableRow>
-                          <TableCell colSpan={7} sx={{ color: DQ.textSubtle }}>No workers match these filters.</TableCell>
+                          <TableCell colSpan={8} sx={{ color: DQ.textSubtle }}>No workers match these filters.</TableCell>
                         </TableRow>
                       )}
                     </TableBody>
@@ -221,6 +226,7 @@ function Profile({ workerId }: { workerId: string }) {
   const start = span!.start;
   const period = useLoad(() => dqsApi.workerPeriod(workerId, grain, start), [workerId, grain, start]);
   const history = useLoad(() => dqsApi.workerHistory(workerId, grain), [workerId, grain]);
+  const days = useLoad(() => dqsApi.days(grain, start, { workerId }), [workerId, grain, start]);
   const row = seen.get(workerId);
   const noun = PERIOD_NOUN[grain].toLowerCase();
 
@@ -300,6 +306,14 @@ function Profile({ workerId }: { workerId: string }) {
           )
         }
       </Pending>
+      <Box sx={{ bgcolor: DQ.surfaceSubtle, border: `1px solid ${DQ.border}`, borderRadius: 1, p: 2 }}>
+        <Typography variant="body2" sx={{ fontWeight: 500, mb: 1 }}>
+          Screenings Each {grain === "year" ? "Week" : "Day"} This {PERIOD_NOUN[grain]}
+        </Typography>
+        <Pending loaded={days} empty={`No records in ${periodLabel(grain, span!)}.`}>
+          {(found) => <DayStrip found={found} counted={screenings(context)} noun="screenings" />}
+        </Pending>
+      </Box>
       <Box sx={{ bgcolor: DQ.surfaceSubtle, border: `1px solid ${DQ.border}`, borderRadius: 1, p: 2 }}>
         <Typography variant="body2" sx={{ fontWeight: 500, mb: 0.5 }}>DQ Score Over Time</Typography>
         <Pending loaded={history} empty="No scored periods.">

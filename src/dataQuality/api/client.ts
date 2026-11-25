@@ -15,6 +15,7 @@ import axios, { AxiosError } from "axios";
 import { boundIdp } from "@/auth/httpClient";
 import type {
   Context,
+  DaysInPeriod,
   Feeds,
   Grain,
   RulesInPeriod,
@@ -108,6 +109,17 @@ export const dqsApi = {
       unit_id: options.unitId,
       page: options.page,
       page_size: options.pageSize,
+    }),
+
+  days: (
+    grain: Grain,
+    start: string,
+    options: { unitId?: string | null; workerId?: string | null; ruleId?: string | null } = {},
+  ) =>
+    get<DaysInPeriod>(`${period(grain, start)}/days`, {
+      unit_id: options.unitId,
+      worker_id: options.workerId,
+      rule_id: options.ruleId,
     }),
 
   workerPeriod: (workerId: string, grain: Grain, start: string) =>

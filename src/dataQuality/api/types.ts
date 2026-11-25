@@ -86,6 +86,10 @@ export interface Context {
   rules: RuleInfo[];
   scored_under: Stamp[];
   districts: Place[];
+  // The record types of a screening and of the photos taken at it, which the daily counts
+  // use to count screenings; both null for a tenant with no photos.
+  screening_record_type: string | null;
+  photo_record_type: string | null;
 }
 
 export interface WorkerRow extends Gates {
@@ -104,6 +108,8 @@ export interface WorkerRow extends Gates {
   trend: Trend | null;
   status: Status | null;
   previous_trust: GateScore | null;
+  // The latest visit date among the worker's records in the period.
+  last_visit_date: string | null;
 }
 
 export interface BandCounts {
@@ -253,4 +259,32 @@ export interface WorkerPeriod extends Gates {
 export interface WorkerPeriodResponse {
   worker_id: string;
   periods: WorkerPeriod[];
+}
+
+export interface TypeCount {
+  records: number;
+  failed: number;
+  unplaced: number;
+}
+
+// One day, or one week of a financial year, of a period's records by visit date. Without a
+// rule filter `failed` counts records that failed any scored rule; with one, `records` counts
+// the records that rule checked and `failed` those it failed. `unplaced` counts records with
+// no taluk. `future` is a day after today in the tenant's zone.
+export interface DayCount extends TypeCount {
+  start: string;
+  end: string;
+  future: boolean;
+  by_type: Record<string, TypeCount>;
+}
+
+export interface DaysInPeriod {
+  grain: Grain;
+  period_start: string;
+  period_end: string;
+  bucket: "day" | "week";
+  // When the last analytics load finished, and the latest arrival time it read.
+  loaded_at: string | null;
+  covered_to: string | null;
+  days: DayCount[];
 }
