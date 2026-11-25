@@ -18,6 +18,7 @@ import type {
   DaysInPeriod,
   Feeds,
   Grain,
+  MapOutlines,
   RulesInPeriod,
   RuleWorkersPage,
   Status,
@@ -142,6 +143,9 @@ export const dqsApi = {
 
   workerPeriod: (workerId: string, grain: Grain, start: string) =>
     get<WorkerPeriodResponse>(`/scores/workers/${encodeURIComponent(workerId)}/${grain}/${start}`),
+
+  // The taluk and village outlines; 404 until the tenant's village boundaries are imported.
+  map: () => get<MapOutlines>("/map"),
 
   workerHistory: (workerId: string, grain: Grain) =>
     get<WorkerHistory>(`/scores/workers/${encodeURIComponent(workerId)}/${grain}`),
