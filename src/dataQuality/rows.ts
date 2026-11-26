@@ -7,9 +7,10 @@
 // parameters that open one. `periodOf` picks the worker's score in
 // one peer group from the worker score route, and `historyOf` keeps one point per period of
 // the worker's history. `busiestTaluk` is the taluk where a rule failed most, from the rule's
-// workers.
+// workers. `banded` is a band's workers ordered by TrustIndex, as DQS's workers route orders
+// them.
 
-import type { HistoryPoint, RuleWorkersPage, WorkerPeriod } from "./api/types";
+import type { Band, HistoryPoint, RuleWorkersPage, WorkerPeriod, WorkerRow } from "./api/types";
 
 // A peer group key as it is carried in the URL's `group`.
 export const groupOf = (key: number | null) => (key == null ? null : String(key));
@@ -52,4 +53,15 @@ export function busiestTaluk(page: RuleWorkersPage): string | null {
   for (const [taluk, [failures, workers]] of [...totals].sort(([a], [b]) => a.localeCompare(b)))
     if (!best || failures > best[1] || (failures === best[1] && workers > best[2])) best = [taluk, failures, workers];
   return best ? best[0] : null;
+}
+
+// The first `count` workers of `rows` in band `band`, lowest TrustIndex first for the Low band
+// and highest first otherwise. The sort is stable, so workers with equal scores keep DQS's
+// order, which is the order the workers route's `band` and `order` filters give.
+export function banded(rows: WorkerRow[], band: Band, count: number): WorkerRow[] {
+  const sign = band === "low" ? 1 : -1;
+  return rows
+    .filter((row) => row.trust?.band === band)
+    .sort((a, b) => sign * (a.trust!.score - b.trust!.score))
+    .slice(0, count);
 }
