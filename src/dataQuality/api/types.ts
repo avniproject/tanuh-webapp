@@ -333,3 +333,29 @@ export interface VillagesInPeriod {
   villages: VillageCount[];
   unlocated_records: number;
 }
+
+// One record a rule failed, from DQS's failed-records route: why it failed (`message` and the
+// `fields` it was decided on, null for one loaded before DQS kept them) and `link`, where to
+// open it in Avni, null when the tenant names none for its record type.
+export interface FailedRecord {
+  record_id: number;
+  source_record_id: string | null;
+  record_type: string;
+  visit_date: string;
+  received_at: string;
+  message: string | null;
+  fields: Record<string, unknown> | null;
+  link: string | null;
+}
+
+export interface FailedRecordsPage {
+  rule_id: string;
+  worker_id: string;
+  grain: Grain;
+  period_start: string;
+  period_end: string;
+  total: number;
+  page: number;
+  page_size: number;
+  records: FailedRecord[];
+}

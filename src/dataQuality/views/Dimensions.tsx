@@ -9,13 +9,15 @@
 // The cards read DQS's units route. The reasons read the rules route kept to the taluk and
 // the gate's feeds. The workers read the rule's workers route kept to the taluk, all of them
 // at once, so that the note under the table can say whether the failures are concentrated in
-// a few workers; the table pages through them ten at a time. Above them, the rule's failures
-// in the taluk day by day, from DQS's days route.
+// a few workers; the table pages through them ten at a time, and each worker's View lists the
+// records the rule failed, with a link to each in Avni. Above them, the rule's failures in the
+// taluk day by day, from DQS's days route.
 
 import {
   Box,
   ButtonBase,
   Chip,
+  Link,
   Pagination,
   Stack,
   Table,
@@ -25,6 +27,7 @@ import {
   TableRow,
   Typography,
 } from "@mui/material";
+import { useState } from "react";
 import { dqsApi } from "../api/client";
 import type { GateScore, RuleFailures, UnitRow } from "../api/types";
 import {
@@ -41,6 +44,8 @@ import {
   TABLE_SX,
 } from "../components/ui";
 import { DailyBars } from "../components/DailyBars";
+import { FailedRecords } from "../components/FailedRecords";
+import type { FailedRecordsTarget } from "../components/FailedRecords";
 import type { DotKind } from "../components/ui";
 import {
   GROUP_FEEDS,
@@ -59,7 +64,7 @@ import {
 } from "../format";
 import type { GateGroup } from "../format";
 import { useGo } from "../navigation";
-import { busiestTaluk, workerLink } from "../rows";
+import { busiestTaluk, groupOf, workerLink } from "../rows";
 import { useDashboard, useLoad, useParam, useSetParams } from "../state";
 import { DQ } from "../tokens";
 import { NameCell } from "./HealthCheck";
@@ -330,6 +335,9 @@ function RuleWorkers({ rule, unit }: { rule: RuleFailures; unit: UnitRow }) {
   // A rule scored on a measurement shows each worker's measurement beside their failures.
   const measured = rule.scores_on === "statistic";
   const noun = checkedNoun(infos[rule.rule_id], context.photo_record_type);
+  // A batch rule judges a worker's whole period and has no failing records to list.
+  const listed = infos[rule.rule_id]?.kind !== "batch";
+  const [failures, setFailures] = useState<FailedRecordsTarget | null>(null);
   return (
     <>
       <Typography variant="body2" sx={{ color: DQ.danger }}>
@@ -362,6 +370,7 @@ function RuleWorkers({ rule, unit }: { rule: RuleFailures; unit: UnitRow }) {
                       <TableCell align="right">Of Their {capitalised(noun)}</TableCell>
                       {measured && <TableCell align="right">Measurement</TableCell>}
                       <TableCell align="right">DQ Score</TableCell>
+                      {listed && <TableCell align="right">Records</TableCell>}
                     </TableRow>
                   </TableHead>
                   <TableBody>
@@ -384,12 +393,35 @@ function RuleWorkers({ rule, unit }: { rule: RuleFailures; unit: UnitRow }) {
                                 {trust ? f2(trust.scale) : "—"}
                               </Box>
                             </TableCell>
+                            {listed && (
+                              <TableCell align="right">
+                                {/* A worker listed for a lower sub-score alone has no failed records. */}
+                                {one.n_violations > 0 && <Link
+                                  component="button"
+                                  variant="body2"
+                                  onClick={(event) => {
+                                    // The row opens the worker's profile; this opens the records.
+                                    event.stopPropagation();
+                                    setFailures({
+                                      ruleId: rule.rule_id,
+                                      workerId: one.worker_id,
+                                      workerName: one.name || one.worker_id,
+                                      group: groupOf(one.peer_group_key),
+                                    });
+                                  }}
+                                  onKeyDown={(event) => event.stopPropagation()}
+                                  sx={{ color: DQ.link }}
+                                >
+                                  View
+                                </Link>}
+                              </TableCell>
+                            )}
                           </ClickRow>
                         );
                       })
                     ) : (
                       <TableRow>
-                        <TableCell colSpan={measured ? 6 : 5} sx={{ color: DQ.textSubtle }}>
+                        <TableCell colSpan={5 + (measured ? 1 : 0) + (listed ? 1 : 0)} sx={{ color: DQ.textSubtle }}>
                           No worker in {taluk} failed this rule or lost score on it in this period.
                         </TableCell>
                       </TableRow>
@@ -415,6 +447,8 @@ function RuleWorkers({ rule, unit }: { rule: RuleFailures; unit: UnitRow }) {
           );
         }}
       </Pending>
+      {/* Already on this rule, so the dialog's link to it just closes the dialog. */}
+      <FailedRecords target={failures} onClose={() => setFailures(null)} onRule={() => setFailures(null)} />
     </>
   );
 }

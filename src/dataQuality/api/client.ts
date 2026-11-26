@@ -16,6 +16,7 @@ import { boundIdp } from "@/auth/httpClient";
 import type {
   Context,
   DaysInPeriod,
+  FailedRecordsPage,
   Feeds,
   Grain,
   MapOutlines,
@@ -112,6 +113,20 @@ export const dqsApi = {
       page: options.page,
       page_size: options.pageSize,
     }),
+
+  // A page of one worker's records that the rule failed in the period, newest first, kept to
+  // one peer group when `peerGroupKey` is given.
+  failedRecords: (
+    grain: Grain,
+    start: string,
+    ruleId: string,
+    workerId: string,
+    options: { peerGroupKey?: string | null; page?: number; pageSize?: number } = {},
+  ) =>
+    get<FailedRecordsPage>(
+      `${period(grain, start)}/rules/${encodeURIComponent(ruleId)}/workers/${encodeURIComponent(workerId)}/records`,
+      { peer_group_key: options.peerGroupKey, page: options.page, page_size: options.pageSize },
+    ),
 
   // Every worker of a rule, a page of MAX_PAGE_SIZE at a time, as one page.
   allRuleWorkers: async (grain: Grain, start: string, ruleId: string, options: { unitId?: string | null } = {}) => {

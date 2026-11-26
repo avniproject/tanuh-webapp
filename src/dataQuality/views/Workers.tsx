@@ -9,14 +9,19 @@
 // The table is DQS's workers route for the filters, with each worker's last visit in the
 // period. The profile reads the worker's score for the period (its four gates and its rule
 // outcomes), the worker's screenings day by day from DQS's days route, and every period the
-// worker has at this grain, for the DQ Score Over Time chart. Its name and place come from the table row; a
-// worker opened from another view whose row has not been seen yet is shown by id.
+// worker has at this grain, for the DQ Score Over Time chart. Its name and place come from the
+// table row; a worker opened from another view whose row has not been seen yet is shown by id.
+// Selecting one of the worker's top reasons lists the records that rule failed, with a link to
+// each in Avni; a batch rule, which has no failing records, opens in Quality Dimensions
+// instead.
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
 import { Box, Chip, Pagination, Stack, Table, TableBody, TableCell, TableHead, TableRow, Typography } from "@mui/material";
 import { dqsApi } from "../api/client";
 import type { GateScore, RuleRow, WorkerPeriod, WorkerRow } from "../api/types";
 import { DayStrip } from "../components/DayStrip";
+import { FailedRecords } from "../components/FailedRecords";
+import type { FailedRecordsTarget } from "../components/FailedRecords";
 import { screenings } from "../days";
 import { groupOf, historyOf, periodOf, rowKey, workerLink } from "../rows";
 import { LineChart } from "../components/LineChart";
@@ -248,6 +253,7 @@ function Profile({ workerId, group }: { workerId: string; group: string | null }
     [workerId, group, grain, start],
   );
   const setParams = useSetParams();
+  const [failures, setFailures] = useState<FailedRecordsTarget | null>(null);
   const row = seen.get(rowKey(workerId, group));
   const noun = PERIOD_NOUN[grain].toLowerCase();
 
@@ -260,6 +266,12 @@ function Profile({ workerId, group }: { workerId: string; group: string | null }
   }, [group, scored, setParams]);
   const points = history.state === "ok" ? historyOf(history.value.periods, group) : [];
   const last = points.length ? points[points.length - 1].period_start : null;
+  // The gate comes from the worker's own rule row, which every rule they were scored on has,
+  // even one the dashboard context no longer lists.
+  const openRule = (ruleId: string) => {
+    const feeds = scored?.rules.find((one) => one.rule_id === ruleId)?.feeds ?? rules[ruleId]?.feeds ?? "quality";
+    go("dimensions", { gate: GATE_GROUP[feeds], rule: ruleId, unit: row?.taluk_id });
+  };
   const top: RuleRow[] = scored
     ? scored.rules
         .filter((rule) => rule.n_violations > 0 && rules[rule.rule_id]?.scored !== false)
@@ -319,7 +331,12 @@ function Profile({ workerId, group }: { workerId: string; group: string | null }
                       failures={rule.n_violations}
                       noun={checkedNoun(rules[rule.rule_id], context.photo_record_type)}
                       rate={rule.rate}
-                      onClick={() => go("dimensions", { gate: GATE_GROUP[rule.feeds], rule: rule.rule_id, unit: row?.taluk_id })}
+                      onClick={() =>
+                        // A batch rule judges the whole period and has no failing records to list.
+                        rules[rule.rule_id]?.kind === "batch"
+                          ? openRule(rule.rule_id)
+                          : setFailures({ ruleId: rule.rule_id, workerId, workerName: row?.name || workerId, group })
+                      }
                     />
                   ))
                 ) : (
@@ -356,6 +373,7 @@ function Profile({ workerId, group }: { workerId: string; group: string | null }
           )}
         </Pending>
       </Box>
+      <FailedRecords target={failures} onClose={() => setFailures(null)} onRule={openRule} />
     </>
   );
 }
