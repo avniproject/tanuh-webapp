@@ -447,8 +447,8 @@ function RuleWorkers({ rule, unit }: { rule: RuleFailures; unit: UnitRow }) {
           );
         }}
       </Pending>
-      {/* Already on this rule, so the dialog's link to it just closes the dialog. */}
-      <FailedRecords target={failures} onClose={() => setFailures(null)} onRule={() => setFailures(null)} />
+      {/* Opened from this rule's list of workers, so the dialog has no link back to it. */}
+      <FailedRecords target={failures} onClose={() => setFailures(null)} />
     </>
   );
 }

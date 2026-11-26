@@ -5,8 +5,9 @@
 // so Avni is where a record is recognised.
 //
 // The list is DQS's failed-records route, ten to a page. A record loaded before DQS kept the
-// reason shows that the reason is not available yet. The footer opens the rule in Quality
-// Dimensions, where every worker who failed it is listed.
+// reason shows that the reason is not available yet. Given `onRule`, the footer opens the rule
+// in Quality Dimensions, where every worker who failed it is listed; Quality Dimensions itself
+// leaves it out, since the dialog is opened from that list.
 
 import {
   Box,
@@ -49,8 +50,8 @@ export interface FailedRecordsTarget {
 export function FailedRecords({ target, onClose, onRule }: {
   target: FailedRecordsTarget | null;
   onClose: () => void;
-  // Opens the rule in Quality Dimensions.
-  onRule: (ruleId: string) => void;
+  // Opens the rule in Quality Dimensions; without it the footer has no link to the rule.
+  onRule?: (ruleId: string) => void;
 }) {
   // The last target is kept while the dialog fades out, so that it does not empty first.
   const [shown, setShown] = useState(target);
@@ -68,7 +69,7 @@ export function FailedRecords({ target, onClose, onRule }: {
 function Body({ target, onClose, onRule }: {
   target: FailedRecordsTarget;
   onClose: () => void;
-  onRule: (ruleId: string) => void;
+  onRule?: (ruleId: string) => void;
 }) {
   const { grain, span, context, rules } = useDashboard();
   const [page, setPage] = useState(1);
@@ -156,10 +157,12 @@ function Body({ target, onClose, onRule }: {
           }
         </Pending>
       </DialogContent>
-      <DialogActions sx={{ justifyContent: "space-between", px: 3 }}>
-        <Link component="button" variant="body2" onClick={() => onRule(target.ruleId)} sx={{ color: DQ.link }}>
-          See every worker who failed this check
-        </Link>
+      <DialogActions sx={{ justifyContent: onRule ? "space-between" : "flex-end", px: 3 }}>
+        {onRule && (
+          <Link component="button" variant="body2" onClick={() => onRule(target.ruleId)} sx={{ color: DQ.link }}>
+            See every worker who failed this check
+          </Link>
+        )}
         <Link component="button" variant="body2" onClick={onClose} sx={{ color: DQ.textMuted }}>
           Close
         </Link>
