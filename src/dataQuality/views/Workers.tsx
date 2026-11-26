@@ -394,7 +394,14 @@ function Profile({ workerId, group }: { workerId: string; group: string | null }
           )
         }
       </Pending>
-      <FailedRecords target={failures} onClose={() => setFailures(null)} onRule={openRule} />
+      <FailedRecords
+        target={failures}
+        onClose={() => setFailures(null)}
+        onRule={(ruleId) => {
+          setFailures(null);
+          openRule(ruleId);
+        }}
+      />
     </>
   );
 }
