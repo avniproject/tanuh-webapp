@@ -49,9 +49,9 @@ export function Villages() {
   if (!span) return <Typography sx={{ color: DQ.textSubtle }}>No scores are stored at this grain yet.</Typography>;
   return (
     <Stack spacing={2} sx={{ minWidth: 0 }}>
-      <Pending loaded={outlines} empty="No village boundaries are imported for this tenant yet, so there is no map to draw.">
+      <Pending loaded={outlines} reserve={{ minHeight: 600 }} empty="No village boundaries are imported for this tenant yet, so there is no map to draw.">
         {(map) => (
-          <Pending loaded={found} empty={`No records are stored for ${periodLabel(grain, span)}.`}>
+          <Pending loaded={found} reserve={{ minHeight: 600 }} empty={`No records are stored for ${periodLabel(grain, span)}.`}>
             {([villages, units, workers]) => (
               <Drawn map={map} villages={villages} units={units?.units ?? []} workers={workers?.workers ?? []} />
             )}
