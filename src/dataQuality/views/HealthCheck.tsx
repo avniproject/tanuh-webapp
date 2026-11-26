@@ -124,7 +124,8 @@ export function HealthCheck() {
     >
       <Stack spacing={2} sx={{ minWidth: 0 }}>
         <SectionTitle>Program Health Check</SectionTitle>
-        <Pending loaded={counts} empty={`No worker scores are stored for ${periodLabel(grain, span)}.`}>
+        <Pending loaded={counts} reserve={{ minHeight: { xs: 684, sm: 352, lg: 186 } }}
+          empty={`No worker scores are stored for ${periodLabel(grain, span)}.`}>
           {(page) => <Kpis page={page} grain={grain} onInsufficient={() => go("workers", { status: "ins" })} />}
         </Pending>
         <DailyActivity />
@@ -151,7 +152,7 @@ export function HealthCheck() {
             </ToggleButtonGroup>
           </Stack>
           {layout === "map" ? (
-            <Pending loaded={map} empty="No village boundaries are imported for this tenant yet. Switch to List View to see the workers without the map.">
+            <Pending loaded={map} reserve={{ minHeight: 400 }} empty="No village boundaries are imported for this tenant yet. Switch to List View to see the workers without the map.">
               {({ outlines, units, workers }) => (
                 <TalukMap
                   outlines={outlines}
@@ -174,14 +175,14 @@ export function HealthCheck() {
             >
               <Box>
                 <Typography sx={{ fontWeight: 500, color: DQ.danger, mb: 2 }}>Workers with Lowest Score</Typography>
-                <Pending loaded={lowest}>
+                <Pending loaded={lowest} reserve={{ minHeight: 300 }}>
                   {(page) => <WorkerList rows={page.workers} none={`No worker scored below ${lowText} this ${noun}.`} />}
                 </Pending>
               </Box>
               <Divider orientation="vertical" sx={{ display: { xs: "none", md: "block" } }} />
               <Box>
                 <Typography sx={{ fontWeight: 500, color: DQ.successText, mb: 2 }}>Workers with Highest Score</Typography>
-                <Pending loaded={highest}>
+                <Pending loaded={highest} reserve={{ minHeight: 300 }}>
                   {(page) => (
                     <WorkerList rows={page.workers} none={`No worker scored ${highText} or above this ${noun}.`} />
                   )}
@@ -204,7 +205,7 @@ export function HealthCheck() {
         <Typography variant="caption" sx={{ color: DQ.textMuted }}>
           Across all workers · {periodLabel(grain, span)}
         </Typography>
-        <Pending loaded={rules}>{(found) => <TopReasons rules={found.rules} />}</Pending>
+        <Pending loaded={rules} reserve={{ minHeight: 280 }}>{(found) => <TopReasons rules={found.rules} />}</Pending>
       </Stack>
     </Box>
   );
@@ -215,23 +216,27 @@ function DailyActivity() {
   const start = span?.start ?? "";
   const days = useLoad(() => dqsApi.days(grain, start), [grain, start], !!span);
   const counted = screenings(context);
+  // A financial year is counted by week and the other grains by day, as the days route does.
+  const bucket = grain === "year" ? "week" : "day";
   return (
     <Panel sx={{ display: "flex", flexDirection: "column", gap: 1.5 }}>
-      <Pending loaded={days} empty={`No records in ${span ? periodLabel(grain, span) : "this period"}.`}>
+      <Stack direction="row" justifyContent="space-between" alignItems="baseline" flexWrap="wrap" useFlexGap spacing={1}>
+        <Heading>{bucket === "week" ? "Weekly" : "Daily"} Activity</Heading>
+        {days.state === "ok" && <Freshness loadedAt={days.value.loaded_at} coveredTo={days.value.covered_to} />}
+      </Stack>
+      <Typography variant="caption" sx={{ color: DQ.textMuted }}>
+        Screenings each {bucket} of {span ? periodLabel(grain, span) : "the period"} by visit date. Counts only; nothing here
+        is a score.
+      </Typography>
+      {/* About the chart's own shape, with its key above and the line under it. */}
+      <Pending loaded={days} reserve={{ aspectRatio: "760 / 250" }}
+        empty={`No records in ${span ? periodLabel(grain, span) : "this period"}.`}>
         {(found) => {
           const latest = latestDay(found.days);
           const shown = latest ? shownCounts(latest, counted) : null;
           const unplaced = found.days.reduce((sum, day) => sum + shownCounts(day, counted).unplaced, 0);
           return (
             <>
-              <Stack direction="row" justifyContent="space-between" alignItems="baseline" flexWrap="wrap" useFlexGap spacing={1}>
-                <Heading>{found.bucket === "week" ? "Weekly" : "Daily"} Activity</Heading>
-                <Freshness loadedAt={found.loaded_at} coveredTo={found.covered_to} />
-              </Stack>
-              <Typography variant="caption" sx={{ color: DQ.textMuted }}>
-                Screenings each {found.bucket} of {span ? periodLabel(grain, span) : "the period"} by visit date. Counts only; nothing here
-                is a score.
-              </Typography>
               <DailyBars found={found} mode="records" counted={counted} noun="screenings" />
               <Stack direction="row" spacing={4} useFlexGap flexWrap="wrap"
                 sx={{ borderTop: `1px solid ${DQ.border}`, pt: 1.5, fontSize: 13 }}>

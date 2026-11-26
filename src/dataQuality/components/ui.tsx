@@ -323,16 +323,34 @@ export function PlainSelect({
 
 // What a panel shows while its data loads, when DQS has nothing stored for the period, and
 // when the call failed.
+// What a load shows: a spinner while it is loading, the `empty` text for a 404, the error for
+// any other failure, and otherwise `children` of its value. The spinner is centred in a box
+// sized by `reserve`, which callers set to about the height of what will replace it, so that
+// the page does not jump when the value arrives.
 export function Pending<T>({
   loaded,
   empty,
+  reserve,
   children,
 }: {
   loaded: Loaded<T>;
   empty?: string;
+  reserve?: SxProps<Theme>;
   children: (value: T) => ReactNode;
 }) {
-  if (loaded.state === "loading") return <CircularProgress size={20} />;
+  if (loaded.state === "loading")
+    return (
+      <Box
+        role="status"
+        aria-label="Loading"
+        sx={[
+          { display: "flex", alignItems: "center", justifyContent: "center", width: "100%", minHeight: 48 },
+          ...(Array.isArray(reserve) ? reserve : [reserve]),
+        ]}
+      >
+        <CircularProgress size={24} sx={{ color: DQ.brand }} />
+      </Box>
+    );
   if (loaded.state === "error") {
     const error = loaded.error;
     if (error instanceof DqsError && error.status === 404)

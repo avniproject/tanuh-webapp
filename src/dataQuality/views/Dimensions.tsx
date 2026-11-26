@@ -101,11 +101,11 @@ export function Dimensions() {
   );
   if (!span) return <Typography sx={{ color: DQ.textSubtle }}>No scores are stored at this grain yet.</Typography>;
   // Waiting for the busiest taluk keeps the first taluk from showing and then being replaced.
-  if (seek && busiest.state === "loading") return <Pending loaded={busiest}>{() => null}</Pending>;
+  if (seek && busiest.state === "loading") return <Pending loaded={busiest} reserve={{ minHeight: 600 }}>{() => null}</Pending>;
   const sought = busiest.state === "ok" ? busiest.value : null;
 
   return (
-    <Pending loaded={units} empty={`No taluk scores are stored for ${periodLabel(grain, span)}.`}>
+    <Pending loaded={units} reserve={{ minHeight: 600 }} empty={`No taluk scores are stored for ${periodLabel(grain, span)}.`}>
       {(found) => {
         if (!found.units.length)
           return (
@@ -263,7 +263,7 @@ function Reasons({
           ))}
         </Stack>
         <Box sx={{ pb: 1 }}>
-          <Pending loaded={found}>
+          <Pending loaded={found} reserve={{ minHeight: 336 }}>
             {({ rules }) =>
               !rules.length ? (
                 <Typography variant="body2" sx={{ color: DQ.textSubtle, px: 2, pb: 2 }}>No rules in this dimension.</Typography>
@@ -337,7 +337,7 @@ function RuleWorkers({ rule, unit }: { rule: RuleFailures; unit: UnitRow }) {
         <Box component="span" sx={{ color: DQ.textSubtle, fontSize: 12 }}>· {shortId(rule.rule_id)} · {taluk}</Box>
       </Typography>
       {infos[rule.rule_id]?.kind !== "batch" && <RuleDays rule={rule} unit={unit} noun={noun} />}
-      <Pending loaded={found}>
+      <Pending loaded={found} reserve={{ minHeight: 360 }}>
         {(page) => {
           const affected = page.workers;
           const total = affected.reduce((sum, one) => sum + one.n_violations, 0);
@@ -433,7 +433,7 @@ function RuleDays({ rule, unit, noun }: { rule: RuleFailures; unit: UnitRow; nou
       <Typography variant="body2" sx={{ fontWeight: 500, mb: 1 }}>
         Failures by {grain === "year" ? "Week" : "Day"}
       </Typography>
-      <Pending loaded={days} empty={`No ${noun} in this period.`}>
+      <Pending loaded={days} reserve={{ aspectRatio: "760 / 170" }} empty={`No ${noun} in this period.`}>
         {(found) => <DailyBars found={found} mode="rule" noun={noun} height={140} />}
       </Pending>
     </Box>

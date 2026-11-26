@@ -140,7 +140,7 @@ export function Workers() {
               />
             ))}
           </Stack>
-          <Pending loaded={rows} empty={`No worker scores are stored for ${periodLabel(grain, span)}.`}>
+          <Pending loaded={rows} reserve={{ minHeight: 560 }} empty={`No worker scores are stored for ${periodLabel(grain, span)}.`}>
             {(found) => (
               <>
                 <Box sx={{ overflowX: "auto" }}>
@@ -289,7 +289,7 @@ function Profile({ workerId, group }: { workerId: string; group: string | null }
         {tag("Last Activity", last ? periodShort(grain, last) : "—")}
         <StatusPill status={insufficient ? "ins" : scored?.trend ? STATUS_KEY[scored.trend] : null} />
       </Stack>
-      <Pending loaded={period} empty={`No records in ${periodLabel(grain, span!)}.`}>
+      <Pending loaded={period} reserve={{ minHeight: 420 }} empty={`No records in ${periodLabel(grain, span!)}.`}>
         {() =>
           scored ? (
             <>
@@ -336,13 +336,13 @@ function Profile({ workerId, group }: { workerId: string; group: string | null }
         <Typography variant="body2" sx={{ fontWeight: 500, mb: 1 }}>
           Screenings Each {grain === "year" ? "Week" : "Day"} This {PERIOD_NOUN[grain]}
         </Typography>
-        <Pending loaded={days} empty={`No records in ${periodLabel(grain, span!)}.`}>
+        <Pending loaded={days} reserve={{ minHeight: 130 }} empty={`No records in ${periodLabel(grain, span!)}.`}>
           {(found) => <DayStrip found={found} counted={screenings(context)} noun="screenings" />}
         </Pending>
       </Box>
       <Box sx={{ bgcolor: DQ.surfaceSubtle, border: `1px solid ${DQ.border}`, borderRadius: 1, p: 2 }}>
         <Typography variant="body2" sx={{ fontWeight: 500, mb: 0.5 }}>DQ Score Over Time</Typography>
-        <Pending loaded={history} empty="No scored periods.">
+        <Pending loaded={history} reserve={{ aspectRatio: "380 / 190" }} empty="No scored periods.">
           {() => (
             <LineChart
               settings={context.settings}
