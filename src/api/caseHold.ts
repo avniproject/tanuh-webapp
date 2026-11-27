@@ -319,6 +319,9 @@ export async function takeCase(row: QueueRow, viewer: string, now: Date = server
   }
 
   const screening = row.screening;
+  // The queue can be minutes old (PE-304), so the screening is read again: one deleted since, or gone, is not taken.
+  const latest = await readReview(screening.ID);
+  if (!latest || latest.Voided || !latest["Encounter date time"]) return { refused: "gone" };
   const stamp = { [REVIEWED_ORAL_SCREENING_CONCEPT.name]: screening.ID };
   const uuid = await reviewUuidFor(screening.ID);
   let current = await readReview(uuid);

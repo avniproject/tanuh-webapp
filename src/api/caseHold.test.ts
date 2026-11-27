@@ -239,7 +239,7 @@ function fakeServer(reviews: EncounterApiResponse[], visits: EncounterApiRespons
   get.mockImplementation((url: string, config?: { params?: { encounterType?: string } }) => {
     const one = /^\/api\/(encounter|programEncounter)\/(.+)$/.exec(url);
     if (one) {
-      const r = store.get(one[2]);
+      const r = store.get(one[2]) ?? visits.find((v) => v.ID === one[2]);
       if (!r || !!r["Enrolment ID"] !== (one[1] === "programEncounter")) return Promise.reject(notFound());
       return reply(copy(r));
     }
@@ -376,6 +376,23 @@ describe("takeCase and releaseCase", () => {
     fakeServer([]);
     expect(await takeCase(bookedRow, "dr.a", t0)).toEqual({ refused: "gone" });
     expect(patch).not.toHaveBeenCalled();
+  });
+
+  // PE-304: a press can take from a queue read minutes earlier, so the screening is read again before anything is written.
+  it("refuses, and writes nothing, a screening deleted since the queue was read", async () => {
+    fakeServer([], [{ ...screening, Voided: true }]);
+    expect(await takeCase(screeningRow, "dr.a", t0)).toEqual({ refused: "gone" });
+    expect(post).not.toHaveBeenCalled();
+    expect(patch).not.toHaveBeenCalled();
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it("refuses, and writes nothing, a screening that is no longer there", async () => {
+    fakeServer([], []);
+    expect(await takeCase(screeningRow, "dr.a", t0)).toEqual({ refused: "gone" });
+    expect(post).not.toHaveBeenCalled();
+    expect(patch).not.toHaveBeenCalled();
+    expect(put).not.toHaveBeenCalled();
   });
 
   it("an unbooked take whose derived review is a 404 sends the web POST, then the PATCH with the stamp", async () => {
