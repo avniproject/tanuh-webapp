@@ -1,7 +1,17 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
-const { get } = vi.hoisted(() => ({ get: vi.fn() }));
+const { get, idb } = vi.hoisted(() => ({ get: vi.fn(), idb: new Map<string, unknown>() }));
 vi.mock("@/auth/httpClient", () => ({ http: { get: (...args: unknown[]) => get(...args) } }));
+// The browser's store, in memory. No test reaches it without a signed-in scope (bindEncounterCacheScope).
+vi.mock("./idbStore", () => ({
+  idbGet: async (key: string) => structuredClone(idb.get(key)),
+  idbSet: async (key: string, value: unknown) => void idb.set(key, structuredClone(value)),
+  idbDel: async (key: string) => void idb.delete(key),
+  idbUpdate: async (key: string, next: (current: unknown) => unknown) => {
+    const value = next(structuredClone(idb.get(key)));
+    if (value !== undefined) idb.set(key, structuredClone(value));
+  },
+}));
 import type { EncounterApiResponse } from "./types";
 import { trimForCache } from "./encounters";
 import {
@@ -85,13 +95,18 @@ describe("trimForCache", () => {
 });
 
 import {
+  CACHE_SCHEMA,
+  bindEncounterCacheScope,
+  clearEncounterCacheScope,
   fetchEncountersSince,
   getCachedEncounters,
   invalidateCachedEncounters,
+  keepNewerStored,
   refreshStoredEncounters,
   type CachedEncounters,
   type EncounterLister,
 } from "./encounters";
+import type { MeResponse } from "@/auth/authContext";
 
 // The server's list, in memory: changed strictly after lastModifiedDateTime and strictly before now,
 // ordered by (time, id), offset pages counted from 0.
@@ -233,6 +248,74 @@ describe("saving the stored copy as its read goes", () => {
     expect(saves).toHaveLength(1);
     expect(saves[0].watermark).toBe(few[149].at);
     expect(saves[0].records).toHaveLength(150);
+  });
+});
+
+// PE-304: on Tanuh UAT a tab whose read started from an older stored copy saved it over a newer one, moving the copy
+// back two and a half days, so the next page caught up all of those changes.
+describe("keepNewerStored", () => {
+  const copy = (watermark: string, schema = CACHE_SCHEMA): CachedEncounters => ({ schema, watermark, records: [] });
+
+  it("keeps a stored copy that has read further than the one being saved", () => {
+    expect(keepNewerStored(copy("2026-11-27T11:00:00.000Z"), copy("2026-11-24T20:00:00.000Z"))).toBeUndefined();
+  });
+
+  it("saves a copy that has read further, or as far", () => {
+    const next = copy("2026-11-27T11:00:00.000Z");
+    expect(keepNewerStored(copy("2026-11-24T20:00:00.000Z"), next)).toBe(next);
+    expect(keepNewerStored(copy("2026-11-27T11:00:00.000Z"), next)).toBe(next);
+  });
+
+  it("saves over nothing, and over a copy of another schema", () => {
+    const next = copy("2026-11-24T20:00:00.000Z");
+    expect(keepNewerStored(undefined, next)).toBe(next);
+    expect(keepNewerStored(copy("2026-11-27T11:00:00.000Z", CACHE_SCHEMA - 1), next)).toBe(next);
+  });
+});
+
+describe("saving the stored copy from two tabs", () => {
+  const key = "enc-cache:v2:1:u1:Oral Screening";
+  const at = (hour: number) => new Date(Date.UTC(2026, 10, 27, hour)).toISOString();
+  const row = (id: string, hour: number) => ({ ID: id, audit: { "Last modified at": at(hour) } });
+  const page = (rows: unknown[]) => ({ data: { content: rows, totalElements: rows.length, totalPages: 1, pageSize: 100 } });
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const older: CachedEncounters = { schema: CACHE_SCHEMA, watermark: at(1), records: [row("a", 1)] as never };
+  const newer: CachedEncounters = {
+    schema: CACHE_SCHEMA,
+    watermark: at(5),
+    records: [row("a", 1), row("b", 2), row("c", 5)] as never,
+  };
+
+  beforeEach(() => {
+    idb.clear();
+    get.mockReset();
+    bindEncounterCacheScope({ organisationId: 1, userUUID: "u1" } as unknown as MeResponse);
+    invalidateCachedEncounters();
+  });
+  afterEach(() => {
+    clearEncounterCacheScope();
+  });
+
+  it("a read that started from an older copy does not save over a newer one another tab saved meanwhile", async () => {
+    idb.set(key, older);
+    get.mockImplementation((url: string) => {
+      if (url !== "/api/encounters") return Promise.resolve(page([]));
+      idb.set(key, newer); // the other tab saves while this read runs
+      return Promise.resolve(page([row("b", 2)]));
+    });
+    await getCachedEncounters("Oral Screening");
+    await flush();
+    expect((idb.get(key) as CachedEncounters).watermark).toBe(newer.watermark);
+    expect((idb.get(key) as CachedEncounters).records).toHaveLength(3);
+  });
+
+  it("a read that has read further saves its copy", async () => {
+    idb.set(key, older);
+    get.mockImplementation((url: string) => Promise.resolve(page(url === "/api/encounters" ? [row("b", 2)] : [])));
+    await getCachedEncounters("Oral Screening");
+    await flush();
+    expect((idb.get(key) as CachedEncounters).watermark).toBe(at(2));
+    expect((idb.get(key) as CachedEncounters).records.map((r) => r.ID).sort()).toEqual(["a", "b"]);
   });
 });
 

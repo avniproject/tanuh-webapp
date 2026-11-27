@@ -29,7 +29,7 @@ import {
 } from "@/constants/tanuhConcepts";
 import { deriveEdgeVerdict, deriveFlwPositive, type EdgeVerdict } from "./caseSignals";
 import { getConcept, resetConceptCache } from "./concepts";
-import { idbDel, idbGet, idbSet } from "./idbStore";
+import { idbDel, idbGet, idbUpdate } from "./idbStore";
 import { buildScheduledVisitRequest, type ScheduleEncounterBody } from "./scheduledVisit";
 import type { EncounterApiResponse, PagedResponse } from "./types";
 import type { MeResponse } from "@/auth/authContext";
@@ -402,7 +402,7 @@ export function sweepProgramEncounters(encounterType: string): Promise<Encounter
 // persisted rows and the watermark, so the next load is one cold full sweep — the
 // intended migration.
 // ---------------------------------------------------------------------------
-const CACHE_SCHEMA = 5;
+export const CACHE_SCHEMA = 5;
 const CACHED_OBS_REFS = [
   ENCOUNTER_ID_CONCEPT,
   REVIEWED_ORAL_SCREENING_CONCEPT,
@@ -645,8 +645,19 @@ async function cachedFromSource(source: EncounterSource, encounterType: string):
   return refreshStoredEncounters(
     cached,
     (p) => listFromSource(source, { encounterType, ...p }),
-    key ? (next) => void idbSet(key, next) : noop,
+    key ? (next) => void idbUpdate<CachedEncounters>(key, (current) => keepNewerStored(current, next)) : noop,
   );
+}
+
+/**
+ * What a save leaves stored (PE-304): every tab of the app saves the same stored copy, so a tab whose read started from
+ * an older copy would save it over a newer one, and the next page would catch up every change since (on Tanuh UAT, two
+ * and a half days). A copy that has read further, of the same schema, is kept: undefined writes nothing. Each copy holds
+ * every change up to its watermark, so keeping the newer loses nothing.
+ */
+export function keepNewerStored(current: CachedEncounters | undefined, next: CachedEncounters): CachedEncounters | undefined {
+  if (current?.schema === next.schema && Date.parse(current.watermark) > Date.parse(next.watermark)) return undefined;
+  return next;
 }
 
 // The stored rows with the rows just read laid over them. The watermark is the one given, at a checkpoint, else the

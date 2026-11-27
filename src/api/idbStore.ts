@@ -84,3 +84,26 @@ export async function idbDel(key: string): Promise<void> {
     }
   });
 }
+
+// Reads the value and writes what `next` makes of it in one readwrite transaction, so another tab cannot write between
+// the read and the write. `next` runs synchronously inside the transaction and returns undefined to write nothing.
+export async function idbUpdate<T>(key: string, next: (current: T | undefined) => T | undefined): Promise<void> {
+  const db = await openDb();
+  if (!db) return;
+  return new Promise((resolve) => {
+    try {
+      const tx = db.transaction(STORE, "readwrite");
+      const store = tx.objectStore(STORE);
+      const req = store.get(key);
+      req.onsuccess = () => {
+        const value = next(req.result as T | undefined);
+        if (value !== undefined) store.put(value, key);
+      };
+      tx.oncomplete = () => resolve();
+      tx.onerror = () => resolve();
+      tx.onabort = () => resolve();
+    } catch {
+      resolve();
+    }
+  });
+}
