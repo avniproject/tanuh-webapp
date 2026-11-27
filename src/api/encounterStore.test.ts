@@ -1,4 +1,7 @@
-import { describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+
+const { get } = vi.hoisted(() => ({ get: vi.fn() }));
+vi.mock("@/auth/httpClient", () => ({ http: { get: (...args: unknown[]) => get(...args) } }));
 import type { EncounterApiResponse } from "./types";
 import { trimForCache } from "./encounters";
 import {
@@ -81,7 +84,14 @@ describe("trimForCache", () => {
   });
 });
 
-import { fetchEncountersSince, type EncounterLister } from "./encounters";
+import {
+  fetchEncountersSince,
+  getCachedEncounters,
+  invalidateCachedEncounters,
+  refreshStoredEncounters,
+  type CachedEncounters,
+  type EncounterLister,
+} from "./encounters";
 
 // The server's list, in memory: changed strictly after lastModifiedDateTime and strictly before now,
 // ordered by (time, id), offset pages counted from 0.
@@ -172,5 +182,121 @@ describe("fetchEncountersSince", () => {
 
     expect(server.requests()).toBe(3);
     expect(fetched.length).toBeGreaterThan(0);
+  });
+});
+
+// PE-304: on Tanuh UAT a first read of the stored copy took over nine minutes, and a reload threw it all away, since the
+// copy was saved only when the read ended.
+describe("saving the stored copy as its read goes", () => {
+  // 4,500 rows one second apart.
+  const rowAt = (i: number) => new Date(Date.UTC(2026, 9, 7) + i * 1000);
+  const rows = () => Array.from({ length: 4500 }, (_, i) => ({ ID: `s${String(i).padStart(4, "0")}`, at: rowAt(i).toISOString() }));
+
+  it("hands over what it has read every 20 requests", async () => {
+    const handed: { count: number; watermark: string }[] = [];
+    await fetchEncountersSince(serverWith(rows()).list, "2000-01-01T00:00:00.000Z", 100, 200, (read, watermark) =>
+      handed.push({ count: read.length, watermark }),
+    );
+    // Each request after the first reads the previous page's last row again.
+    expect(handed).toEqual([
+      { count: 1981, watermark: new Date(rowAt(1980).getTime() - 1).toISOString() },
+      { count: 3961, watermark: new Date(rowAt(3960).getTime() - 1).toISOString() },
+    ]);
+  });
+
+  it("keeps the rows read before a failure, and the next load carries on from there", async () => {
+    const all = rows();
+    const saves: CachedEncounters[] = [];
+    const save = (next: CachedEncounters) => saves.push(next);
+    const failing = serverWith(all, (n) => {
+      if (n === 25) throw new Error("reload");
+    });
+    await expect(refreshStoredEncounters(undefined, failing.list, save)).rejects.toThrow("reload");
+    const kept = saves[saves.length - 1];
+    expect(kept.records).toHaveLength(1981);
+
+    const asked: string[] = [];
+    const working: EncounterLister = (p) => {
+      asked.push(p.lastModifiedDateTime);
+      return serverWith(all).list(p);
+    };
+    const records = await refreshStoredEncounters(kept, working, save);
+    expect(asked[0]).toBe(new Date(Date.parse(kept.watermark) - 5 * 60 * 1000).toISOString());
+    expect(records).toHaveLength(4500);
+    expect(new Set(records.map((r) => r.ID)).size).toBe(4500);
+  });
+
+  it("saves at the end as before", async () => {
+    const few = rows().slice(0, 150);
+    const saves: CachedEncounters[] = [];
+    await refreshStoredEncounters(undefined, serverWith(few).list, (next) => saves.push(next));
+    expect(saves).toHaveLength(1);
+    expect(saves[0].watermark).toBe(few[149].at);
+    expect(saves[0].records).toHaveLength(150);
+  });
+});
+
+// PE-304: a press, a release or a tab change dropped a read still running and started another beside it, so on Tanuh
+// UAT two reads of 20,000 screenings ran at once.
+describe("getCachedEncounters", () => {
+  const empty = { data: { content: [], totalElements: 0, totalPages: 0, pageSize: 100 } };
+  let answer: (() => void)[] = [];
+  const flush = () => new Promise((resolve) => setTimeout(resolve, 0));
+  const answerAll = () => {
+    const now = answer;
+    answer = [];
+    now.forEach((a) => a());
+  };
+
+  beforeEach(() => {
+    answer = [];
+    get.mockReset();
+    get.mockImplementation(() => new Promise((resolve) => answer.push(() => resolve(empty))));
+    invalidateCachedEncounters();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it("a call during a running read joins it, however long the read has run", async () => {
+    vi.useFakeTimers();
+    const first = getCachedEncounters("Oral Screening");
+    await vi.advanceTimersByTimeAsync(90_000);
+    const second = getCachedEncounters("Oral Screening");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(get).toHaveBeenCalledTimes(2); // one request for each source
+    answerAll();
+    expect(await second).toBe(await first);
+  });
+
+  it("an invalidate during a running read reads the changes once it ends", async () => {
+    const first = getCachedEncounters("Oral Screening");
+    await flush();
+    invalidateCachedEncounters();
+    const second = getCachedEncounters("Oral Screening");
+    await flush();
+    expect(get).toHaveBeenCalledTimes(2);
+    answerAll();
+    await first;
+    await flush();
+    expect(get).toHaveBeenCalledTimes(4);
+    answerAll();
+    await second;
+  });
+
+  it("reuses a finished read for 60 seconds after it ends, however long it ran", async () => {
+    vi.useFakeTimers();
+    const first = getCachedEncounters("Oral Screening");
+    await vi.advanceTimersByTimeAsync(90_000);
+    answerAll();
+    await first;
+    await vi.advanceTimersByTimeAsync(30_000);
+    getCachedEncounters("Oral Screening");
+    expect(get).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(31_000);
+    getCachedEncounters("Oral Screening");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(get).toHaveBeenCalledTimes(4);
+    answerAll();
   });
 });

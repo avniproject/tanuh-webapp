@@ -52,7 +52,7 @@ interface ListParams {
   // observation — for a single-select Coded concept that is the answer
   // concept's uuid, not its display name.
   concepts?: Record<string, string>;
-  // Lower bound of the server's lastModified window (inclusive). Defaults to
+  // Lower bound of the server's lastModified window (rows changed strictly after it). Defaults to
   // EPOCH (everything). The delta cache passes its watermark here to fetch only
   // rows changed since the last sweep.
   lastModifiedDateTime?: string;
@@ -381,8 +381,8 @@ export function sweepProgramEncounters(encounterType: string): Promise<Encounter
 // window) and merge. First load is a full sweep (cold cache); every load after
 // transfers only the delta.
 //
-// Correctness: the server filters `last_modified_date_time BETWEEN from AND to`
-// (inclusive) ordered oldest-first, so re-requesting from the stored watermark
+// Correctness: the server takes rows with `last_modified_date_time` strictly after
+// from and strictly before to, ordered oldest-first, so re-requesting from the stored watermark
 // (minus a small overlap) and upserting by ID cannot drop a row that ties on a
 // timestamp boundary. Voids arrive in the delta as Voided=true and upsert over
 // the cached copy; the pairing consumers already filter voided. Hard deletes
@@ -423,6 +423,8 @@ const CACHED_OBS_REFS = [
   QC_STATUS_CONCEPT,
 ] as const;
 const CACHE_OVERLAP_MS = 5 * 60 * 1000;
+// A long read hands over what it has read every this many requests, so it is saved as it goes (PE-304).
+const CHECKPOINT_EVERY = 20;
 const CACHE_COLD_PAGE_CAP = 200; // ~20k rows; one-time cold-start guard
 const CACHE_PAGE_SIZE = 100;
 // The persisted rows belong to whoever fetched them. Both Tanuh orgs sit on the
@@ -458,7 +460,7 @@ export function clearEncounterCacheScope(): void {
   resetConceptCache();
 }
 
-interface CachedEncounters {
+export interface CachedEncounters {
   schema: number;
   watermark: string; // max "Last modified at" seen so far, ISO
   records: CachedEncounter[];
@@ -520,6 +522,7 @@ export async function fetchEncountersSince(
   since: string,
   pageSize: number = CACHE_PAGE_SIZE,
   requestCap: number = CACHE_COLD_PAGE_CAP,
+  onCheckpoint?: (rows: EncounterApiResponse[], watermark: string) => void,
 ): Promise<EncounterApiResponse[]> {
   const fetched = new Map<string, EncounterApiResponse>();
   const read = async (p: { lastModifiedDateTime: string; now?: string; page: number }) => {
@@ -553,16 +556,27 @@ export async function fetchEncountersSince(
     const next = new Date(lastMs - 1).toISOString();
     if (next !== from) {
       from = next;
-      continue;
+    } else {
+      // The whole page shares one millisecond: read all of it on its own, then move past it.
+      await readMillisecond(lastMs);
+      from = new Date(lastMs).toISOString();
     }
-    // The whole page shares one millisecond: read all of it on its own, then move past it.
-    await readMillisecond(lastMs);
-    from = new Date(lastMs).toISOString();
+    // Every row changed at or before `from` has been read: the next request asks for those changed after it.
+    if ((requests + 1) % CHECKPOINT_EVERY === 0) onCheckpoint?.([...fetched.values()], from);
   }
   return [...fetched.values()];
 }
 
-const cachedLayerMemo = new Map<string, { at: number; promise: Promise<CachedEncounter[]> }>();
+// One read per type. A read still running is never dropped or expired: a call during it joins it (PE-304: a press, a
+// release or a tab change used to start a second read of 20,000 screenings beside the first). A finished read is
+// reused for SWEEP_TTL_MS after it ends. `stale` marks a read invalidated since it started; the next call reads the
+// changes again, after it ends when it is still running.
+interface CachedLayer {
+  promise: Promise<CachedEncounter[]>;
+  settledAt: number | null;
+  stale: boolean;
+}
+const cachedLayerMemo = new Map<string, CachedLayer>();
 
 /**
  * Warm-cache + delta replacement for `sweepEncounters(type)` (unfiltered). Reads
@@ -573,14 +587,26 @@ const cachedLayerMemo = new Map<string, { at: number; promise: Promise<CachedEnc
  */
 export function getCachedEncounters(encounterType: string): Promise<CachedEncounter[]> {
   const memo = cachedLayerMemo.get(encounterType);
-  if (memo && Date.now() - memo.at < SWEEP_TTL_MS) return memo.promise;
-  const promise = Promise.all(SOURCES.map((source) => cachedFromSource(source, encounterType))).then((parts) =>
-    parts.flat(),
+  const running = memo?.settledAt === null;
+  if (memo && !memo.stale && (running || Date.now() - (memo.settledAt ?? 0) < SWEEP_TTL_MS)) return memo.promise;
+  const after = memo && running ? memo.promise.then(noop, noop) : Promise.resolve();
+  const layer: CachedLayer = { settledAt: null, stale: false, promise: Promise.resolve([]) };
+  layer.promise = after
+    .then(() => Promise.all(SOURCES.map((source) => cachedFromSource(source, encounterType))))
+    .then((parts) => parts.flat());
+  layer.promise.then(
+    () => {
+      layer.settledAt = Date.now();
+    },
+    () => {
+      if (cachedLayerMemo.get(encounterType) === layer) cachedLayerMemo.delete(encounterType);
+    },
   );
-  cachedLayerMemo.set(encounterType, { at: Date.now(), promise });
-  promise.catch(() => cachedLayerMemo.delete(encounterType));
-  return promise;
+  cachedLayerMemo.set(encounterType, layer);
+  return layer.promise;
 }
+
+const noop = () => {};
 
 // One source's persisted set + delta. The two sources are separate tables with
 // their own lastModified order, so each keeps its own key and watermark. The
@@ -596,11 +622,16 @@ async function cachedFromSource(source: EncounterSource, encounterType: string):
     // first scoped load in this browser: retire the unscoped v1 store
     if (key && source === "standalone") void idbDel(`${LEGACY_CACHE_KEY_PREFIX}:${encounterType}`);
   }
-  const since =
-    cached.watermark === EPOCH
-      ? EPOCH
-      : new Date(Date.parse(cached.watermark) - CACHE_OVERLAP_MS).toISOString();
-  const fresh = await fetchEncountersSince((p) => listFromSource(source, { encounterType, ...p }), since);
+  return refreshStoredEncounters(
+    cached,
+    (p) => listFromSource(source, { encounterType, ...p }),
+    key ? (next) => void idbSet(key, next) : noop,
+  );
+}
+
+// The stored rows with the rows just read laid over them. The watermark is the one given, at a checkpoint, else the
+// latest change seen.
+function mergeStored(cached: CachedEncounters, fresh: EncounterApiResponse[], watermark?: string): CachedEncounters {
   const byId = new Map(cached.records.map((r) => [r.ID, r]));
   let maxLm = Date.parse(cached.watermark);
   for (const e of fresh) {
@@ -608,21 +639,41 @@ async function cachedFromSource(source: EncounterSource, encounterType: string):
     const lm = Date.parse(e.audit?.["Last modified at"] ?? "");
     if (!Number.isNaN(lm) && lm > maxLm) maxLm = lm;
   }
-  const records = [...byId.values()];
-  const next: CachedEncounters = {
+  return {
     schema: CACHE_SCHEMA,
-    watermark: Number.isNaN(maxLm) ? EPOCH : new Date(maxLm).toISOString(),
-    records,
+    watermark: watermark ?? (Number.isNaN(maxLm) ? EPOCH : new Date(maxLm).toISOString()),
+    records: [...byId.values()],
   };
-  if (key) void idbSet(key, next);
-  return records;
+}
+
+/**
+ * The stored set topped up with the rows changed since its watermark (less the overlap), or read from the start when
+ * there is none. Saved as the read goes, every CHECKPOINT_EVERY requests, and at the end, so a read cut short by a
+ * reload or a failure carries on from its last save next time (PE-304).
+ */
+export async function refreshStoredEncounters(
+  stored: CachedEncounters | undefined,
+  list: EncounterLister,
+  save: (next: CachedEncounters) => void,
+): Promise<CachedEncounter[]> {
+  const cached = stored ?? { schema: CACHE_SCHEMA, watermark: EPOCH, records: [] };
+  const since =
+    cached.watermark === EPOCH
+      ? EPOCH
+      : new Date(Date.parse(cached.watermark) - CACHE_OVERLAP_MS).toISOString();
+  const fresh = await fetchEncountersSince(list, since, CACHE_PAGE_SIZE, CACHE_COLD_PAGE_CAP, (read, watermark) =>
+    save(mergeStored(cached, read, watermark)),
+  );
+  const next = mergeStored(cached, fresh);
+  save(next);
+  return next.records;
 }
 
 // Drop the in-memory memo so the next getCachedEncounters call issues a fresh
 // delta fetch (e.g. right after a review submit). The persistent store is kept —
 // the delta picks up the just-written row via its bumped lastModified.
 export function invalidateCachedEncounters(): void {
-  cachedLayerMemo.clear();
+  for (const layer of cachedLayerMemo.values()) layer.stale = true;
 }
 
 /**
