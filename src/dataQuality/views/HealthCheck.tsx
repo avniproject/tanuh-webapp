@@ -7,8 +7,9 @@
 // band, from the units route, and its workers from the workers route; selecting a taluk opens
 // the Workers view filtered to it. The list is the five lowest and five highest DQ scores.
 //
-// The KPIs, the two lists and the map's workers all come from one read of the period's workers
-// from DQS's workers route; the KPIs are its counts for the period and the one before it.
+// The KPIs and the map's workers come from one read of the period's workers from DQS's workers
+// route; the KPIs are its counts for the period and the one before it. The two lists are read
+// with the route's band and order filters, which see every worker however many there are.
 // The daily activity is DQS's days route, counting screenings, which is what Records Assessed
 // counts in practice: a worker's busiest record type other than the photos.
 // The lowest and highest lists are the first five Low-band workers in ascending TrustIndex and
@@ -61,7 +62,7 @@ import {
   place,
 } from "../format";
 import { useGo } from "../navigation";
-import { banded, workerLink } from "../rows";
+import { workerLink } from "../rows";
 import { useDashboard, useLoad, useParam, useSetParams } from "../state";
 import type { Loaded } from "../state";
 import { DQ } from "../tokens";
@@ -71,6 +72,16 @@ export function HealthCheck() {
   const go = useGo();
   const start = span?.start ?? "";
   const everyone = useLoad(() => dqsApi.workers(grain, start, { pageSize: MAX_PAGE_SIZE }), [grain, start], !!span);
+  const lowest = useLoad(
+    () => dqsApi.workers(grain, start, { band: "low", order: "trust_asc", pageSize: 5 }),
+    [grain, start],
+    !!span,
+  );
+  const highest = useLoad(
+    () => dqsApi.workers(grain, start, { band: "high", order: "trust_desc", pageSize: 5 }),
+    [grain, start],
+    !!span,
+  );
   const rules = useLoad(() => dqsApi.rules(grain, start), [grain, start], !!span);
   const layout = useParam("layout") === "list" ? "list" : "map";
   const setParams = useSetParams();
@@ -164,18 +175,16 @@ export function HealthCheck() {
             >
               <Box>
                 <Typography sx={{ fontWeight: 500, color: DQ.danger, mb: 2 }}>Workers with Lowest Score</Typography>
-                <Pending loaded={everyone} reserve={{ minHeight: 300 }}>
-                  {(page) => (
-                    <WorkerList rows={banded(page.workers, "low", 5)} none={`No worker scored below ${lowText} this ${noun}.`} />
-                  )}
+                <Pending loaded={lowest} reserve={{ minHeight: 300 }}>
+                  {(page) => <WorkerList rows={page.workers} none={`No worker scored below ${lowText} this ${noun}.`} />}
                 </Pending>
               </Box>
               <Divider orientation="vertical" sx={{ display: { xs: "none", md: "block" } }} />
               <Box>
                 <Typography sx={{ fontWeight: 500, color: DQ.successText, mb: 2 }}>Workers with Highest Score</Typography>
-                <Pending loaded={everyone} reserve={{ minHeight: 300 }}>
+                <Pending loaded={highest} reserve={{ minHeight: 300 }}>
                   {(page) => (
-                    <WorkerList rows={banded(page.workers, "high", 5)} none={`No worker scored ${highText} or above this ${noun}.`} />
+                    <WorkerList rows={page.workers} none={`No worker scored ${highText} or above this ${noun}.`} />
                   )}
                 </Pending>
               </Box>

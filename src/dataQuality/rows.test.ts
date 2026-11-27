@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
-import type { HistoryPoint, RuleInfo, RuleWorker, RuleWorkersPage, WorkerPeriod, WorkerRow } from "./api/types";
+import type { HistoryPoint, RuleInfo, RuleWorker, RuleWorkersPage, WorkerPeriod } from "./api/types";
 import { checkedNoun } from "./format";
-import { banded, busiestTaluk, historyOf, periodOf } from "./rows";
+import { busiestTaluk, historyOf, periodOf } from "./rows";
 
 const NO_GATES = { quality: null, fabrication_suspicion: null, provenance_confidence: null, sufficiency: null, trust: null };
 
@@ -110,17 +110,5 @@ describe("checkedNoun", () => {
     expect(checkedNoun(rule(["oral_screening", "oral_image"]), "oral_image")).toBe("records");
     expect(checkedNoun(rule(["oral_image"]), null)).toBe("records");
     expect(checkedNoun(undefined, "oral_image")).toBe("records");
-  });
-});
-
-describe("banded", () => {
-  const row = (worker_id: string, band: "high" | "mid" | "low" | null, score = 50) =>
-    ({ worker_id, trust: band ? { band, score } : null }) as unknown as WorkerRow;
-
-  it("keeps one band, lowest first for Low and highest first for High, in DQS's order on a tie", () => {
-    const rows = [row("a", "low", 40), row("b", "high", 90), row("c", "low", 20), row("d", "low", 40), row("e", null), row("f", "high", 95)];
-    expect(banded(rows, "low", 5).map((one) => one.worker_id)).toEqual(["c", "a", "d"]);
-    expect(banded(rows, "high", 5).map((one) => one.worker_id)).toEqual(["f", "b"]);
-    expect(banded(rows, "low", 2).map((one) => one.worker_id)).toEqual(["c", "a"]);
   });
 });
