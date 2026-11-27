@@ -49,6 +49,9 @@ import {
   refreshPendingQueue,
   refreshQueue,
   startQueueRefresh,
+  PRESS_BASE_MAX_AGE_MS,
+  queueForPress,
+  takeFromQueue,
   takeNextFromQueue,
   type PendingQueue,
   type RefreshGate,
@@ -92,6 +95,25 @@ const program = (rows: EncounterWithLocation[], unchecked: string[] = []) => ({ 
 
 // The physician covers district d1 (top) and its village v1. `inPlaces` is what the server's lookup places in d1; the
 // lookup rules out every other screening when `complete`, and leaves it unsettled otherwise.
+// A review of patient `p` written at `minute`, open unless `done`.
+const reviewOf = (id: string, p: string, minute: number, obs: Record<string, unknown>, done = false): CachedEncounter =>
+  ({
+    ID: id,
+    "Subject ID": p,
+    Voided: false,
+    "Encounter type": "Clinician Review Form",
+    "Encounter date time": done ? at(minute) : null,
+    "Cancel date time": null,
+    "Earliest scheduled date": at(0),
+    observations: obs,
+    audit: { "Created at": at(minute), "Last modified at": at(minute) },
+  }) as unknown as CachedEncounter;
+const takenBy = (screeningId: string, by: string, minute: number) => ({
+  [REVIEWED_ORAL_SCREENING_CONCEPT.name]: screeningId,
+  [IN_REVIEW_BY_CONCEPT.name]: by,
+  [IN_REVIEW_SINCE_CONCEPT.name]: at(minute),
+});
+
 function given({
   tops = ["d1"],
   booked = [] as EncounterWithLocation[],
@@ -271,6 +293,212 @@ describe("takeNextFromQueue", () => {
     given();
     m.getCatchment.mockRejectedValue(new Error("places unreadable"));
     await expect(takeNextFromQueue("dr.a", vi.fn())).rejects.toThrow("places unreadable");
+  });
+
+  // PE-304: Complete and review next case no longer waits for the organisation's changed screenings.
+  it("takes from a queue loaded in the last ten minutes without waiting for the screenings", async () => {
+    given({
+      screenings: [screening("sNew", "p1", 5), screening("sOld", "p2", 1)],
+      patients: new Map([
+        ["p1", patient("p1", "v1")],
+        ["p2", patient("p2", "v1")],
+      ]),
+      inPlaces: ["sNew", "sOld"],
+    });
+    await loadPendingQueue("dr.a");
+    m.getCachedEncounters.mockImplementation((type: string) =>
+      type === "Oral Screening" ? new Promise(() => {}) : Promise.resolve([]),
+    );
+    const take = vi.fn().mockResolvedValue({ reviewUuid: "r-old" });
+    expect(await takeNextFromQueue("dr.a", take)).toBe("r-old");
+    expect(queueRowKey(take.mock.calls[0][0] as QueueRow)).toBe("sOld");
+  });
+});
+
+// PE-304: a press takes from the queue loaded in the last ten minutes, rebuilt from fresh reviews, and reads the whole
+// queue again in the background for the next press.
+describe("queueForPress", () => {
+  const LOAD = new Date(Date.UTC(2026, 10, 23, 9, 30));
+  let warn: ReturnType<typeof vi.spyOn>;
+  beforeEach(() => {
+    Object.values(m).forEach((f) => f.mockReset());
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(LOAD);
+    warn = vi.spyOn(console, "warn").mockImplementation(() => {});
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+    warn.mockRestore();
+  });
+
+  const never = () => new Promise<never>(() => {});
+  const atLoad = [screening("sA", "pA", 1), screening("sB", "pB", 2)];
+  const later = [...atLoad, screening("sNew", "pNew", 3)];
+  // sA and sB are in the store at the load; sNew arrives later. All three lie in the physician's places.
+  const world = () =>
+    given({
+      screenings: atLoad,
+      patients: new Map([
+        ["pA", patient("pA", "v1")],
+        ["pB", patient("pB", "v1")],
+        ["pNew", patient("pNew", "v1")],
+      ]),
+      inPlaces: ["sA", "sB", "sNew"],
+    });
+  // The store from now on: the screenings (or a read that never ends) and the reviews.
+  const store = (screenings: CachedEncounter[] | Promise<CachedEncounter[]>, reviews: CachedEncounter[] = []) =>
+    m.getCachedEncounters.mockImplementation((type: string) =>
+      type === "Oral Screening" ? Promise.resolve(screenings) : Promise.resolve(reviews),
+    );
+  const keys = (q: PendingQueue) => q.rows.map(queueRowKey).sort();
+
+  it("takes a queue loaded in the last ten minutes, rebuilt from fresh reviews, without waiting for the screenings", async () => {
+    world();
+    await loadPendingQueue("dr.a");
+    store(never(), [reviewOf("dA", "pA", 29, takenBy("sA", "dr.a", 20), true)]);
+    const press = await queueForPress("dr.a");
+    expect(keys(press.queue)).toEqual(["sB"]);
+    expect(press.queue.reviewed["FLW marked"]).toBe(1);
+    expect(press.full).not.toBeNull();
+  });
+
+  it("uses the recent queue for the same physician and places", async () => {
+    world();
+    await loadPendingQueue("dr.a");
+    store(later);
+    const press = await queueForPress("dr.a");
+    expect(keys(press.queue)).toEqual(["sA", "sB"]);
+    await press.full;
+  });
+
+  it("reads everything when no queue was loaded", async () => {
+    world();
+    store(later);
+    const press = await queueForPress("dr.a");
+    expect(keys(press.queue)).toEqual(["sA", "sB", "sNew"]);
+    expect(press.full).toBeNull();
+  });
+
+  it("reads everything once the loaded queue is ten minutes old", async () => {
+    world();
+    await loadPendingQueue("dr.a");
+    store(later);
+    vi.setSystemTime(new Date(LOAD.getTime() + PRESS_BASE_MAX_AGE_MS));
+    const press = await queueForPress("dr.a");
+    expect(keys(press.queue)).toEqual(["sA", "sB", "sNew"]);
+    expect(press.full).toBeNull();
+  });
+
+  it("does not use another physician's queue", async () => {
+    world();
+    await loadPendingQueue("dr.a");
+    store(later);
+    const press = await queueForPress("dr.b");
+    expect(keys(press.queue)).toEqual(["sA", "sB", "sNew"]);
+    expect(press.full).toBeNull();
+  });
+
+  it("does not use a queue loaded for other places", async () => {
+    world();
+    await loadPendingQueue("dr.a");
+    store(later);
+    m.getCatchment.mockResolvedValue(catchment(["d1", "v1"], ["d1"]));
+    const press = await queueForPress("dr.a");
+    expect(keys(press.queue)).toEqual(["sA", "sB", "sNew"]);
+    expect(press.full).toBeNull();
+  });
+
+  it("starts one full read, which later presses join and the next press takes from", async () => {
+    world();
+    await loadPendingQueue("dr.a");
+    let release!: (screenings: CachedEncounter[]) => void;
+    store(new Promise<CachedEncounter[]>((resolve) => (release = resolve)));
+    const first = await queueForPress("dr.a");
+    const second = await queueForPress("dr.a");
+    expect(second.full).toBe(first.full);
+    // The load's read, and one background read for both presses.
+    expect(m.getCachedEncounters.mock.calls.filter(([type]) => type === "Oral Screening")).toHaveLength(2);
+    release(later);
+    await first.full;
+    const third = await queueForPress("dr.a");
+    expect(keys(third.queue)).toEqual(["sA", "sB", "sNew"]);
+    await third.full;
+  });
+
+  it("keeps the newer queue when an older load finishes last", async () => {
+    world();
+    const answers: ((screenings: CachedEncounter[]) => void)[] = [];
+    m.getCachedEncounters.mockImplementation((type: string) =>
+      type === "Oral Screening" ? new Promise((resolve) => answers.push(resolve)) : Promise.resolve([]),
+    );
+    const older = loadPendingQueue("dr.a");
+    const newer = loadPendingQueue("dr.a");
+    await vi.waitFor(() => expect(answers).toHaveLength(2));
+    answers[1](later);
+    await newer;
+    answers[0](atLoad);
+    await older;
+    store(never());
+    const press = await queueForPress("dr.a");
+    expect(keys(press.queue)).toEqual(["sA", "sB", "sNew"]);
+  });
+
+  it("still takes from the recent queue when the background read fails, and warns", async () => {
+    world();
+    await loadPendingQueue("dr.a");
+    m.getAll.mockRejectedValue(new Error("booked unreadable"));
+    const press = await queueForPress("dr.a");
+    expect(keys(press.queue)).toEqual(["sA", "sB"]);
+    await expect(press.full).rejects.toThrow("booked unreadable");
+    await vi.waitFor(() => expect(warn).toHaveBeenCalled());
+  });
+});
+
+describe("takeFromQueue", () => {
+  beforeEach(() => {
+    Object.values(m).forEach((f) => f.mockReset());
+  });
+  const atLoad = [screening("sA", "pA", 1), screening("sB", "pB", 2)];
+  const later = [...atLoad, screening("sNew", "pNew", 3)];
+  const world = () =>
+    given({
+      screenings: atLoad,
+      patients: new Map([
+        ["pA", patient("pA", "v1")],
+        ["pB", patient("pB", "v1")],
+        ["pNew", patient("pNew", "v1")],
+      ]),
+      inPlaces: ["sA", "sB", "sNew"],
+    });
+  const store = (screenings: CachedEncounter[], reviews: CachedEncounter[] = []) =>
+    m.getCachedEncounters.mockImplementation((type: string) =>
+      Promise.resolve(type === "Oral Screening" ? screenings : reviews),
+    );
+  const tried = (take: ReturnType<typeof vi.fn>) => take.mock.calls.map(([row]) => queueRowKey(row as QueueRow));
+
+  it("takes from the full read when the recent queue has nothing to take", async () => {
+    world();
+    await loadPendingQueue("dr.a");
+    store(later, [
+      reviewOf("dA", "pA", 20, takenBy("sA", "dr.b", 10), true),
+      reviewOf("dB", "pB", 21, takenBy("sB", "dr.b", 11), true),
+    ]);
+    const take = vi.fn().mockResolvedValue({ reviewUuid: "r-new" });
+    expect(await takeFromQueue(await queueForPress("dr.a"), "dr.a", take)).toBe("r-new");
+    expect(tried(take)).toEqual(["sNew"]);
+  });
+
+  it("does not try a refused case again from the full read", async () => {
+    world();
+    await loadPendingQueue("dr.a");
+    store(later);
+    const take = vi.fn((row: QueueRow) =>
+      Promise.resolve(queueRowKey(row) === "sNew" ? { reviewUuid: "r-new" } : { refused: "held" as const }),
+    );
+    const passed = new Set<string>();
+    expect(await takeFromQueue(await queueForPress("dr.a"), "dr.a", take, passed)).toBe("r-new");
+    expect(tried(take)).toEqual(["sA", "sB", "sNew"]);
+    expect([...passed].sort()).toEqual(["sA", "sB"]);
   });
 });
 
@@ -506,24 +734,6 @@ describe("refreshQueue", () => {
     vi.useRealTimers();
   });
 
-  // A review of patient `p` written at `minute`, open unless `done`.
-  const reviewOf = (id: string, p: string, minute: number, obs: Record<string, unknown>, done = false): CachedEncounter =>
-    ({
-      ID: id,
-      "Subject ID": p,
-      Voided: false,
-      "Encounter type": "Clinician Review Form",
-      "Encounter date time": done ? at(minute) : null,
-      "Cancel date time": null,
-      "Earliest scheduled date": at(0),
-      observations: obs,
-      audit: { "Created at": at(minute), "Last modified at": at(minute) },
-    }) as unknown as CachedEncounter;
-  const takenBy = (screeningId: string, by: string, minute: number) => ({
-    [REVIEWED_ORAL_SCREENING_CONCEPT.name]: screeningId,
-    [IN_REVIEW_BY_CONCEPT.name]: by,
-    [IN_REVIEW_SINCE_CONCEPT.name]: at(minute),
-  });
   const rowOf = (q: PendingQueue, key: string) => q.rows.find((r) => queueRowKey(r) === key) as QueueRow;
 
   // Two ready FLW-marked screenings in the physician's places, and nothing taken.

@@ -31,7 +31,7 @@ import type { EncounterWithLocation } from "@/api/impl";
 import { readSubjects } from "@/api/programList";
 import { getCatchment } from "@/api/catchment";
 import { holdDetail, takeCase, type HoldStatus } from "@/api/caseHold";
-import { nextAndHeld, takeNextCase } from "@/api/queueChoice";
+import { nextAndHeld } from "@/api/queueChoice";
 import {
   filterQueueRows,
   narrowQueueRows,
@@ -87,7 +87,14 @@ import { NextCasePanel } from "./NextCasePanel";
 import type { WaitingFor } from "./holdPill";
 import { listReason, type ListReason } from "./listReason";
 import { CategoryBadge, HoldStatusBadge, ModelResultBadge, OcshrPendingBadge, QueueGroupBadge } from "./StatusBadge";
-import { chosenPlace, placeScreenings, placesToRead, readReviewsByPlace, usePendingQueue } from "./usePendingQueue";
+import {
+  chosenPlace,
+  placeScreenings,
+  placesToRead,
+  readReviewsByPlace,
+  takeFromQueue,
+  usePendingQueue,
+} from "./usePendingQueue";
 
 interface Props {
   mode: "pending" | "completed";
@@ -320,10 +327,11 @@ export function EncounterList({ mode }: Props) {
   const queueMode = mode === "pending" && queueOn === true;
   const pendingFromScreenings = mode === "pending" && queueOn === false && modelOn === true;
 
-  // Review next case. Every press reads the queue again from the server; the viewer's own case is continued, else the
-  // oldest waiting case of the group they have reviewed least is taken, moving on past any case someone else took
-  // first. The button is never disabled for want of cases: the tab's light refresh shows takes, releases and lapsed
-  // holds, but only a full read, which a press makes, finds new cases.
+  // Review next case. A press takes from the queue loaded in the last ten minutes, rebuilt from fresh reviews, and reads
+  // the whole queue again behind it (queueForPress, PE-304); the viewer's own case is continued, else the oldest
+  // waiting case of the group they have reviewed least is taken, moving on past any case someone else took first. The
+  // button is never disabled for want of cases: the tab's light refresh shows takes, releases and lapsed holds, but
+  // only a full read, which every press starts, finds new cases.
   const filtered = !!(patientLocationUuid || referralUuid);
   const [taking, setTaking] = useState(false);
   // A review page's Complete and review next case that saved the review but could not take the next case opens the list
@@ -336,7 +344,7 @@ export function EncounterList({ mode }: Props) {
       navigate({ pathname: location.pathname, search: location.search }, { replace: true, state: null });
     }
   }, [location, navigate]);
-  // The cases the last press was refused, or failed, on. Until the next press reads the queue in full, the panel's
+  // The cases the last press was refused, or failed, on. Until the next press, the panel's
   // next-case line and Continue case leave them out, so a refresh does not offer a case a press would only be refused
   // on again. After a press that took nothing, that is every case it tried, so the line says nothing is waiting.
   const [passedOver, setPassedOver] = useState<ReadonlySet<string>>(() => new Set());
@@ -360,24 +368,16 @@ export function EncounterList({ mode }: Props) {
     setPassedOver(new Set());
     const passed = new Set<string>();
     try {
-      const fresh = await reloadQueue();
+      const press = await reloadQueue();
       if (!mounted.current) return;
       // The case the viewer holds is taken again first, which renews the hold before its page opens (FW12).
-      const reviewUuid = await takeNextCase(
-        fresh.rows,
-        fresh.reviewed,
-        viewer,
-        fresh.now,
-        (row) => takeCase(row, viewer),
-        fresh.held,
-        passed,
-      );
+      const reviewUuid = await takeFromQueue(press, viewer, (row) => takeCase(row, viewer), passed);
       if (!mounted.current) return;
       if (reviewUuid) {
         navigate(`/review/${reviewUuid}`);
         return;
       }
-      // Nothing could be taken. The fresh read already shows on the tiles and in Reviewed today; when cases were tried
+      // Nothing could be taken. The press's queue already shows on the tiles and in Reviewed today; when cases were tried
       // and refused, read again so they show who holds them, and the list follows.
       setPassedOver(passed);
       if (passed.size > 0) {

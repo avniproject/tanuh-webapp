@@ -24,7 +24,7 @@ import {
   waitingCounts,
   type GroupCounts,
 } from "@/api/queueChoice";
-import { isPlanned, selectQueueRows, type QueueRow } from "@/api/queueRows";
+import { isPlanned, queueRowKey, selectQueueRows, type QueueRow } from "@/api/queueRows";
 import type { SubjectApiResponse } from "@/api/types";
 import { serverNow } from "@/auth/serverClock";
 import { ENCOUNTER_TYPE, type QueueGroup } from "@/constants/tanuhConcepts";
@@ -215,6 +215,8 @@ export interface PendingQueue {
  * that could not be placed. Fails when the physician's places cannot be read.
  */
 export async function loadPendingQueue(viewer: string): Promise<PendingQueue> {
+  const seq = ++loadSeq;
+  const startedAt = Date.now();
   const catchment = await getCatchment();
   const [booked, storedScreenings, reviews] = await Promise.all([
     readReviewsByPlace(catchment.tops, { encounterType: ENCOUNTER_TYPE.physicianReviewForm.name, status: "scheduled" }),
@@ -253,7 +255,7 @@ export async function loadPendingQueue(viewer: string): Promise<PendingQueue> {
     subjects.set(row.screening["Subject ID"], subject);
     return true;
   });
-  return {
+  const queue: PendingQueue = {
     catchment,
     rows,
     booked: booked.content,
@@ -263,20 +265,88 @@ export async function loadPendingQueue(viewer: string): Promise<PendingQueue> {
     unread,
     ...counted(rows, reviews, screenings, viewer, now),
   };
+  if (!recent || recent.seq < seq) recent = { viewer, catchment, queue, seq, startedAt };
+  return queue;
+}
+
+// A press takes from a queue whose load started this recently (PE-304).
+export const PRESS_BASE_MAX_AGE_MS = 10 * 60 * 1000;
+
+// The page's newest full load: whose, for which places, which load (loads are numbered as they start, so an older one
+// finishing late does not replace a newer one), and when it started.
+let recent: { viewer: string; catchment: Catchment; queue: PendingQueue; seq: number; startedAt: number } | null = null;
+let loadSeq = 0;
+// The one full load presses run in the background, for the next press, for one physician and set of places.
+let background: { viewer: string; catchment: Catchment; promise: Promise<PendingQueue> } | null = null;
+
+function recentQueue(viewer: string, catchment: Catchment): PendingQueue | null {
+  if (!recent || recent.viewer !== viewer || recent.catchment !== catchment) return null;
+  return Date.now() - recent.startedAt < PRESS_BASE_MAX_AGE_MS ? recent.queue : null;
+}
+
+// What a press takes from: the queue, and the full read running behind it when the queue came from a recent load.
+export interface PressQueue {
+  queue: PendingQueue;
+  full: Promise<PendingQueue> | null;
 }
 
 /**
- * Review next case from the review page (PE-249, Complete and review next case): the queue read afresh, and the case
- * the list's button would take. The taken review's uuid; null when no case could be taken. Fails as `loadPendingQueue`
- * and `takeNextCase` do.
+ * The queue a Review next case press takes from (PE-304). With a full load of the physician's places that started in
+ * the last ten minutes, that queue rebuilt from a fresh read of the review store, so who holds, took or reviewed each
+ * case is current and Reviewed today counts the physician's own last review; the organisation's changed screenings and
+ * the place lookups (8.7 s and 3.1 s of a 14 s press on Tanuh UAT) are read again in the background, in one full load
+ * that later presses join and the next press takes from. A case is offered only if that load placed it. A screening
+ * that arrived since is offered once the background load lands. Without a recent load, the full load itself, as before.
+ * Fails as `loadPendingQueue` does, and when the review store cannot be read; a failed background load is logged.
+ */
+export async function queueForPress(viewer: string): Promise<PressQueue> {
+  const catchment = await getCatchment();
+  const base = recentQueue(viewer, catchment);
+  invalidateEncounterSweeps();
+  if (!base) return { queue: await loadPendingQueue(viewer), full: null };
+  // Asked first, so the background load joins this read of the reviews.
+  const reviews = getCachedEncounters(ENCOUNTER_TYPE.physicianReviewForm.name);
+  if (!background || background.viewer !== viewer || background.catchment !== catchment) {
+    const promise: Promise<PendingQueue> = loadPendingQueue(viewer).finally(() => {
+      if (background?.promise === promise) background = null;
+    });
+    promise.catch((err: unknown) => console.warn("Review next case: the queue could not be read again in the background", err));
+    background = { viewer, catchment, promise };
+  }
+  const full = background.promise;
+  return { queue: refreshQueue(base, await reviews, viewer, serverNow()), full };
+}
+
+/**
+ * Review next case on a press's queue (`takeNextCase`). When it gives nothing and a full read is running behind it,
+ * waits for that read and tries its cases, less those already refused or failed, so a press never says nothing is
+ * waiting while the recent queue only lacks the newest cases. The keys refused or failed go into `passedOver`.
+ */
+export async function takeFromQueue(
+  press: PressQueue,
+  viewer: string,
+  take: (row: QueueRow) => Promise<TakeResult>,
+  passedOver: Set<string> = new Set(),
+): Promise<string | null> {
+  const { queue, full } = press;
+  const taken = await takeNextCase(queue.rows, queue.reviewed, viewer, queue.now, take, queue.held, passedOver);
+  if (taken || !full) return taken;
+  const fuller = await full;
+  const left = fuller.rows.filter((r) => !passedOver.has(queueRowKey(r)));
+  const held = fuller.held && !passedOver.has(queueRowKey(fuller.held)) ? fuller.held : undefined;
+  return takeNextCase(left, fuller.reviewed, viewer, fuller.now, take, held, passedOver);
+}
+
+/**
+ * Review next case from the review page (PE-249, Complete and review next case): the press's queue (`queueForPress`),
+ * and the case the list's button would take. The taken review's uuid; null when no case could be taken. Fails as
+ * `queueForPress` and `takeNextCase` do.
  */
 export async function takeNextFromQueue(
   viewer: string,
   take: (row: QueueRow) => Promise<TakeResult> = (row) => takeCase(row, viewer),
 ): Promise<string | null> {
-  invalidateEncounterSweeps();
-  const fresh = await loadPendingQueue(viewer);
-  return takeNextCase(fresh.rows, fresh.reviewed, viewer, fresh.now, take, fresh.held);
+  return takeFromQueue(await queueForPress(viewer), viewer, take);
 }
 
 // What the tiles, Reviewed today, the Next case line and Continue case show for these rows.
@@ -378,8 +448,8 @@ export function startQueueRefresh(
 const messageOf = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
 /**
- * The queue for the pending tab, loaded when `enabled`. `reload` drops the encounter caches and reads everything
- * again, as the button does on every press; its errors go to the caller and leave the loaded queue in place. While the
+ * The queue for the pending tab, loaded when `enabled`. `reload` gives a press's queue (`queueForPress`) and shows it,
+ * then shows the full read behind it when that lands; its errors go to the caller and leave the loaded queue in place. While the
  * tab is open the queue is refreshed lightly from the review store (`lightRefresh`), except while `paused`, which the
  * list sets for the length of a Review next case press.
  */
@@ -426,18 +496,34 @@ export function usePendingQueue(enabled: boolean, viewer: string, paused = false
     return startQueueRefresh(() => void lightRefresh(gate.current, viewer, land), document, window);
   }, [enabled, viewer, land]);
 
-  const reload = useCallback(async (): Promise<PendingQueue> => {
-    invalidateEncounterSweeps();
+  const reload = useCallback(async (): Promise<PressQueue> => {
     const g = gate.current;
     const ticket = ++g.latest;
     g.reading += 1;
+    let press: PressQueue;
     try {
-      const data = await loadPendingQueue(viewer);
-      if (ticket === g.latest) land(data);
-      return data;
-    } finally {
+      press = await queueForPress(viewer);
+    } catch (err) {
+      g.reading -= 1;
+      throw err;
+    }
+    if (ticket === g.latest) land(press.queue);
+    // The full read behind a recent queue shows when it lands; the light refresh waits for it. Its failure is logged.
+    if (press.full) {
+      press.full
+        .then(
+          (data) => {
+            if (ticket === g.latest) land(data);
+          },
+          () => undefined,
+        )
+        .finally(() => {
+          g.reading -= 1;
+        });
+    } else {
       g.reading -= 1;
     }
+    return press;
   }, [viewer, land]);
 
   return { ...state, reload };
