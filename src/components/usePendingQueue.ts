@@ -140,7 +140,10 @@ export async function placeScreenings(screenings: CachedEncounter[], catchment: 
     if (!subject) unplaced.add(s.ID);
     else if (catchment.contains(subject["Location ID"])) placed.add(s.ID);
   }
-  return { placed, unplaced, subjects: new Map([...programmeSubjects, ...patients]) };
+  // A patient read for both kinds keeps the read that worked.
+  const subjects = new Map(programmeSubjects);
+  for (const [id, subject] of patients) if (subject || !subjects.has(id)) subjects.set(id, subject);
+  return { placed, unplaced, subjects };
 }
 
 /**

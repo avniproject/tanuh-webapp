@@ -431,6 +431,41 @@ describe("placeScreenings", () => {
     expect(m.find).not.toHaveBeenCalled();
     expect(m.readSubjects).not.toHaveBeenCalled();
   });
+
+  it("reads the patients of the oldest unsettled screenings first", async () => {
+    lookups({}, { d1: false, d2: false });
+    patientsAt({});
+    const many = Array.from({ length: 120 }, (_, i) => screening(`s${i}`, `p${i}`, i)).reverse();
+    await placeScreenings(many, places());
+    const read = m.readSubjects.mock.calls.flatMap(([ids]) => ids);
+    expect([...read].sort()).toEqual(Array.from({ length: 100 }, (_, i) => `p${i}`).sort());
+  });
+
+  it("places a patient's programme screening and unsettled standalone screening alike", async () => {
+    lookups({}, { d2: false });
+    patientsAt({ pX: "v1" });
+    const inProgramme = { ...screening("sP", "pX", 1), "Enrolment ID": "e1" } as unknown as CachedEncounter;
+    const placed = await placeScreenings([inProgramme, screening("sS", "pX", 2)], places());
+    expect([...placed.placed].sort()).toEqual(["sP", "sS"]);
+    expect(placed.unplaced.size).toBe(0);
+    expect(placed.subjects.get("pX")?.["Location ID"]).toBe("v1");
+    expect(asked()).toEqual([
+      ["d1", ["sS"]],
+      ["d2", ["sS"]],
+    ]);
+  });
+
+  it("keeps a patient read for a programme screening when the second read of them fails", async () => {
+    lookups({}, { d2: false });
+    m.readSubjects
+      .mockResolvedValueOnce(new Map([["pX", patient("pX", "v1")]]))
+      .mockResolvedValueOnce(new Map([["pX", null]]));
+    const inProgramme = { ...screening("sP", "pX", 1), "Enrolment ID": "e1" } as unknown as CachedEncounter;
+    const placed = await placeScreenings([inProgramme, screening("sS", "pX", 2)], places());
+    expect([...placed.placed]).toEqual(["sP"]);
+    expect([...placed.unplaced]).toEqual(["sS"]);
+    expect(placed.subjects.get("pX")?.["Location ID"]).toBe("v1");
+  });
 });
 
 describe("chosenPlace", () => {

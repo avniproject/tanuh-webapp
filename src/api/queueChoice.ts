@@ -58,7 +58,8 @@ export function reviewedToday(
 
 /**
  * The physician's own tie order for the day (PE-304): the groups rotated by a hash of the username and the local date,
- * so physicians in one place start on different groups, and each one's first group changes from day to day. Before,
+ * so physicians' first groups are spread over the three (two can still share one on a given day), and each one's first
+ * group changes from day to day. Before,
  * ties always went FLW marked first, and every physician's first case of the day was an FLW marked one.
  */
 export function groupOrderFor(viewer: string, now: Date): QueueGroup[] {

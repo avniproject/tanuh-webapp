@@ -165,4 +165,48 @@ describe("findInLocation", () => {
     expect(get.mock.calls).toHaveLength(20);
     expect(most).toBeLessThanOrEqual(4);
   });
+
+  it("reads on past a page whose last row has no date, and rules out at the last page", async () => {
+    const between = new Date(Date.parse(minute(150)) - 30_000).toISOString();
+    serve(400, { dates: (i) => (i === 199 ? (null as unknown as string) : minute(i)) });
+    const result = await findInLocation("Oral Screening", "d1", [target("x", between)], new Set());
+    expect(pagesRead()).toEqual([0, 1]);
+    expect([...result.ruledOut]).toEqual(["x"]);
+  });
+
+  it("rules out a target with no date only at the last page", async () => {
+    serve(600);
+    const result = await findInLocation("Oral Screening", "d1", [target("x", null)], new Set());
+    expect(pagesRead()).toEqual([0, 1, 2]);
+    expect([...result.ruledOut]).toEqual(["x"]);
+  });
+
+  it("reads on past an empty page before the last", async () => {
+    get.mockImplementation((_url: string, { params }: FindParams) => {
+      const rows =
+        params.page === 1
+          ? []
+          : Array.from({ length: 200 }, (_, k) => ({
+              encounterUuid: `s${params.page * 200 + k}`,
+              encounterDateTime: minute(params.page * 200 + k),
+            }));
+      return Promise.resolve({ data: { content: rows, totalElements: 600, totalPages: 3, pageSize: 200 } });
+    });
+    const result = await findInLocation("Oral Screening", "d1", [target("s450", minute(450))], new Set());
+    expect([...result.found]).toEqual(["s450"]);
+    expect(result.ruledOut.size).toBe(0);
+  });
+
+  it("stops chasing a target another place finds while it reads", async () => {
+    const elsewhere = new Set<string>();
+    serve(10_000);
+    const inner = get.getMockImplementation()!;
+    get.mockImplementation((url: string, opts: FindParams) => {
+      if (opts.params.page === 1) elsewhere.add("t");
+      return inner(url, opts);
+    });
+    const result = await findInLocation("Oral Screening", "d2", [target("t", minute(9_000))], elsewhere);
+    expect(pagesRead()).toEqual([0, 1, 2, 3, 4]);
+    expect(result.found.size + result.ruledOut.size).toBe(0);
+  });
 });
