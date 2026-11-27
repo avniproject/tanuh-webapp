@@ -1,7 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import type { Catchment } from "@/api/catchment";
 import type { CachedEncounter } from "@/api/encounters";
-import type { EncounterWithLocation } from "@/api/impl";
+import type { EncounterWithLocation, PlacementTarget } from "@/api/impl";
 import { queueRowKey, rowHoldStatus, type QueueRow } from "@/api/queueRows";
 import type { SubjectApiResponse } from "@/api/types";
 import { noteServerDate, resetServerClock } from "@/auth/serverClock";
@@ -18,7 +18,7 @@ const m = vi.hoisted(() => ({
   getAll: vi.fn(),
   getProgram: vi.fn(),
   readSubjects: vi.fn(),
-  lookup: vi.fn(),
+  find: vi.fn(),
   invalidate: vi.fn(),
 }));
 vi.mock("@/api/catchment", () => ({ getCatchment: () => m.getCatchment() }));
@@ -31,7 +31,8 @@ vi.mock("@/api/encounters", async (importOriginal) => ({
 vi.mock("@/api/impl", async (importOriginal) => ({
   ...(await importOriginal<typeof import("@/api/impl")>()),
   getAllEncountersWithLocation: (p: unknown) => m.getAll(p),
-  getEncounterUuidsInLocation: (type: string, status: string, place: string) => m.lookup(type, status, place),
+  findInLocation: (type: string, place: string, targets: PlacementTarget[], foundElsewhere: Set<string>) =>
+    m.find(type, place, targets, foundElsewhere),
 }));
 vi.mock("@/api/programList", () => ({
   getProgramEncountersWithLocation: (p: unknown) => m.getProgram(p),
@@ -89,7 +90,8 @@ const patient = (id: string, place: string, voided = false): SubjectApiResponse 
 const standalone = (rows: EncounterWithLocation[]) => ({ content: rows, totalElements: rows.length });
 const program = (rows: EncounterWithLocation[], unchecked: string[] = []) => ({ rows, unchecked: new Set(unchecked) });
 
-// The physician covers district d1 (top) and its village v1. `inPlaces` is what the server's lookup places in d1.
+// The physician covers district d1 (top) and its village v1. `inPlaces` is what the server's lookup places in d1; the
+// lookup rules out every other screening when `complete`, and leaves it unsettled otherwise.
 function given({
   tops = ["d1"],
   booked = [] as EncounterWithLocation[],
@@ -100,7 +102,14 @@ function given({
   inPlaces = [] as string[],
   complete = true,
 } = {}) {
-  m.lookup.mockResolvedValue({ uuids: new Set(inPlaces), complete });
+  m.find.mockImplementation(
+    (_type: string, _place: string, targets: PlacementTarget[], foundElsewhere: Set<string>) => {
+      const found = new Set(targets.filter((t) => inPlaces.includes(t.uuid)).map((t) => t.uuid));
+      found.forEach((uuid) => foundElsewhere.add(uuid));
+      const ruledOut = new Set(complete ? targets.filter((t) => !found.has(t.uuid)).map((t) => t.uuid) : []);
+      return Promise.resolve({ found, ruledOut });
+    },
+  );
   m.getCatchment.mockResolvedValue(catchment(tops.length ? ["d1", "v1"] : [], tops));
   m.getAll.mockResolvedValue(standalone(booked));
   m.getProgram.mockResolvedValue(programRows);
@@ -132,12 +141,12 @@ describe("loadPendingQueue", () => {
     expect(q.unread).toBe(0);
     expect(q.waiting).toMatchObject({ "FLW marked": 1, total: 1 });
     expect([...q.subjects.keys()]).toEqual(["pIn"]);
-    expect(m.lookup).toHaveBeenCalledWith("Oral Screening", "completed", "d1");
+    expect(m.find).toHaveBeenCalledWith("Oral Screening", "d1", expect.any(Array), expect.any(Set));
     // The patient outside the places is never read.
     expect(m.readSubjects.mock.calls.flatMap(([ids]) => ids)).toEqual(["pIn"]);
   });
 
-  it("drops the screenings an incomplete lookup could not place, and counts them", async () => {
+  it("drops a screening an incomplete lookup could not place and whose patient could not be read, and counts it", async () => {
     given({
       screenings: [screening("sIn", "pIn", 1), screening("sUnknown", "pUnknown", 2)],
       patients: new Map([["pIn", patient("pIn", "v1")]]),
@@ -147,7 +156,7 @@ describe("loadPendingQueue", () => {
     const q = await loadPendingQueue("dr.a");
     expect(q.rows.map(queueRowKey)).toEqual(["sIn"]);
     expect(q.unread).toBe(1);
-    expect(m.readSubjects.mock.calls.flatMap(([ids]) => ids)).toEqual(["pIn"]);
+    expect(m.readSubjects.mock.calls.flatMap(([ids]) => ids)).toEqual(["pUnknown", "pIn"]);
   });
 
   it("drops a placed screening whose patient could not be read, and counts it", async () => {
@@ -185,7 +194,7 @@ describe("loadPendingQueue", () => {
     const q = await loadPendingQueue("dr.a");
     expect(q.rows.map(queueRowKey)).toEqual(["sP"]);
     expect(q.unread).toBe(1);
-    expect(m.lookup).not.toHaveBeenCalled();
+    expect(m.find).not.toHaveBeenCalled();
   });
 
   it("reads nothing and lists nothing when the physician has no places", async () => {
@@ -196,7 +205,7 @@ describe("loadPendingQueue", () => {
     expect(m.getAll).not.toHaveBeenCalled();
     expect(m.getProgram).not.toHaveBeenCalled();
     expect(m.readSubjects).not.toHaveBeenCalled();
-    expect(m.lookup).not.toHaveBeenCalled();
+    expect(m.find).not.toHaveBeenCalled();
   });
 
   it("drops a programme review that could not be placed, and counts it; keeps the booked reviews read by place", async () => {
@@ -290,33 +299,122 @@ describe("placeScreenings", () => {
   beforeEach(() => {
     Object.values(m).forEach((f) => f.mockReset());
   });
-  const c2 = catchment(["d1", "v1", "d2"], ["d1", "d2"]);
-
-  it("places standalone screenings by the lookup in every top place, together", async () => {
-    m.lookup.mockImplementation((_t: string, _s: string, place: string) =>
-      Promise.resolve({ uuids: new Set(place === "d1" ? ["s1"] : ["s2"]), complete: true }),
+  // A new pair of places per test: answers are remembered per set of places.
+  const places = () => catchment(["d1", "v1", "d2"], ["d1", "d2"]);
+  // `byPlace` says what each place's lookup finds; `settled` whether it rules out the rest (true) or leaves them open.
+  const lookups = (byPlace: Record<string, string[]>, settled: Record<string, boolean> = {}) =>
+    m.find.mockImplementation((_t: string, place: string, targets: PlacementTarget[], foundElsewhere: Set<string>) => {
+      const found = new Set(targets.filter((t) => byPlace[place]?.includes(t.uuid)).map((t) => t.uuid));
+      found.forEach((uuid) => foundElsewhere.add(uuid));
+      const rest = targets.filter((t) => !found.has(t.uuid)).map((t) => t.uuid);
+      return Promise.resolve({ found, ruledOut: new Set(settled[place] === false ? [] : rest) });
+    });
+  const patientsAt = (where: Record<string, string | null>) =>
+    m.readSubjects.mockImplementation((ids: string[]) =>
+      Promise.resolve(new Map(ids.map((id) => [id, where[id] ? patient(id, where[id]!) : null]))),
     );
-    const placed = await placeScreenings([screening("s1", "p1", 1), screening("s2", "p2", 2), screening("s3", "p3", 3)], c2);
+  const asked = () => m.find.mock.calls.map(([, place, targets]) => [place, (targets as PlacementTarget[]).map((t) => t.uuid)]);
+
+  it("asks each top place only for the screenings to place, with their dates", async () => {
+    lookups({ d1: ["s1"] });
+    await placeScreenings([screening("s1", "p1", 1), screening("s2", "p2", 2)], places());
+    expect(asked()).toEqual([
+      ["d1", ["s1", "s2"]],
+      ["d2", ["s1", "s2"]],
+    ]);
+    expect(m.find.mock.calls[0][2]).toEqual([
+      { uuid: "s1", date: at(1) },
+      { uuid: "s2", date: at(2) },
+    ]);
+  });
+
+  it("places a screening found in any top place, and leaves out one every place ruled out", async () => {
+    lookups({ d1: ["s1"], d2: ["s2"] });
+    const placed = await placeScreenings([screening("s1", "p1", 1), screening("s2", "p2", 2), screening("s3", "p3", 3)], places());
     expect([...placed.placed].sort()).toEqual(["s1", "s2"]);
     expect(placed.unplaced.size).toBe(0);
-    expect(m.lookup.mock.calls.map(([, , place]) => place)).toEqual(["d1", "d2"]);
     expect(m.readSubjects).not.toHaveBeenCalled();
   });
 
-  it("leaves unplaced what an incomplete lookup could not place", async () => {
-    m.lookup.mockImplementation((_t: string, _s: string, place: string) =>
-      Promise.resolve({ uuids: new Set(place === "d1" ? ["s1"] : []), complete: place === "d1" }),
+  it("places what the lookups could not settle by the patient's own place", async () => {
+    lookups({}, { d2: false });
+    patientsAt({ pIn: "v1", pOut: "elsewhere", pUnread: null });
+    const placed = await placeScreenings(
+      [screening("sIn", "pIn", 1), screening("sOut", "pOut", 2), screening("sUnread", "pUnread", 3)],
+      places(),
     );
-    const placed = await placeScreenings([screening("s1", "p1", 1), screening("s2", "p2", 2)], c2);
-    expect([...placed.placed]).toEqual(["s1"]);
-    expect([...placed.unplaced]).toEqual(["s2"]);
+    expect([...placed.placed]).toEqual(["sIn"]);
+    expect([...placed.unplaced]).toEqual(["sUnread"]);
+    expect([...placed.subjects.keys()].sort()).toEqual(["pIn", "pOut", "pUnread"]);
+  });
+
+  it("reads at most 100 patients to place what the lookups could not settle", async () => {
+    lookups({}, { d1: false, d2: false });
+    patientsAt({});
+    const many = Array.from({ length: 120 }, (_, i) => screening(`s${i}`, `p${i}`, i));
+    const placed = await placeScreenings(many, places());
+    expect(m.readSubjects.mock.calls.flatMap(([ids]) => ids)).toHaveLength(100);
+    expect(placed.unplaced.size).toBe(120);
+  });
+
+  it("remembers what it placed and ruled out for the same places", async () => {
+    const same = places();
+    lookups({ d1: ["s1"] });
+    await placeScreenings([screening("s1", "p1", 1), screening("s2", "p2", 2)], same);
+    m.find.mockClear();
+    const again = await placeScreenings([screening("s1", "p1", 1), screening("s2", "p2", 2)], same);
+    expect([...again.placed]).toEqual(["s1"]);
+    expect(m.find).not.toHaveBeenCalled();
+    await placeScreenings([screening("s1", "p1", 1), screening("s2", "p2", 2), screening("s3", "p3", 3)], same);
+    expect(asked()).toEqual([
+      ["d1", ["s3"]],
+      ["d2", ["s3"]],
+    ]);
+  });
+
+  it("asks again about a screening it could not place", async () => {
+    const same = places();
+    lookups({}, { d2: false });
+    patientsAt({});
+    expect([...(await placeScreenings([screening("s2", "p2", 2)], same)).unplaced]).toEqual(["s2"]);
+    m.find.mockClear();
+    await placeScreenings([screening("s2", "p2", 2)], same);
+    expect(asked()).toEqual([
+      ["d1", ["s2"]],
+      ["d2", ["s2"]],
+    ]);
+  });
+
+  it("asks again about a screening that changed since", async () => {
+    const same = places();
+    lookups({});
+    const changed = (minute: number) =>
+      ({ ...screening("s1", "p1", 1), audit: { "Last modified at": at(minute) } }) as unknown as CachedEncounter;
+    await placeScreenings([changed(1)], same);
+    m.find.mockClear();
+    await placeScreenings([changed(9)], same);
+    expect(asked()).toEqual([
+      ["d1", ["s1"]],
+      ["d2", ["s1"]],
+    ]);
+  });
+
+  it("starts afresh for new places", async () => {
+    lookups({ d1: ["s1"] });
+    await placeScreenings([screening("s1", "p1", 1)], places());
+    m.find.mockClear();
+    await placeScreenings([screening("s1", "p1", 1)], places());
+    expect(asked()).toEqual([
+      ["d1", ["s1"]],
+      ["d2", ["s1"]],
+    ]);
   });
 
   it("asks nothing when there is no screening, or no place", async () => {
-    expect((await placeScreenings([], c2)).placed.size).toBe(0);
+    expect((await placeScreenings([], places())).placed.size).toBe(0);
     const none = await placeScreenings([screening("s1", "p1", 1)], catchment([], []));
     expect(none.placed.size + none.unplaced.size).toBe(0);
-    expect(m.lookup).not.toHaveBeenCalled();
+    expect(m.find).not.toHaveBeenCalled();
     expect(m.readSubjects).not.toHaveBeenCalled();
   });
 });
@@ -481,7 +579,7 @@ describe("refreshPendingQueue", () => {
     expect(m.invalidate).toHaveBeenCalledTimes(1);
     expect(m.getCachedEncounters.mock.calls).toEqual([["Clinician Review Form"]]);
     expect(m.invalidate.mock.invocationCallOrder[0]).toBeLessThan(m.getCachedEncounters.mock.invocationCallOrder[0]);
-    for (const read of [m.getCatchment, m.getAll, m.getProgram, m.lookup, m.readSubjects]) expect(read).not.toHaveBeenCalled();
+    for (const read of [m.getCatchment, m.getAll, m.getProgram, m.find, m.readSubjects]) expect(read).not.toHaveBeenCalled();
     expect(r.rows.map(queueRowKey).sort()).toEqual(["rA", "s1"]);
   });
 

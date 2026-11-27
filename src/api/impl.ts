@@ -121,6 +121,73 @@ export async function getEncounterUuidsInLocation(
   return { uuids, complete: totalPages <= LOCATION_LOOKUP_MAX_PAGES && rest.every((r) => r.status === "fulfilled") };
 }
 
+// A screening to place: its ID and its "Encounter date time".
+export interface PlacementTarget {
+  uuid: string;
+  date: string | null;
+}
+
+const LOOKUP_BATCH = 4;
+
+/**
+ * Which of `targets` are completed encounters of the type in the location's subtree (PE-304). The server lists them
+ * newest first (by encounter date, then id), so the read stops once every target is found here or elsewhere, or has been
+ * passed: a target dated strictly after the last row read is not in the location. Dates are compared as times. After
+ * the first page the pages are read four at a time, through the limiter `getEncounterUuidsInLocation` uses, so the
+ * calls for several places together have at most four pages in flight. `foundElsewhere` is shared by the calls for one
+ * load's places: each adds what it finds, and stops chasing what another found. A target in neither result set is
+ * unsettled: the read failed, or stopped at the 100-page guard, before it could be placed or ruled out. Never throws.
+ */
+export async function findInLocation(
+  encounterType: string,
+  locationUuid: string,
+  targets: readonly PlacementTarget[],
+  foundElsewhere: Set<string>,
+): Promise<{ found: Set<string>; ruledOut: Set<string> }> {
+  const found = new Set<string>();
+  const ruledOut = new Set<string>();
+  const wanted = new Set(targets.map((t) => t.uuid));
+  const open = () => targets.filter((t) => !foundElsewhere.has(t.uuid) && !ruledOut.has(t.uuid));
+  if (open().length === 0) return { found, ruledOut };
+  const read = (page: number) =>
+    lookupPages(() =>
+      getEncountersWithLocation({ encounterType, status: "completed", locationUuid, page, size: FULL_FETCH_PAGE_SIZE }),
+    );
+  // Takes one page, read in order; true when the read is over.
+  const settle = (page: number, res: PagedResponse<EncounterWithLocation>): boolean => {
+    for (const e of res.content) {
+      if (!wanted.has(e.encounterUuid)) continue;
+      found.add(e.encounterUuid);
+      foundElsewhere.add(e.encounterUuid);
+    }
+    const last = page + 1 >= res.totalPages;
+    const oldest = Date.parse(res.content[res.content.length - 1]?.encounterDateTime ?? "");
+    for (const t of open()) {
+      if (last || (t.date !== null && Date.parse(t.date) > oldest)) ruledOut.add(t.uuid);
+    }
+    return last || open().length === 0;
+  };
+
+  let first: PagedResponse<EncounterWithLocation>;
+  try {
+    first = await read(0);
+  } catch {
+    return { found, ruledOut };
+  }
+  if (settle(0, first)) return { found, ruledOut };
+  const pages = Math.min(first.totalPages, LOCATION_LOOKUP_MAX_PAGES);
+  for (let start = 1; start < pages; start += LOOKUP_BATCH) {
+    const batch = Array.from({ length: Math.min(LOOKUP_BATCH, pages - start) }, (_, i) => start + i);
+    const results = await Promise.allSettled(batch.map(read));
+    for (let i = 0; i < batch.length; i++) {
+      const result = results[i];
+      if (result.status === "rejected") return { found, ruledOut };
+      if (settle(batch[i], result.value)) return { found, ruledOut };
+    }
+  }
+  return { found, ruledOut };
+}
+
 export async function getEncountersWithLocation(
   p: EncounterListParams,
 ): Promise<PagedResponse<EncounterWithLocation>> {

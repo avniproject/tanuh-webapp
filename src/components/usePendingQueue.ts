@@ -8,8 +8,8 @@ import {
   type CachedEncounter,
 } from "@/api/encounters";
 import {
+  findInLocation,
   getAllEncountersWithLocation,
-  getEncounterUuidsInLocation,
   type EncounterListParams,
   type EncounterWithLocation,
 } from "@/api/impl";
@@ -57,40 +57,88 @@ export interface PlacedScreenings {
   subjects: ReadonlyMap<string, SubjectApiResponse | null>;
 }
 
+// At most this many patients are read in one load to place the screenings the lookups could not settle.
+export const PLACEMENT_PATIENT_READS = 100;
+
+// Each screening's answer, placed (true) or outside (false), per set of places. The places are read once and kept for
+// the page's life, and cleared at sign-out, which reloads (getCatchment), so the answers last as long. A screening is
+// keyed with its last change: a patient moved, or a date edited, changes it, and the screening is placed again.
+const placements = new WeakMap<Catchment, Map<string, boolean>>();
+const placementKey = (s: CachedEncounter) => `${s.ID}|${s.audit?.["Last modified at"] ?? ""}`;
+
 /**
  * Which screenings lie in the physician's places (FW5, FW10), without reading the patients of the whole organisation.
- * A standalone screening is placed by the server's lookup of the completed Oral Screenings in each top place; when a
- * lookup is cut short, a screening none of them placed cannot be ruled in or out and is unplaced. A programme
- * screening, which the lookup cannot see, is placed by its patient's Location ID. Anything else is outside the places.
+ * A standalone screening is placed by the server's list of the completed Oral Screenings in each top place, read only
+ * as far back as the screenings still to place (findInLocation, PE-304); the places share what they find. One the
+ * lookups could not settle, because a read failed or stopped at its guard, is placed by its patient's Location ID, as
+ * a programme screening is: up to PLACEMENT_PATIENT_READS of them, oldest first, so a patient outside the places is
+ * read only then; one beyond that, or whose patient could not be read, is unplaced, and a list leaves it out and
+ * counts it. Placed and outside answers are remembered; unplaced ones are asked again on the next load.
  */
 export async function placeScreenings(screenings: CachedEncounter[], catchment: Catchment): Promise<PlacedScreenings> {
   const placed = new Set<string>();
   const unplaced = new Set<string>();
   if (screenings.length === 0 || catchment.tops.length === 0) return { placed, unplaced, subjects: new Map() };
-  const standalone = screenings.filter((s) => !isProgramEncounter(s));
+  let known = placements.get(catchment);
+  if (!known) {
+    known = new Map();
+    placements.set(catchment, known);
+  }
+  const remembered = known;
   const programme = screenings.filter(isProgramEncounter);
-  const [lookups, subjects] = await Promise.all([
-    standalone.length > 0
+  const toFind: CachedEncounter[] = [];
+  for (const s of screenings) {
+    if (isProgramEncounter(s)) continue;
+    const answer = remembered.get(placementKey(s));
+    if (answer === true) placed.add(s.ID);
+    else if (answer === undefined) toFind.push(s);
+  }
+  const targets = toFind.map((s) => ({ uuid: s.ID, date: s["Encounter date time"] }));
+  const found = new Set<string>();
+  const [lookups, programmeSubjects] = await Promise.all([
+    targets.length > 0
       ? Promise.all(
-          catchment.tops.map((top) => getEncounterUuidsInLocation(ENCOUNTER_TYPE.oralScreening.name, "completed", top)),
+          catchment.tops.map((top) => findInLocation(ENCOUNTER_TYPE.oralScreening.name, top, targets, found)),
         )
       : Promise.resolve([]),
     programme.length > 0
       ? readSubjects(programme.map((s) => s["Subject ID"]))
       : Promise.resolve(new Map<string, SubjectApiResponse | null>()),
   ]);
-  const inPlaces = new Set(lookups.flatMap((l) => [...l.uuids]));
-  const complete = lookups.every((l) => l.complete);
-  for (const s of standalone) {
-    if (inPlaces.has(s.ID)) placed.add(s.ID);
-    else if (!complete) unplaced.add(s.ID);
+  const unsettled: CachedEncounter[] = [];
+  for (const s of toFind) {
+    if (found.has(s.ID)) {
+      placed.add(s.ID);
+      remembered.set(placementKey(s), true);
+    } else if (lookups.every((l) => l.ruledOut.has(s.ID))) {
+      remembered.set(placementKey(s), false);
+    } else {
+      unsettled.push(s);
+    }
+  }
+  const byDate = (s: CachedEncounter) => Date.parse(s["Encounter date time"] ?? "") || 0;
+  const toRead = [...unsettled].sort((a, b) => byDate(a) - byDate(b)).slice(0, PLACEMENT_PATIENT_READS);
+  const patients =
+    toRead.length > 0
+      ? await readSubjects(toRead.map((s) => s["Subject ID"]))
+      : new Map<string, SubjectApiResponse | null>();
+  const reading = new Set(toRead);
+  for (const s of unsettled) {
+    const subject = reading.has(s) ? patients.get(s["Subject ID"]) : undefined;
+    if (!subject) {
+      unplaced.add(s.ID);
+      continue;
+    }
+    const inside = catchment.contains(subject["Location ID"]);
+    remembered.set(placementKey(s), inside);
+    if (inside) placed.add(s.ID);
   }
   for (const s of programme) {
-    const subject = subjects.get(s["Subject ID"]);
+    const subject = programmeSubjects.get(s["Subject ID"]);
     if (!subject) unplaced.add(s.ID);
     else if (catchment.contains(subject["Location ID"])) placed.add(s.ID);
   }
-  return { placed, unplaced, subjects };
+  return { placed, unplaced, subjects: new Map([...programmeSubjects, ...patients]) };
 }
 
 /**
