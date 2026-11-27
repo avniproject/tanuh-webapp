@@ -43,6 +43,7 @@ import {
   chosenPlace,
   lightRefresh,
   loadPendingQueue,
+  openPendingQueue,
   placeScreenings,
   placesToRead,
   readReviewsByPlace,
@@ -315,6 +316,22 @@ describe("takeNextFromQueue", () => {
   });
 });
 
+// PE-304 press and reopen fixtures: sA and sB are in the store at the load; sNew arrives later. All three lie in the
+// physician's places.
+const atLoad = [screening("sA", "pA", 1), screening("sB", "pB", 2)];
+const later = [...atLoad, screening("sNew", "pNew", 3)];
+const world = () =>
+  given({
+    screenings: atLoad,
+    patients: new Map([
+      ["pA", patient("pA", "v1")],
+      ["pB", patient("pB", "v1")],
+      ["pNew", patient("pNew", "v1")],
+    ]),
+    inPlaces: ["sA", "sB", "sNew"],
+  });
+const keys = (q: PendingQueue) => q.rows.map(queueRowKey).sort();
+
 // PE-304: a press takes from the queue loaded in the last ten minutes, rebuilt from fresh reviews, and reads the whole
 // queue again in the background for the next press.
 describe("queueForPress", () => {
@@ -332,25 +349,11 @@ describe("queueForPress", () => {
   });
 
   const never = () => new Promise<never>(() => {});
-  const atLoad = [screening("sA", "pA", 1), screening("sB", "pB", 2)];
-  const later = [...atLoad, screening("sNew", "pNew", 3)];
-  // sA and sB are in the store at the load; sNew arrives later. All three lie in the physician's places.
-  const world = () =>
-    given({
-      screenings: atLoad,
-      patients: new Map([
-        ["pA", patient("pA", "v1")],
-        ["pB", patient("pB", "v1")],
-        ["pNew", patient("pNew", "v1")],
-      ]),
-      inPlaces: ["sA", "sB", "sNew"],
-    });
   // The store from now on: the screenings (or a read that never ends) and the reviews.
   const store = (screenings: CachedEncounter[] | Promise<CachedEncounter[]>, reviews: CachedEncounter[] = []) =>
     m.getCachedEncounters.mockImplementation((type: string) =>
       type === "Oral Screening" ? Promise.resolve(screenings) : Promise.resolve(reviews),
     );
-  const keys = (q: PendingQueue) => q.rows.map(queueRowKey).sort();
 
   it("takes a queue loaded in the last ten minutes, rebuilt from fresh reviews, without waiting for the screenings", async () => {
     world();
@@ -458,18 +461,6 @@ describe("takeFromQueue", () => {
   beforeEach(() => {
     Object.values(m).forEach((f) => f.mockReset());
   });
-  const atLoad = [screening("sA", "pA", 1), screening("sB", "pB", 2)];
-  const later = [...atLoad, screening("sNew", "pNew", 3)];
-  const world = () =>
-    given({
-      screenings: atLoad,
-      patients: new Map([
-        ["pA", patient("pA", "v1")],
-        ["pB", patient("pB", "v1")],
-        ["pNew", patient("pNew", "v1")],
-      ]),
-      inPlaces: ["sA", "sB", "sNew"],
-    });
   const store = (screenings: CachedEncounter[], reviews: CachedEncounter[] = []) =>
     m.getCachedEncounters.mockImplementation((type: string) =>
       Promise.resolve(type === "Oral Screening" ? screenings : reviews),
@@ -499,6 +490,70 @@ describe("takeFromQueue", () => {
     expect(await takeFromQueue(await queueForPress("dr.a"), "dr.a", take, passed)).toBe("r-new");
     expect(tried(take)).toEqual(["sA", "sB", "sNew"]);
     expect([...passed].sort()).toEqual(["sA", "sB"]);
+  });
+});
+
+// PE-304: the pending list opened again within ten minutes shows the last queue at once, with fresh reviews.
+describe("openPendingQueue", () => {
+  beforeEach(() => {
+    Object.values(m).forEach((f) => f.mockReset());
+  });
+  // The store from now on: the screenings, and each review read in turn (the first is the early one, which starts
+  // before the full load's).
+  const store = (screenings: CachedEncounter[] | Promise<CachedEncounter[]>, ...reviewReads: Promise<CachedEncounter[]>[]) =>
+    m.getCachedEncounters.mockImplementation((type: string) =>
+      type === "Oral Screening" ? Promise.resolve(screenings) : (reviewReads.shift() ?? Promise.resolve([])),
+    );
+  const deferred = <T,>() => {
+    let resolve!: (value: T) => void;
+    let reject!: (err: unknown) => void;
+    const promise = new Promise<T>((res, rej) => ((resolve = res), (reject = rej)));
+    return { promise, resolve, reject };
+  };
+
+  it("shows a queue loaded in the last ten minutes at once, then gives the full read", async () => {
+    world();
+    await loadPendingQueue("dr.a");
+    const screenings = deferred<CachedEncounter[]>();
+    store(screenings.promise);
+    const show = vi.fn();
+    const opening = openPendingQueue("dr.a", show);
+    await vi.waitFor(() => expect(show).toHaveBeenCalledTimes(1));
+    expect(keys(show.mock.calls[0][0] as PendingQueue)).toEqual(["sA", "sB"]);
+    screenings.resolve(later);
+    expect(keys(await opening)).toEqual(["sA", "sB", "sNew"]);
+    expect(show).toHaveBeenCalledTimes(1);
+  });
+
+  it("shows nothing early without a recent queue", async () => {
+    world();
+    store(later);
+    const show = vi.fn();
+    expect(keys(await openPendingQueue("dr.a", show))).toEqual(["sA", "sB", "sNew"]);
+    expect(show).not.toHaveBeenCalled();
+  });
+
+  it("does not show the early queue after the full read has settled", async () => {
+    world();
+    await loadPendingQueue("dr.a");
+    const early = deferred<CachedEncounter[]>();
+    store(later, early.promise);
+    const show = vi.fn();
+    expect(keys(await openPendingQueue("dr.a", show))).toEqual(["sA", "sB", "sNew"]);
+    early.resolve([]);
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(show).not.toHaveBeenCalled();
+  });
+
+  it("gives the full read when the early review read fails", async () => {
+    world();
+    await loadPendingQueue("dr.a");
+    const failed = Promise.reject(new Error("reviews unreadable"));
+    failed.catch(() => undefined);
+    store(later, failed);
+    const show = vi.fn();
+    expect(keys(await openPendingQueue("dr.a", show))).toEqual(["sA", "sB", "sNew"]);
+    expect(show).not.toHaveBeenCalled();
   });
 });
 

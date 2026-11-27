@@ -318,6 +318,31 @@ export async function queueForPress(viewer: string): Promise<PressQueue> {
 }
 
 /**
+ * The pending tab's first load (PE-304): the full load, and, when a full load of the physician's places started in the
+ * last ten minutes, that queue rebuilt from a fresh read of the review store, given to `show` first, so a list opened
+ * again shows at once. `show` is not called once the full load has settled, so the early queue never replaces it, and a
+ * failed early read shows nothing early. Resolves and fails with the full load, which never waits for the early read.
+ */
+export async function openPendingQueue(viewer: string, show: (queue: PendingQueue) => void): Promise<PendingQueue> {
+  const catchment = await getCatchment();
+  const base = recentQueue(viewer, catchment);
+  const full = loadPendingQueue(viewer);
+  if (!base) return full;
+  let done = false;
+  full.then(
+    () => (done = true),
+    () => (done = true),
+  );
+  getCachedEncounters(ENCOUNTER_TYPE.physicianReviewForm.name).then(
+    (reviews) => {
+      if (!done) show(refreshQueue(base, reviews, viewer, serverNow()));
+    },
+    () => undefined,
+  );
+  return full;
+}
+
+/**
  * Review next case on a press's queue (`takeNextCase`). When it gives nothing and a full read is running behind it,
  * waits for that read and tries its cases, less those already refused or failed, so a press never says nothing is
  * waiting while the recent queue only lacks the newest cases. The keys refused or failed go into `passedOver`.
@@ -448,7 +473,8 @@ export function startQueueRefresh(
 const messageOf = (err: unknown) => (err instanceof Error ? err.message : String(err));
 
 /**
- * The queue for the pending tab, loaded when `enabled`. `reload` gives a press's queue (`queueForPress`) and shows it,
+ * The queue for the pending tab, loaded when `enabled`; opened again within ten minutes of a full load, it shows that
+ * queue at once while it reads the rest (`openPendingQueue`). `reload` gives a press's queue (`queueForPress`) and shows it,
  * then shows the full read behind it when that lands; its errors go to the caller and leave the loaded queue in place. While the
  * tab is open the queue is refreshed lightly from the review store (`lightRefresh`), except while `paused`, which the
  * list sets for the length of a Review next case press.
@@ -474,13 +500,18 @@ export function usePendingQueue(enabled: boolean, viewer: string, paused = false
     g.queue = null;
     g.reading += 1;
     setState({ data: null, error: null });
-    loadPendingQueue(viewer)
+    openPendingQueue(viewer, (early) => {
+      if (ticket === g.latest) land(early);
+    })
       .then(
         (data) => {
           if (ticket === g.latest) land(data);
         },
         (err: unknown) => {
-          if (ticket === g.latest) setState({ data: null, error: messageOf(err) });
+          if (ticket !== g.latest) return;
+          // An early queue on screen goes too, so the light refresh does not bring it back over the error.
+          g.queue = null;
+          setState({ data: null, error: messageOf(err) });
         },
       )
       .finally(() => {
