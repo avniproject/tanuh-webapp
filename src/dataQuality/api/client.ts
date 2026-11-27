@@ -165,6 +165,7 @@ export const dqsApi = {
     get<VillagesInPeriod>(`${period(grain, start)}/villages`, { record_type: recordType }),
 
   // The taluk and village outlines; 404 until the tenant's village boundaries are imported.
+  // DQS lets the browser reuse the map for ten minutes, so switching views does not fetch it.
   map: () => get<MapOutlines>("/map"),
 
   workerHistory: (workerId: string, grain: Grain) =>

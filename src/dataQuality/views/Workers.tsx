@@ -362,38 +362,41 @@ function Profile({ workerId, group }: { workerId: string; group: string | null }
           )}
         </Pending>
       </Box>
-      {/* Last, so that the day strip and the chart sit under the scores without scrolling. */}
-      <Pending loaded={period} reserve={{ minHeight: 220 }}>
-        {() =>
-          scored && (
-            <Stack spacing={1.25} sx={{ bgcolor: DQ.surfaceSubtle, borderRadius: 1, p: 2 }}>
-              <Typography variant="body2" sx={{ fontWeight: 500 }}>Top Reason for Poor Quality</Typography>
-              {top.length ? (
-                top.map((rule) => (
-                  <ReasonCard
-                    key={rule.rule_id}
-                    ruleId={rule.rule_id}
-                    title={rules[rule.rule_id]?.title || rule.rule_id}
-                    group={GATE_GROUP[rule.feeds] || dimensionName(rule.dimension)}
-                    records={rule.n_evaluated}
-                    failures={rule.n_violations}
-                    noun={checkedNoun(rules[rule.rule_id], context.photo_record_type)}
-                    rate={rule.rate}
-                    onClick={() =>
-                      // A batch rule judges the whole period and has no failing records to list.
-                      rules[rule.rule_id]?.kind === "batch"
-                        ? openRule(rule.rule_id)
-                        : setFailures({ ruleId: rule.rule_id, workerId, workerName: row?.name || workerId, group })
-                    }
-                  />
-                ))
-              ) : (
-                <Typography variant="body2" sx={{ color: DQ.textSubtle }}>No rule failures this {noun}.</Typography>
-              )}
-            </Stack>
-          )
-        }
-      </Pending>
+      {/* Last, so that the day strip and the chart sit under the scores without scrolling. A
+          period that failed to load is reported once, above. */}
+      {period.state !== "error" && (
+        <Pending loaded={period} reserve={{ minHeight: 220 }}>
+          {() =>
+            scored && (
+              <Stack spacing={1.25} sx={{ bgcolor: DQ.surfaceSubtle, borderRadius: 1, p: 2 }}>
+                <Typography variant="body2" sx={{ fontWeight: 500 }}>Top Reason for Poor Quality</Typography>
+                {top.length ? (
+                  top.map((rule) => (
+                    <ReasonCard
+                      key={rule.rule_id}
+                      ruleId={rule.rule_id}
+                      title={rules[rule.rule_id]?.title || rule.rule_id}
+                      group={GATE_GROUP[rule.feeds] || dimensionName(rule.dimension)}
+                      records={rule.n_evaluated}
+                      failures={rule.n_violations}
+                      noun={checkedNoun(rules[rule.rule_id], context.photo_record_type)}
+                      rate={rule.rate}
+                      onClick={() =>
+                        // A batch rule judges the whole period and has no failing records to list.
+                        rules[rule.rule_id]?.kind === "batch"
+                          ? openRule(rule.rule_id)
+                          : setFailures({ ruleId: rule.rule_id, workerId, workerName: row?.name || workerId, group })
+                      }
+                    />
+                  ))
+                ) : (
+                  <Typography variant="body2" sx={{ color: DQ.textSubtle }}>No rule failures this {noun}.</Typography>
+                )}
+              </Stack>
+            )
+          }
+        </Pending>
+      )}
       <FailedRecords
         target={failures}
         onClose={() => setFailures(null)}
