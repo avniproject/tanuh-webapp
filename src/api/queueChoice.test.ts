@@ -3,6 +3,7 @@ import type { CachedEncounter } from "./encounters";
 import type { EncounterWithLocation } from "./impl";
 import {
   chooseGroup,
+  groupOrderFor,
   heldByViewer,
   nextAndHeld,
   nextCaseIn,
@@ -18,10 +19,18 @@ import {
   IN_REVIEW_BY_CONCEPT,
   IN_REVIEW_SINCE_CONCEPT,
   OCSHR_RESULT_CONCEPT,
+  QUEUE_GROUPS,
   REVIEWED_ORAL_SCREENING_CONCEPT,
+  type QueueGroup,
 } from "@/constants/tanuhConcepts";
 
 const NOW = new Date(2026, 9, 7, 10, 30);
+
+// A physician whose order on `now`'s day starts with `group`, for tests whose expectation rests on the tie order.
+const viewerStartingWith = (group: QueueGroup, now: Date): string => {
+  for (let i = 0; i < 100; i++) if (groupOrderFor(`physician${i}`, now)[0] === group) return `physician${i}`;
+  throw new Error(`No physician starts on ${group}`);
+};
 const at = (minute: number, day = 7) => new Date(2026, 9, day, 10, minute).toISOString();
 
 const screening = (id: string, minute: number, flw: boolean, edge: "Suspicious" | null = null): CachedEncounter =>
@@ -55,17 +64,43 @@ const row = (id: string, minute: number, flw: boolean, held?: { by: string; modi
 
 describe("chooseGroup", () => {
   const waiting = { "FLW marked": 5, "AI marked": 5, "Safety sample": 1 };
+  const none = { "FLW marked": 0, "AI marked": 0, "Safety sample": 0 };
   it("takes the group reviewed least", () => {
-    expect(chooseGroup({ "FLW marked": 2, "AI marked": 1, "Safety sample": 0 }, waiting)).toBe("Safety sample");
+    expect(chooseGroup({ "FLW marked": 2, "AI marked": 1, "Safety sample": 0 }, waiting, QUEUE_GROUPS)).toBe("Safety sample");
   });
   it("moves on when that group has nothing waiting", () => {
-    expect(chooseGroup({ "FLW marked": 2, "AI marked": 1, "Safety sample": 0 }, { ...waiting, "Safety sample": 0 })).toBe("AI marked");
+    expect(chooseGroup({ "FLW marked": 2, "AI marked": 1, "Safety sample": 0 }, { ...waiting, "Safety sample": 0 }, QUEUE_GROUPS)).toBe("AI marked");
   });
-  it("breaks ties FLW, AI, Safety", () => {
-    expect(chooseGroup({ "FLW marked": 0, "AI marked": 0, "Safety sample": 0 }, waiting)).toBe("FLW marked");
+  it("still takes the group reviewed least, whatever the order", () => {
+    expect(chooseGroup({ "FLW marked": 0, "AI marked": 1, "Safety sample": 1 }, waiting, ["Safety sample", "AI marked", "FLW marked"])).toBe("FLW marked");
+  });
+  it("breaks a tie by the physician's order, skipping a group with nothing waiting", () => {
+    const order = ["AI marked", "Safety sample", "FLW marked"] as const;
+    expect(chooseGroup(none, waiting, order)).toBe("AI marked");
+    expect(chooseGroup(none, { ...waiting, "AI marked": 0 }, order)).toBe("Safety sample");
   });
   it("is null when nothing waits", () => {
-    expect(chooseGroup({ "FLW marked": 0, "AI marked": 0, "Safety sample": 0 }, { "FLW marked": 0, "AI marked": 0, "Safety sample": 0 })).toBeNull();
+    expect(chooseGroup(none, none, QUEUE_GROUPS)).toBeNull();
+  });
+});
+
+// PE-304: the dry run saw every physician start on FLW marked, because ties always went that way. Each physician's
+// tie order is now their own, and changes from day to day.
+describe("groupOrderFor", () => {
+  it("gives every group once, and the same order all day", () => {
+    const morning = groupOrderFor("physician1", new Date(2026, 10, 27, 9, 0));
+    expect([...morning].sort()).toEqual([...QUEUE_GROUPS].sort());
+    expect(groupOrderFor("physician1", new Date(2026, 10, 27, 0, 0))).toEqual(morning);
+    expect(groupOrderFor("physician1", new Date(2026, 10, 27, 23, 59))).toEqual(morning);
+  });
+  it("starts physicians on different groups", () => {
+    const day = new Date(2026, 10, 27, 9, 0);
+    const firsts = new Set(Array.from({ length: 30 }, (_, i) => groupOrderFor(`physician${i}`, day)[0]));
+    expect(firsts.size).toBe(3);
+  });
+  it("moves a physician's first group from day to day", () => {
+    const firsts = new Set(Array.from({ length: 30 }, (_, d) => groupOrderFor("physician1", new Date(2026, 10, 1 + d, 9))[0]));
+    expect(firsts.size).toBe(3);
   });
 });
 
@@ -141,6 +176,16 @@ describe("reviewedToday", () => {
 describe("takeNextCase", () => {
   const none = { "FLW marked": 0, "AI marked": 0, "Safety sample": 0 };
   const key = (r: QueueRow) => r.screening?.ID;
+  // Tests whose expected order rests on FLW marked coming first on a tie.
+  const flwFirst = viewerStartingWith("FLW marked", NOW);
+
+  it("gives a physician who starts on AI marked an AI case, as the panel says", async () => {
+    const viewer = viewerStartingWith("AI marked", NOW);
+    const rows = [row("f1", 1, true), row("a1", 2, false)];
+    const take = vi.fn(async (r: QueueRow) => ({ reviewUuid: "rev-" + key(r) }));
+    expect(nextAndHeld(rows, none, new Set(), viewer, NOW).next).toBe("AI marked");
+    await expect(takeNextCase(rows, none, viewer, NOW, take)).resolves.toBe("rev-a1");
+  });
 
   it("takes the oldest waiting case of the group reviewed least", async () => {
     const rows = [row("f1", 3, true), row("a2", 5, false), row("a1", 2, false)];
@@ -170,7 +215,7 @@ describe("takeNextCase", () => {
   it("gives up after every waiting case is refused, and never tries one held by someone else", async () => {
     const rows = [row("a1", 2, false), row("f1", 1, true), row("f2", 4, true, { by: "dr.b", modifiedMinute: 25 })];
     const take = vi.fn<(r: QueueRow) => Promise<TakeResult>>(async () => ({ refused: "gone" }));
-    await expect(takeNextCase(rows, none, "dr.a", NOW, take)).resolves.toBeNull();
+    await expect(takeNextCase(rows, none, flwFirst, NOW, take)).resolves.toBeNull();
     expect(take.mock.calls.map(([r]) => key(r))).toEqual(["f1", "a1"]);
   });
 
@@ -206,7 +251,8 @@ describe("takeNextCase", () => {
         if (key(r) === "f1") throw new Error("503");
         return { reviewUuid: "rev-" + key(r) };
       });
-      await expect(takeNextCase(rows, none, "dr.a", NOW, take)).resolves.toBe("rev-a1");
+      await expect(takeNextCase(rows, none, flwFirst, NOW, take)).resolves.toBe("rev-a1");
+      expect(take.mock.calls.map(([r]) => key(r))).toEqual(["f1", "a1"]);
     });
 
     it("raises one error when nothing could be taken and a case failed", async () => {
@@ -223,7 +269,7 @@ describe("takeNextCase", () => {
 
   it("records the cases it passed over, refused or failed, and not the one it took", async () => {
     const logged = vi.spyOn(console, "error").mockImplementation(() => {});
-    const held = row("m1", 0, true, { by: "dr.a", modifiedMinute: 25 });
+    const held = row("m1", 0, true, { by: flwFirst, modifiedMinute: 25 });
     const rows = [held, row("f1", 1, true), row("f2", 2, true), row("a1", 3, false)];
     const take = vi.fn(async (r: QueueRow): Promise<TakeResult> => {
       if (key(r) === "f1") throw new Error("503");
@@ -231,7 +277,7 @@ describe("takeNextCase", () => {
       return { refused: "reviewed" };
     });
     const passedOver = new Set<string>();
-    await expect(takeNextCase(rows, none, "dr.a", NOW, take, held, passedOver)).resolves.toBe("rev-a1");
+    await expect(takeNextCase(rows, none, flwFirst, NOW, take, held, passedOver)).resolves.toBe("rev-a1");
     expect([...passedOver].sort()).toEqual(["f1", "f2", "r-m1"]);
     logged.mockRestore();
   });
@@ -274,18 +320,19 @@ describe("takeNextCase", () => {
 // reads the queue again: a light refresh still lists them, and a press would only be refused on them again.
 describe("nextAndHeld", () => {
   const none = { "FLW marked": 0, "AI marked": 0, "Safety sample": 0 };
-  const held = row("m1", 0, true, { by: "dr.a", modifiedMinute: 25 });
+  const viewer = viewerStartingWith("FLW marked", NOW);
+  const held = row("m1", 0, true, { by: viewer, modifiedMinute: 25 });
   const rows = [held, row("f1", 1, true), row("a1", 2, false)];
 
   it("is the queue's own next group and held case when no case was passed over", () => {
-    const shown = nextAndHeld(rows, none, new Set(), "dr.a", NOW);
-    expect(shown.next).toBe(chooseGroup(none, waitingCounts(rows, "dr.a", NOW)));
+    const shown = nextAndHeld(rows, none, new Set(), viewer, NOW);
+    expect(shown.next).toBe(chooseGroup(none, waitingCounts(rows, viewer, NOW), groupOrderFor(viewer, NOW)));
     expect(shown.next).toBe("FLW marked");
     expect(shown.held && queueRowKey(shown.held)).toBe("r-m1");
   });
 
   it("leaves out the cases the last press passed over", () => {
-    expect(nextAndHeld(rows, none, new Set(["f1", "r-m1"]), "dr.a", NOW)).toEqual({ next: "AI marked", held: undefined });
-    expect(nextAndHeld(rows, none, new Set(["f1", "a1"]), "dr.a", NOW).next).toBeNull();
+    expect(nextAndHeld(rows, none, new Set(["f1", "r-m1"]), viewer, NOW)).toEqual({ next: "AI marked", held: undefined });
+    expect(nextAndHeld(rows, none, new Set(["f1", "a1"]), viewer, NOW).next).toBeNull();
   });
 });

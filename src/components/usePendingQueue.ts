@@ -17,6 +17,7 @@ import { getProgramEncountersWithLocation, readSubjects } from "@/api/programLis
 import { takeCase, type TakeResult } from "@/api/caseHold";
 import {
   chooseGroup,
+  groupOrderFor,
   heldByViewer,
   reviewedToday,
   takeNextCase,
@@ -227,7 +228,8 @@ export async function takeNextFromQueue(
 function counted(rows: QueueRow[], reviews: CachedEncounter[], screenings: CachedEncounter[], viewer: string, now: Date) {
   const reviewed = reviewedToday(reviews, screenings, viewer, now);
   const waiting = waitingCounts(rows, viewer, now);
-  return { waiting, reviewed, next: chooseGroup(reviewed, waiting), held: heldByViewer(rows, viewer, now), now };
+  const next = chooseGroup(reviewed, waiting, groupOrderFor(viewer, now));
+  return { waiting, reviewed, next, held: heldByViewer(rows, viewer, now), now };
 }
 
 /**

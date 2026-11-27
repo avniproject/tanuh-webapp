@@ -5,7 +5,7 @@ import {
   readObs,
   type QueueGroup,
 } from "@/constants/tanuhConcepts";
-import { isSameDay } from "date-fns";
+import { format, isSameDay } from "date-fns";
 import { classify, isReady, signalsOf } from "./caseSignals";
 import type { CachedEncounter } from "./encounters";
 import type { TakeResult } from "./caseHold";
@@ -56,9 +56,24 @@ export function reviewedToday(
   return counts;
 }
 
-// Fewest reviewed today first, ties in group order; skips a group with nothing waiting.
-export function chooseGroup(reviewed: GroupCounts, waiting: GroupCounts): QueueGroup | null {
-  const ordered = [...QUEUE_GROUPS].sort((a, b) => reviewed[a] - reviewed[b]);
+/**
+ * The physician's own tie order for the day (PE-304): the groups rotated by a hash of the username and the local date,
+ * so physicians in one place start on different groups, and each one's first group changes from day to day. Before,
+ * ties always went FLW marked first, and every physician's first case of the day was an FLW marked one.
+ */
+export function groupOrderFor(viewer: string, now: Date): QueueGroup[] {
+  let hash = 0x811c9dc5;
+  for (const ch of `${viewer}|${format(now, "yyyy-MM-dd")}`) {
+    hash ^= ch.codePointAt(0) ?? 0;
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  const offset = hash % QUEUE_GROUPS.length;
+  return [...QUEUE_GROUPS.slice(offset), ...QUEUE_GROUPS.slice(0, offset)];
+}
+
+// Fewest reviewed today first, ties in the physician's `order` (groupOrderFor); skips a group with nothing waiting.
+export function chooseGroup(reviewed: GroupCounts, waiting: GroupCounts, order: readonly QueueGroup[]): QueueGroup | null {
+  const ordered = [...order].sort((a, b) => reviewed[a] - reviewed[b]);
   return ordered.find((g) => waiting[g] > 0) ?? null;
 }
 
@@ -92,7 +107,10 @@ export function nextAndHeld(
   now: Date,
 ): { next: QueueGroup | null; held: QueueRow | undefined } {
   const left = passedOver.size > 0 ? rows.filter((r) => !passedOver.has(queueRowKey(r))) : rows;
-  return { next: chooseGroup(reviewed, waitingCounts(left, viewer, now)), held: heldByViewer(left, viewer, now) };
+  return {
+    next: chooseGroup(reviewed, waitingCounts(left, viewer, now), groupOrderFor(viewer, now)),
+    held: heldByViewer(left, viewer, now),
+  };
 }
 
 /**
@@ -137,7 +155,8 @@ export async function takeNextCase(
   const tried = new Set<string>(held ? [queueRowKey(held)] : []);
   const untried = () => rows.filter((r) => !tried.has(queueRowKey(r)));
   const waiting: GroupCounts = { ...waitingCounts(rows, viewer, now) };
-  for (let group = chooseGroup(reviewed, waiting); group; group = chooseGroup(reviewed, waiting)) {
+  const order = groupOrderFor(viewer, now);
+  for (let group = chooseGroup(reviewed, waiting, order); group; group = chooseGroup(reviewed, waiting, order)) {
     for (let row = nextCaseIn(untried(), group, viewer, now); row; row = nextCaseIn(untried(), group, viewer, now)) {
       tried.add(queueRowKey(row));
       const reviewUuid = await attempt(row);
