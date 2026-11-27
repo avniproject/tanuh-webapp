@@ -425,6 +425,25 @@ const CACHED_OBS_REFS = [
 const CACHE_OVERLAP_MS = 5 * 60 * 1000;
 // A long read hands over what it has read every this many requests, so it is saved as it goes (PE-304).
 const CHECKPOINT_EVERY = 20;
+// The shared client has no timeout. A request the server never answers fails the read after this long, so a read
+// still running, which every later call waits for, cannot hold the store until the page is reloaded.
+const STORE_REQUEST_TIMEOUT_MS = 120 * 1000;
+
+function withTimeout<T>(request: Promise<T>, ms: number): Promise<T> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`The server did not answer within ${ms / 1000} s`)), ms);
+    request.then(
+      (value) => {
+        clearTimeout(timer);
+        resolve(value);
+      },
+      (err: unknown) => {
+        clearTimeout(timer);
+        reject(err);
+      },
+    );
+  });
+}
 const CACHE_COLD_PAGE_CAP = 200; // ~20k rows; one-time cold-start guard
 const CACHE_PAGE_SIZE = 100;
 // The persisted rows belong to whoever fetched them. Both Tanuh orgs sit on the
@@ -526,7 +545,7 @@ export async function fetchEncountersSince(
 ): Promise<EncounterApiResponse[]> {
   const fetched = new Map<string, EncounterApiResponse>();
   const read = async (p: { lastModifiedDateTime: string; now?: string; page: number }) => {
-    const res = await list({ ...p, size: pageSize });
+    const res = await withTimeout(list({ ...p, size: pageSize }), STORE_REQUEST_TIMEOUT_MS);
     for (const e of res.content) fetched.set(e.ID, e);
     return res;
   };
@@ -567,10 +586,11 @@ export async function fetchEncountersSince(
   return [...fetched.values()];
 }
 
-// One read per type. A read still running is never dropped or expired: a call during it joins it (PE-304: a press, a
-// release or a tab change used to start a second read of 20,000 screenings beside the first). A finished read is
-// reused for SWEEP_TTL_MS after it ends. `stale` marks a read invalidated since it started; the next call reads the
-// changes again, after it ends when it is still running.
+// One read per type. A read still running is never dropped or expired: a call during it joins it, and a call after an
+// invalidate (a press, a take, a release, a submit) waits for it to end and then reads the changes (PE-304: such a
+// call used to start a second read of 20,000 screenings beside the first). A finished read is reused for
+// SWEEP_TTL_MS after it ends. `stale` marks a read invalidated since it started. A read that fails, or whose request
+// gets no answer within STORE_REQUEST_TIMEOUT_MS, is not kept.
 interface CachedLayer {
   promise: Promise<CachedEncounter[]>;
   settledAt: number | null;
@@ -669,9 +689,9 @@ export async function refreshStoredEncounters(
   return next.records;
 }
 
-// Drop the in-memory memo so the next getCachedEncounters call issues a fresh
-// delta fetch (e.g. right after a review submit). The persistent store is kept —
-// the delta picks up the just-written row via its bumped lastModified.
+// Mark the in-memory reads stale so the next getCachedEncounters call issues a fresh
+// delta fetch (e.g. right after a review submit), after any read still running. The
+// persistent store is kept — the delta picks up the just-written row via its bumped lastModified.
 export function invalidateCachedEncounters(): void {
   for (const layer of cachedLayerMemo.values()) layer.stale = true;
 }

@@ -159,6 +159,20 @@ describe("loadPendingQueue", () => {
     expect(m.readSubjects.mock.calls.flatMap(([ids]) => ids)).toEqual(["pUnknown", "pIn"]);
   });
 
+  // Review finding: a patient whose read failed while placing one screening was taken as read for another.
+  it("reads again a patient whose read failed while placing another of their screenings", async () => {
+    given({
+      screenings: [screening("sOpen", "p1", 1), screening("sPlaced", "p1", 2)],
+      patients: new Map([["p1", patient("p1", "v1")]]),
+      inPlaces: ["sPlaced"],
+      complete: false,
+    });
+    m.readSubjects.mockImplementationOnce((ids: string[]) => Promise.resolve(new Map(ids.map((id) => [id, null]))));
+    const q = await loadPendingQueue("dr.a");
+    expect(q.rows.map(queueRowKey)).toEqual(["sPlaced"]);
+    expect(q.unread).toBe(1);
+  });
+
   it("drops a placed screening whose patient could not be read, and counts it", async () => {
     given({
       screenings: [screening("sIn", "pIn", 1), screening("sUnread", "pUnread", 2)],

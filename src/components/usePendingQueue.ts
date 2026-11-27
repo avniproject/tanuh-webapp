@@ -50,10 +50,12 @@ export function placesToRead(catchment: Catchment, chosen: string | null | undef
 export interface PlacedScreenings {
   // The screenings in the physician's places.
   placed: Set<string>;
-  // The screenings that could not be placed: a lookup cut short, or a programme screening whose patient could not be
-  // read. A list leaves them out and counts them.
+  // The screenings that could not be placed: one the lookups could not settle whose patient could not be read, or was
+  // past the patient reads allowed in one load, and a programme screening whose patient could not be read. A list
+  // leaves them out and counts them.
   unplaced: Set<string>;
-  // The programme screenings' patients, read to place them; null where the read failed.
+  // The patients read to place screenings: those of programme screenings, and of screenings the lookups could not
+  // settle, which may lie outside the physician's places and are never shown. Null where the read failed.
   subjects: ReadonlyMap<string, SubjectApiResponse | null>;
 }
 
@@ -204,7 +206,8 @@ export interface PendingQueue {
 /**
  * The queue's own read (PE-249, D7): booked reviews in each of the physician's top places, and every screening and
  * review in the encounter store. A screening row stays only when it lies in one of the physician's places (FW10: the
- * server's lookup, or a programme screening's patient) and its patient, read for the Village column, is not deleted.
+ * server's lookup, or the patient's own place where the lookup cannot tell, placeScreenings) and its patient, read for
+ * the Village column, is not deleted.
  * A row that could not be placed, or whose patient could not be read, is left out and counted, as is a programme review
  * that could not be placed. Fails when the physician's places cannot be read.
  */
@@ -223,9 +226,10 @@ export async function loadPendingQueue(viewer: string): Promise<PendingQueue> {
     candidates.flatMap((r) => (r.kind === "screening" ? [r.screening] : [])),
     catchment,
   );
-  // Only the patients of placed rows are read; a programme screening's was read to place it.
+  // Only the patients of placed rows are read, each once; one read to place a screening is not read again, unless that
+  // read failed.
   const toRead = candidates.flatMap((r) =>
-    r.kind === "screening" && where.placed.has(r.screening.ID) && !where.subjects.has(r.screening["Subject ID"])
+    r.kind === "screening" && where.placed.has(r.screening.ID) && where.subjects.get(r.screening["Subject ID"]) == null
       ? [r.screening["Subject ID"]]
       : [],
   );

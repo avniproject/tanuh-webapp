@@ -284,6 +284,45 @@ describe("getCachedEncounters", () => {
     await second;
   });
 
+  // Review finding: with no timeout on the client, a read the server never answered would hold the store until reload.
+  it("a read the server never answers fails after two minutes, and the next call reads afresh", async () => {
+    vi.useFakeTimers();
+    const stuck = getCachedEncounters("Oral Screening");
+    const failed = expect(stuck).rejects.toThrow();
+    await vi.advanceTimersByTimeAsync(120_000);
+    await failed;
+    getCachedEncounters("Oral Screening");
+    await vi.advanceTimersByTimeAsync(0);
+    expect(get).toHaveBeenCalledTimes(4);
+    answerAll();
+  });
+
+  it("a read that fails is not kept: the next call reads afresh", async () => {
+    get.mockRejectedValueOnce(new Error("503"));
+    await expect(getCachedEncounters("Oral Screening")).rejects.toThrow("503");
+    const next = getCachedEncounters("Oral Screening");
+    await flush();
+    answerAll();
+    await expect(next).resolves.toEqual([]);
+  });
+
+  it("a read queued behind one that fails still runs", async () => {
+    let fail: (e: Error) => void = () => {};
+    get.mockImplementationOnce(() => new Promise((_resolve, reject) => (fail = reject)));
+    const first = getCachedEncounters("Oral Screening");
+    const firstFailed = expect(first).rejects.toThrow("503");
+    await flush();
+    invalidateCachedEncounters();
+    const second = getCachedEncounters("Oral Screening");
+    await flush();
+    answerAll(); // the programme source's answer to the first read
+    fail(new Error("503"));
+    await firstFailed;
+    await flush();
+    answerAll();
+    await expect(second).resolves.toEqual([]);
+  });
+
   it("reuses a finished read for 60 seconds after it ends, however long it ran", async () => {
     vi.useFakeTimers();
     const first = getCachedEncounters("Oral Screening");
