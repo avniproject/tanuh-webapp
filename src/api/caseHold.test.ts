@@ -378,6 +378,21 @@ describe("takeCase and releaseCase", () => {
     expect(patch).not.toHaveBeenCalled();
   });
 
+  // PE-304: a booked case is paired with its screening from a queue that can be minutes old.
+  it("refuses, and writes nothing, a booked case whose screening was deleted since the queue was read", async () => {
+    fakeServer([bookedWith({ Other: "x" })], [{ ...screening, Voided: true }]);
+    const row = { kind: "booked", review: { encounterUuid: "r1" }, screening } as unknown as QueueRow;
+    expect(await takeCase(row, "dr.a", t0)).toEqual({ refused: "gone" });
+    expect(patch).not.toHaveBeenCalled();
+    expect(put).not.toHaveBeenCalled();
+  });
+
+  it("takes a booked case whose screening is still there", async () => {
+    fakeServer([bookedWith({ Other: "x" })], [screening]);
+    const row = { kind: "booked", review: { encounterUuid: "r1" }, screening } as unknown as QueueRow;
+    expect(await takeCase(row, "dr.a", t0)).toEqual({ reviewUuid: "r1" });
+  });
+
   // PE-304: a press can take from a queue read minutes earlier, so the screening is read again before anything is written.
   it("refuses, and writes nothing, a screening deleted since the queue was read", async () => {
     fakeServer([], [{ ...screening, Voided: true }]);

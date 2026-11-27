@@ -97,8 +97,8 @@ export function heldByViewer(rows: QueueRow[], viewer: string, now: Date): Queue
 /**
  * The next group and the case to continue, as the panel shows them, leaving out the cases the last press passed over
  * (refused or failed). A light refresh still lists such a case, for instance one refused because its screening has a
- * review the queue's read missed, and a press would only be refused on it again. The next press reads the queue in
- * full and tries every case afresh.
+ * review the queue's read missed, and a press would only be refused on it again. The next press tries every case
+ * afresh, from a queue rebuilt from fresh reviews (queueForPress).
  */
 export function nextAndHeld(
   rows: QueueRow[],

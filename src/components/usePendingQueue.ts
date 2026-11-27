@@ -5,6 +5,7 @@ import {
   invalidateCachedEncounters,
   invalidateEncounterSweeps,
   isProgramEncounter,
+  withTimeout,
   type CachedEncounter,
 } from "@/api/encounters";
 import {
@@ -271,6 +272,9 @@ export async function loadPendingQueue(viewer: string): Promise<PendingQueue> {
 
 // A press takes from a queue whose load started this recently (PE-304).
 export const PRESS_BASE_MAX_AGE_MS = 10 * 60 * 1000;
+// The background full load fails after this long, so a request the server never answers cannot hold every later press,
+// or the list's light refresh, until the page is reloaded. A full load on Tanuh UAT takes about 15 s.
+export const PRESS_BACKGROUND_TIMEOUT_MS = 3 * 60 * 1000;
 
 // The page's newest full load: whose, for which places, which load (loads are numbered as they start, so an older one
 // finishing late does not replace a newer one), and when it started.
@@ -307,7 +311,7 @@ export async function queueForPress(viewer: string): Promise<PressQueue> {
   // Asked first, so the background load joins this read of the reviews.
   const reviews = getCachedEncounters(ENCOUNTER_TYPE.physicianReviewForm.name);
   if (!background || background.viewer !== viewer || background.catchment !== catchment) {
-    const promise: Promise<PendingQueue> = loadPendingQueue(viewer).finally(() => {
+    const promise: Promise<PendingQueue> = withTimeout(loadPendingQueue(viewer), PRESS_BACKGROUND_TIMEOUT_MS).finally(() => {
       if (background?.promise === promise) background = null;
     });
     promise.catch((err: unknown) => console.warn("Review next case: the queue could not be read again in the background", err));
@@ -417,7 +421,7 @@ export interface RefreshGate {
   reading: number;
   // A Review next case press is running.
   paused: boolean;
-  // The queue on screen; none while a full load runs, or after one failed.
+  // The queue on screen: none while a first load runs with no recent queue to show, or after a first load failed.
   queue: PendingQueue | null;
 }
 

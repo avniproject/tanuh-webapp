@@ -331,7 +331,7 @@ export function EncounterList({ mode }: Props) {
   // the whole queue again behind it (queueForPress, PE-304); the viewer's own case is continued, else the oldest
   // waiting case of the group they have reviewed least is taken, moving on past any case someone else took first. The
   // button is never disabled for want of cases: the tab's light refresh shows takes, releases and lapsed holds, but
-  // only a full read, which every press starts, finds new cases.
+  // only a full read, which every press starts or joins, finds new cases.
   const filtered = !!(patientLocationUuid || referralUuid);
   const [taking, setTaking] = useState(false);
   // A review page's Complete and review next case that saved the review but could not take the next case opens the list

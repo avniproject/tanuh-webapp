@@ -50,6 +50,7 @@ import {
   refreshPendingQueue,
   refreshQueue,
   startQueueRefresh,
+  PRESS_BACKGROUND_TIMEOUT_MS,
   PRESS_BASE_MAX_AGE_MS,
   queueForPress,
   takeFromQueue,
@@ -444,6 +445,30 @@ describe("queueForPress", () => {
     store(never());
     const press = await queueForPress("dr.a");
     expect(keys(press.queue)).toEqual(["sA", "sB", "sNew"]);
+  });
+
+  it("gives up on a background read that never ends, so a press does not wait on it for ever", async () => {
+    // The describe fakes only the date; this test needs the timers too.
+    vi.useRealTimers();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"] });
+    vi.setSystemTime(LOAD);
+    world();
+    await loadPendingQueue("dr.a");
+    // Nothing left to take in the recent queue, so the press waits for the full read, which never answers.
+    store(never(), [
+      reviewOf("dA", "pA", 29, takenBy("sA", "dr.b", 20), true),
+      reviewOf("dB", "pB", 29, takenBy("sB", "dr.b", 21), true),
+    ]);
+    const take = vi.fn();
+    const failed = expect(takeFromQueue(await queueForPress("dr.a"), "dr.a", take)).rejects.toThrow("did not answer");
+    await vi.advanceTimersByTimeAsync(PRESS_BACKGROUND_TIMEOUT_MS);
+    await failed;
+    expect(take).not.toHaveBeenCalled();
+    // The next press starts a new full read instead of joining the one that never ended.
+    const oralReads = () => m.getCachedEncounters.mock.calls.filter(([type]) => type === "Oral Screening").length;
+    const before = oralReads();
+    await queueForPress("dr.a");
+    expect(oralReads()).toBe(before + 1);
   });
 
   it("still takes from the recent queue when the background read fails, and warns", async () => {

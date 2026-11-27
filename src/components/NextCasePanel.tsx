@@ -19,8 +19,8 @@ interface Props {
 }
 
 // PE-249: the only way to start a review. The physician holds one case at a time, so while they hold one the button
-// continues it. It is enabled whenever it is not busy: every press reads the queue again, so cases that arrived and
-// holds that lapsed since the tab opened are found by pressing it.
+// continues it. It is enabled whenever it is not busy: every press reads the reviews again and the whole queue behind
+// it (queueForPress), so lapsed holds are found by pressing it, and cases that arrived once that read lands.
 export function NextCasePanel({ reviewed, next, held, busy, failed, onTake }: Props) {
   const label = held ? `Continue case ${held.caseId ?? ""}`.trim() : "Review next case";
   return (

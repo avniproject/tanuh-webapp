@@ -429,7 +429,7 @@ const CHECKPOINT_EVERY = 20;
 // still running, which every later call waits for, cannot hold the store until the page is reloaded.
 const STORE_REQUEST_TIMEOUT_MS = 120 * 1000;
 
-function withTimeout<T>(request: Promise<T>, ms: number): Promise<T> {
+export function withTimeout<T>(request: Promise<T>, ms: number): Promise<T> {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => reject(new Error(`The server did not answer within ${ms / 1000} s`)), ms);
     request.then(

@@ -302,15 +302,24 @@ async function holdAndConfirm(
   return confirmed === "mine" ? { reviewUuid: current.ID } : { refused: confirmed };
 }
 
+// The queue a press takes from can be minutes old (PE-304), so a case's screening is read again before anything is
+// written: one deleted since, or no longer there, is not taken.
+async function screeningGone(id: string): Promise<boolean> {
+  const latest = await readReview(id);
+  return !latest || latest.Voided === true || !latest["Encounter date time"];
+}
+
 /**
  * Takes a case for `viewer`: writes the hold on the case's review, creating the review first when a completed
  * screening has none, and keeps the case only when the review read back afterwards carries that hold. Nothing is
- * written when the review is completed, cancelled, deleted or held by someone else.
+ * written when the review is completed, cancelled, deleted or held by someone else, or when the case's screening has
+ * been deleted or is no longer there.
  */
 export async function takeCase(row: QueueRow, viewer: string, now: Date = serverNow()): Promise<TakeResult> {
   const hold: Hold = { by: viewer, since: now.toISOString() };
 
   if (row.kind === "booked") {
+    if (row.screening && (await screeningGone(row.screening.ID))) return { refused: "gone" };
     const current = await readReview(row.review.encounterUuid);
     if (!current) return { refused: "gone" };
     const verdict = decideTake(current, viewer, now);
@@ -319,9 +328,7 @@ export async function takeCase(row: QueueRow, viewer: string, now: Date = server
   }
 
   const screening = row.screening;
-  // The queue can be minutes old (PE-304), so the screening is read again: one deleted since, or gone, is not taken.
-  const latest = await readReview(screening.ID);
-  if (!latest || latest.Voided || !latest["Encounter date time"]) return { refused: "gone" };
+  if (await screeningGone(screening.ID)) return { refused: "gone" };
   const stamp = { [REVIEWED_ORAL_SCREENING_CONCEPT.name]: screening.ID };
   const uuid = await reviewUuidFor(screening.ID);
   let current = await readReview(uuid);
